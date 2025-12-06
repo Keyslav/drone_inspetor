@@ -1,0 +1,10 @@
+build/
+install/
+log/
+*.pyc
+__pycache__/
+.vscode/
+.idea/
+.DS_Store
+*.pt
+drone_inspetor/models/

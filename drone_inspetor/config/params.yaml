@@ -1,0 +1,24 @@
+simulation_buttons:
+  - name: "Iniciar Simulação"
+    command: "gz sim -s"
+    icon: "▶️"
+    color: "#27ae60"
+  - name: "Resetar Simulação"
+    command: "gz sim -r"
+    icon: "🔄"
+    color: "#f39c12"
+  - name: "Parar Simulação"
+    command: "gz sim -k"
+    icon: "⏹️"
+    color: "#e74c3c"
+  - name: "Carregar Cenário"
+    command: "gz sim -l world.sdf"
+    icon: "🗺️"
+    color: "#3498db"
+
+# Coordenadas do centro do mapa
+map_center:
+  latitude: -22.633890
+  longitude: -40.093330
+  zoom_level: 18
+

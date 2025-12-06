@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RPLiDAR C1 Dashboard</title>
+    <style>
+        /* O CSS está correto e não precisa de alterações */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html { font-size: clamp(10px, 1.2vw, 16px); }
+        body {
+            width: 100%; height: 100%;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            overflow: hidden;
+        }
+        
+        .dashboard { display: flex; width: 100%; height: 100%; padding: 1rem; gap: 1rem; }
+        .area-a { flex: 2; display: flex; flex-direction: column; gap: 1rem; min-width: 280px; }
+        .area-b { flex: 3; display: flex; flex-direction: column; min-height: 0; }
+
+        .panel { background: rgba(0,0,0,0.6); border-radius: 10px; padding: 1rem; display: flex; flex-direction: column; flex-grow: 1; }
+        .panel h3 { font-size: 1.4rem; margin-bottom: 1rem; color: #00ff88; text-align: center; }
+        .metric { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.8rem; font-size: 1rem; }
+        .metric-value { color: #00ff88; font-weight: bold; display: flex; align-items: center; }
+        .led { width: 1rem; height: 1rem; border-radius: 50%; margin-right: 0.5rem; flex-shrink: 0; }
+        .led.free { background-color: #00ff00; }
+        .led.blocked { background-color: #ff0000; }
+
+        .radar-section { flex-grow: 1; background: rgba(0,0,0,0.3); border-radius: 15px; padding: 1rem; display: flex; align-items: center; justify-content: center; min-height: 0; }
+        
+        .lidar-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+        
+        .lidar-display {
+            width: 80%;
+            padding-top: 80%;
+            height: 0;
+            position: relative;
+            border: 2px solid rgba(0,255,136,0.3);
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(0,255,136,0.05) 0%, transparent 70%);
+            /* Adiciona overflow: hidden para uma camada extra de segurança visual */
+            overflow: hidden;
+        }
+        
+        .range-circle, .angle-label, .angle-marker, .angle-line, .lidar-point, .scan-line, .drone-icon {
+            position: absolute;
+            pointer-events: none;
+        }
+        
+        .range-circle {
+            border: 1px solid rgba(0,255,136,0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+        }
+        
+        .range-label {
+            font-size: 1.2rem;
+            color: rgba(0,255,136,0.8);
+            margin-bottom: -0.6rem;
+            background: rgba(0,0,0,0.5);
+            padding: 0.2rem 0.4rem;
+            border-radius: 3px;
+        }
+        
+        .angle-label { font-size: 1.2rem; color: rgba(0,255,136,0.8); transform: translate(-50%, -50%); }
+        
+        .angle-marker {
+            width: 1px;
+            height: 10px;
+            background-color: rgba(0,255,136,0.5);
+            transform-origin: bottom;
+        }
+        
+        .angle-line {
+            height: 1px;
+            background-color: rgba(0,255,136,0.3);
+            transform-origin: center;
+        }
+        
+        .drone-icon {
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 13%;
+            height: 13%;
+            min-width: 32px;
+            min-height: 32px;
+            z-index: 10;
+            background-image: url("target.png");
+            background-size: contain;
+        }
+        
+        .scan-line { top: 50%; left: 50%; width: 50%; height: 2px; background: linear-gradient(90deg, rgba(0,255,136,0.8) 0%, transparent 100%); transform-origin: 0 50%; z-index: 5; }
+        
+        .lidar-point {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+    </style>
+</head>
+<body>
+    <!-- Estrutura HTML sem alterações -->
+    <div class="dashboard">
+        <div class="area-a">
+            <div class="panel parameterization"><h3>PARAMETRIZAÇÃO</h3><div class="metric"><span>Alcance Máximo:</span><span class="metric-value" id="displayRangeLabel">12m</span></div><div class="metric"><span>Zona cega:</span><span class="metric-value">0.05m</span></div><div class="metric"><span>Pontos por volta:</span><span class="metric-value" id="currentPointsLabel">- pts</span></div><div class="metric"><span>Faixa Detectável:</span><span class="metric-value" id="detectableRange">-180/180°</span></div></div>
+            <div class="panel radar-metrics"><h3>MÉTRICAS EM TEMPO REAL</h3><div class="metric"><span>Status:</span><span class="metric-value" id="radarStatus">Aguardando...</span></div><div class="metric"><span>Pontos por Volta:</span><span class="metric-value" id="pointsPerRotation">-</span></div><div class="metric"><span>Taxa de Pontos:</span><span class="metric-value" id="pointsPerSecond">- Hz</span></div><div class="metric"><span>Distância Mínima:</span><span class="metric-value" id="minDistance">- m</span></div><div class="metric"><span>Último Vector ID:</span><span class="metric-value" id="vectorId">-</span></div></div>
+            <div class="panel lock-status"><h3>BLOQUEIO</h3><div class="metric"><span>Frente:</span><div class="metric-value"><div class="led free" id="ledFront"></div><span id="lockFront">Livre</span></div></div><div class="metric"><span>Esquerda:</span><div class="metric-value"><div class="led free" id="ledLeft"></div><span id="lockLeft">Livre</span></div></div><div class="metric"><span>Direita:</span><div class="metric-value"><div class="led free" id="ledRight"></div><span id="lockRight">Livre</span></div></div><div class="metric"><span>Atrás:</span><div class="metric-value"><div class="led free" id="ledBack"></div><span id="lockBack">Livre</span></div></div></div>
+        </div>
+        <div class="area-b">
+            <div class="radar-section">
+                <div class="lidar-container" id="lidarContainer">
+                    <div class="lidar-display" id="lidarDisplay">
+                        <div class="scan-line" id="scanLine"></div>
+                        <div class="drone-icon"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const MAX_RANGE = 12;
+        let displayRange = MAX_RANGE;
+        let isInitialized = false;
+        let lastAnimationTime = null;
+        let scanAnimationAngle = 0;
+        let current_point_vector = [];
+
+        const lidarContainer = document.getElementById("lidarContainer");
+        const lidarDisplay = document.getElementById("lidarDisplay");
+        const scanLine = document.getElementById("scanLine");
+
+        function updateScanAnimation(timestamp) {
+            if (!isInitialized) return;
+            if (!lastAnimationTime) lastAnimationTime = timestamp;
+            const deltaTime = (timestamp - lastAnimationTime) / 1000;
+            lastAnimationTime = timestamp;
+            scanAnimationAngle = (scanAnimationAngle + 180 * deltaTime) % 360;
+            scanLine.style.transform = `rotate(${scanAnimationAngle - 90}deg)`;
+            requestAnimationFrame(updateScanAnimation);
+        }
+
+        function generateRangeCircles() {
+            // (Função sem alterações)
+            lidarDisplay.querySelectorAll(".range-circle").forEach(el => el.remove());
+            const numCircles = 4;
+            for (let i = 1; i <= numCircles; i++) {
+                const radiusPercent = (i / numCircles) * 100;
+                const circle = document.createElement("div");
+                circle.className = "range-circle";
+                circle.style.width = `${radiusPercent}%`;
+                circle.style.height = `${radiusPercent}%`;
+                circle.style.top = "50%";
+                circle.style.left = "50%";
+                circle.style.transform = "translate(-50%, -50%)";
+                const label = document.createElement("div");
+                label.className = "range-label";
+                const distance = (displayRange / numCircles) * i;
+                label.textContent = `${+distance.toFixed(2)}m`;
+                circle.appendChild(label);
+                lidarDisplay.appendChild(circle);
+            }
+        }
+
+        function generateAngleMarkers() {
+            // (Função sem alterações)
+            lidarContainer.querySelectorAll(".angle-label, .angle-marker, .angle-line").forEach(el => el.remove());
+            const displayRadius = lidarDisplay.clientWidth / 2;
+            for (let angle = 0; angle < 360; angle += 45) {
+                const visualRad = (angle - 90) * Math.PI / 180;
+                const marker = document.createElement("div");
+                marker.className = "angle-marker";
+                const markerX = (lidarContainer.clientWidth / 2) + Math.cos(visualRad) * displayRadius;
+                const markerY = (lidarContainer.clientHeight / 2) + Math.sin(visualRad) * displayRadius;
+                marker.style.left = `${markerX}px`;
+                marker.style.top = `${markerY}px`;
+                marker.style.transform = `translate(-50%, -100%) rotate(${angle}deg)`;
+                lidarContainer.appendChild(marker);
+                const label = document.createElement("div");
+                label.className = "angle-label";
+                let displayAngle = angle;
+                if (displayAngle > 180) { displayAngle -= 360; }
+                displayAngle = -displayAngle;
+                label.textContent = `${displayAngle}°`;
+                const labelRadius = displayRadius + 25;
+                const labelX = (lidarContainer.clientWidth / 2) + Math.cos(visualRad) * labelRadius;
+                const labelY = (lidarContainer.clientHeight / 2) + Math.sin(visualRad) * labelRadius;
+                label.style.left = `${labelX}px`;
+                label.style.top = `${labelY}px`;
+                lidarContainer.appendChild(label);
+            }
+            const drawLine = (angle) => {
+                const line = document.createElement("div");
+                line.className = "angle-line";
+                line.style.width = "100%";
+                line.style.top = "50%";
+                line.style.left = "0%";
+                line.style.transform = `rotate(${angle}deg)`;
+                lidarDisplay.appendChild(line);
+            };
+            drawLine(45);
+            drawLine(-45);
+        }
+        
+        function plotLidarPoints() {
+            if (!isInitialized) return;
+            lidarDisplay.querySelectorAll(".lidar-point").forEach(p => p.remove());
+            const displayRadius = lidarDisplay.clientWidth / 2;
+            const scale = displayRadius / displayRange;
+
+            for (let i = 0; i < current_point_vector.length; i += 2) {
+                const distance = current_point_vector[i];
+                const angleRad = current_point_vector[i + 1];
+
+                // CORREÇÃO: Adiciona a condição para filtrar os pontos
+                // Só plota se a distância for menor ou igual ao alcance de exibição atual.
+                if (distance <= displayRange) {
+                    const x = displayRadius - (distance * Math.sin(angleRad)) * scale;
+                    const y = displayRadius - (distance * Math.cos(angleRad)) * scale;
+
+                    const pointElement = document.createElement("div");
+                    pointElement.className = "lidar-point";
+                    pointElement.style.left = `${x}px`;
+                    pointElement.style.top = `${y}px`;
+                    pointElement.style.backgroundColor = getColorByDistance(distance);
+                    lidarDisplay.appendChild(pointElement);
+                }
+            }
+        }
+
+        function getColorByDistance(distance) {
+            if (distance > 5) return "rgb(0, 255, 0)";
+            if (distance < 1) return "rgb(255, 0, 0)";
+            const t = (distance - 1) / 4;
+            const r = Math.round(255 * (1 - t));
+            const g = Math.round(255 * t);
+            return `rgb(${r}, ${g}, 0)`;
+        }
+
+        function initializeRadarElements() {
+            if (!lidarDisplay) return;
+            const tryToInitialize = () => {
+                if (lidarDisplay.clientWidth > 10) {
+                    isInitialized = true;
+                    generateRangeCircles();
+                    generateAngleMarkers();
+                    requestAnimationFrame(updateScanAnimation);
+                } else {
+                    requestAnimationFrame(tryToInitialize);
+                }
+            };
+            tryToInitialize();
+        }
+
+        lidarDisplay.addEventListener("wheel", function(event) {
+            event.preventDefault();
+            if (event.deltaY < 0) {
+                displayRange = Math.max(1, displayRange - 1);
+            } else {
+                displayRange = Math.min(MAX_RANGE, displayRange + 1);
+            }
+            generateRangeCircles();
+            plotLidarPoints();
+        });
+
+        function startRadarInitialization() {
+            initializeRadarElements();
+        }
+
+        function dashboard_update_point_vector(newVector) {
+            if (newVector && Array.isArray(newVector)) {
+                current_point_vector = newVector;
+                plotLidarPoints();
+            }
+        }
+    </script>
+</body>
+</html>

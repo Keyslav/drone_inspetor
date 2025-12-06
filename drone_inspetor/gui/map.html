@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Drone Inspector Map</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="./leaflet_local/leaflet.css"/>
+    
+    <!-- Leaflet JavaScript -->
+    <script src="./leaflet_local/leaflet.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #2c3e50;
+            font-family: 'Segoe UI', Arial, sans-serif;
+        }
+        
+        /* Otimizações CSS para performance */
+        #map {
+            height: 100vh;
+            width: 100%;
+            /* Aceleração por hardware */
+            transform: translateZ(0);
+            -webkit-transform: translateZ(0);
+            will-change: transform;
+        }
+
+        /* Otimizar overlay da plataforma */
+        .platform-overlay-optimized {
+            /* Aceleração por hardware para a imagem */
+            transform: translateZ(0);
+            -webkit-transform: translateZ(0);
+            will-change: transform, opacity;
+            /* Otimizar renderização de imagem */
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+        }
+        
+        .zoom-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            background-color: #34495e;
+            color: #ecf0f1;
+            border: 2px solid #7f8c8d;
+            border-radius: 5px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+        }
+        
+        .zoom-btn:hover {
+            background-color: #5a6c7d;
+            border-color: #95a5a6;
+        }
+        
+        .zoom-btn:active {
+            background-color: #4a5568;
+        }
+        
+        .drone-icon {
+            width: 30px;
+            height: 30px;
+            background-color: #e74c3c;
+            border: 3px solid #ffffff;
+            border-radius: 50%;
+            position: relative;
+            transform-origin: center;
+        }
+        
+        .drone-icon::before {
+            content: '';
+            position: absolute;
+            top: -8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 0;
+            height: 0;
+            border-left: 8px solid transparent;
+            border-right: 8px solid transparent;
+            border-bottom: 15px solid #e74c3c;
+        }
+        
+        .info-panel {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background-color: rgba(52, 73, 94, 0.9);
+            color: #ecf0f1;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #7f8c8d;
+            font-size: 12px;
+            z-index: 1000;
+            min-width: 110px;
+        }
+        
+        .info-row {
+            margin-bottom: 5px;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            color: #3498db;
+        }
+
+        .overlay-controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 1000;
+            background-color: rgba(52, 73, 94, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #7f8c8d;
+        }
+
+        .overlay-btn {
+            background-color: #3498db;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 3px;
+            cursor: pointer;
+            margin-right: 5px;
+            font-size: 12px;
+        }
+
+        .overlay-btn:hover {
+            background-color: #2980b9;
+        }
+
+        .opacity-control {
+            margin-top: 10px;
+        }
+
+        .opacity-control label {
+            color: #ecf0f1;
+            font-size: 12px;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .opacity-control input[type="range"] {
+            width: 100%;
+        }
+
+        /* Ocultar atribuições do Leaflet */
+        .leaflet-control-attribution {
+            display: none !important;
+        }
+
+        /* Posicionar escala à direita */
+        .leaflet-control-scale {
+            margin-right: 10px !important;
+            margin-bottom: 10px !important;
+        }
+
+        .leaflet-bottom.leaflet-right {
+            display: flex;
+            justify-content: flex-end;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    
+    <!-- Controles de zoom customizados -->
+    <div class="zoom-controls">
+        <button class="zoom-btn" onclick="zoomIn()" title="Zoom In">+</button>
+        <button class="zoom-btn" onclick="zoomOut()" title="Zoom Out">−</button>
+    </div>
+
+    <!-- Controles do overlay -->
+    <div class="overlay-controls" hidden="true">
+        <button class="overlay-btn" onclick="toggleOverlay()">Toggle Overlay</button>
+        <button class="overlay-btn" onclick="adjustOverlayBounds()">Adjust Bounds</button>
+        <div class="opacity-control">
+            <label>Opacity:</label>
+            <input type="range" id="opacitySlider" min="0" max="100" value="100" onchange="changeOpacity(this.value)">
+        </div>
+    </div>
+    
+    <!-- Painel de informações -->
+    <div class="info-panel">
+        <div class="info-row">
+            <span class="info-label">Lat:</span> <span id="drone-lat">-22.633890</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">Lon:</span> <span id="drone-lon">-40.093330</span>
+        </div>
+        <div class="info-row">
+            <span class="info-label">Alt:</span> <span id="drone-alt">0.0</span> m
+        </div>
+        <div class="info-row">
+            <span class="info-label">Heading:</span> <span id="drone-heading">0.0</span>°
+        </div>
+        <div class="info-row">
+            <span class="info-label">Speed:</span> <span id="drone-speed">0.0</span> m/s
+        </div>
+        <div class="info-row">
+            <span class="info-label">Overlay:</span> <span id="overlay-status">Loading...</span>
+        </div>
+    </div>
+
+    <script>
+        // Coordenadas padrão (serão atualizadas via parâmetros)
+        let defaultLat = -22.633890;
+        let defaultLon = -40.093330;
+        
+        // Variáveis globais para o mapa e marcador
+        let map;
+        let droneMarker;
+        let droneIcon;
+        let platformOverlay;
+        let overlayVisible = true;
+        
+        // Inicializar o mapa
+        function initializeMap() {
+            try {
+                map = L.map('map', {
+                    zoomControl: false,  // Desabilitar controles padrão
+                    preferCanvas: true,  // Usar Canvas para melhor performance
+                    zoomAnimation: true, // Animações de zoom mais rápidas
+                    fadeAnimation: true, // Animações de fade otimizadas
+                    markerZoomAnimation: true // Animação de marcadores otimizada
+                }).setView([defaultLat, defaultLon], 18);
+                
+                // Adicionar camada de tiles otimizada para velocidade
+                L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+                    attribution: "", 
+                    maxZoom: 22,
+                    maxNativeZoom: 19,
+                    tileSize: 256,
+                    zoomOffset: 0,
+                    detectRetina: true, // Suporte a telas de alta resolução
+                    //crossOrigin: true,
+                    // Otimizações de performance
+                    keepBuffer: 2, // Manter apenas 2 telas de buffer
+                    updateWhenIdle: false, // Atualizar durante o movimento
+                    updateWhenZooming: false, // Não atualizar durante zoom
+                    updateInterval: 150, // Intervalo de atualização em ms
+                    // Cache e loading otimizado
+                    errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', // Pixel transparente para erros
+                    loadingTimeout: 3000, // Timeout de 3 segundos
+                    // Subdomínios para paralelização
+                    subdomains: ['a', 'b', 'c']
+                }).addTo(map);
+
+                // Coordenadas e configuração do overlay da plataforma
+                let platformLat = -22.633890;
+                let platformLon = -40.093330;
+                
+                // Ajustar o offset para metros reais
+                // Área de 40.000 m² = aproximadamente 200m x 200m
+                // 1 grau de latitude ≈ 111,320 metros
+                // 1 grau de longitude varia com a latitude, mas aproximadamente 111,320 * cos(lat)
+                let latOffset = 100 / 111320; // 100 metros em graus de latitude (200m total)
+                let lonOffset = 100 / (111320 * Math.cos(platformLat * Math.PI / 180)); // 100 metros em graus de longitude (200m total)
+
+                let platformBounds = [
+                    [platformLat - latOffset, platformLon - lonOffset], // Southwest
+                    [platformLat + latOffset, platformLon + lonOffset]  // Northeast
+                ];
+
+                // Tentar diferentes caminhos para a imagem
+                let imagePaths = [
+                    "./leaflet_local/mapa.png",
+                    "./mapa.png",
+                    "mapa.png",
+                    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==" // Pixel transparente como fallback
+                ];
+
+                // Função para testar se a imagem existe
+                function testImagePath(path, callback) {
+                    const img = new Image();
+                    img.onload = function() {
+                        callback(true, path);
+                    };
+                    img.onerror = function() {
+                        callback(false, path);
+                    };
+                    img.src = path;
+                }
+
+                // Testar caminhos da imagem
+                let pathIndex = 0;
+                function tryNextPath() {
+                    if (pathIndex >= imagePaths.length) {
+                        console.error('Não foi possível carregar a imagem mapa.png de nenhum caminho');
+                        document.getElementById('overlay-status').textContent = 'Image not found';
+                        return;
+                    }
+
+                    testImagePath(imagePaths[pathIndex], function(success, path) {
+                        if (success && pathIndex < imagePaths.length - 1) { // Não usar o fallback transparente se encontrou uma imagem real
+                            console.log('Imagem encontrada em:', path);
+                            createOverlay(path, platformBounds);
+                        } else {
+                            pathIndex++;
+                            tryNextPath();
+                        }
+                    });
+                }
+
+                // Função para criar o overlay
+                function createOverlay(imagePath, bounds) {
+                    try {
+                        platformOverlay = L.imageOverlay(imagePath, bounds, {
+                            opacity: 1,
+                            interactive: false, // Melhor performance - overlay não interativo
+                            crossOrigin: "anonymous",
+                            // Otimizações de performance
+                            className: 'platform-overlay-optimized'
+                        });
+
+                        platformOverlay.on('load', function() {
+                            console.log('Overlay carregado com sucesso!');
+                            document.getElementById('overlay-status').textContent = 'Loaded';
+                        });
+
+                        platformOverlay.on('error', function() {
+                            console.error('Erro ao carregar o overlay');
+                            document.getElementById('overlay-status').textContent = 'Error loading';
+                        });
+
+                        platformOverlay.addTo(map);
+                        
+                    } catch (error) {
+                        console.error('Erro ao criar overlay:', error);
+                        document.getElementById('overlay-status').textContent = 'Creation error';
+                    }
+                }
+
+                // Iniciar teste dos caminhos
+                tryNextPath();
+
+                // Adicionar barra de escala posicionada à direita
+                L.control.scale({
+                    position: 'bottomright',
+                    metric: true,
+                    imperial: false
+                }).addTo(map);
+                
+                // Ícone customizado do drone
+                droneIcon = L.divIcon({
+                    className: 'drone-icon',
+                    iconSize: [30, 30],
+                    iconAnchor: [15, 15]
+                });
+                
+                // Marcador do drone
+                droneMarker = L.marker([defaultLat, defaultLon], {
+                    icon: droneIcon,
+                    rotationAngle: 0
+                }).addTo(map);
+                
+                console.log('Mapa e marcador do drone inicializados com sucesso!');
+                
+            } catch (error) {
+                console.error('Erro ao inicializar o mapa:', error);
+            }
+        }
+        
+        // Função para rotacionar o marcador do drone
+        function rotateDroneMarker(angle) {
+            if (droneMarker && droneMarker._icon) {
+                const iconElement = droneMarker._icon;
+                iconElement.style.transform = `rotate(${angle}deg)`;
+                iconElement.style.transformOrigin = 'center';
+            }
+        }
+        
+        // Funções de controle do overlay
+        function toggleOverlay() {
+            if (platformOverlay) {
+                if (overlayVisible) {
+                    map.removeLayer(platformOverlay);
+                    overlayVisible = false;
+                    document.getElementById('overlay-status').textContent = 'Hidden';
+                } else {
+                    platformOverlay.addTo(map);
+                    overlayVisible = true;
+                    document.getElementById('overlay-status').textContent = 'Visible';
+                }
+            }
+        }
+
+        function changeOpacity(value) {
+            if (platformOverlay) {
+                platformOverlay.setOpacity(value / 100);
+            }
+        }
+
+        function adjustOverlayBounds() {
+            if (platformOverlay) {
+                // Permitir que o usuário clique no mapa para redefinir os bounds
+                let clicks = 0;
+                let newBounds = [];
+                
+                function onMapClick(e) {
+                    clicks++;
+                    newBounds.push([e.latlng.lat, e.latlng.lng]);
+                    
+                    if (clicks === 1) {
+                        alert('Clique no segundo ponto (nordeste) para definir o novo bounds do overlay');
+                    } else if (clicks === 2) {
+                        map.off('click', onMapClick);
+                        
+                        // Redefinir bounds do overlay
+                        platformOverlay.setBounds(newBounds);
+                        alert('Bounds do overlay ajustado!');
+                        clicks = 0;
+                        newBounds = [];
+                    }
+                }
+                
+                alert('Clique no primeiro ponto (sudoeste) para definir o novo bounds do overlay');
+                map.on('click', onMapClick);
+            }
+        }
+        
+        // Funções de zoom
+        function zoomIn() {
+            if (map) {
+                map.zoomIn();
+            }
+        }
+        
+        function zoomOut() {
+            if (map) {
+                map.zoomOut();
+            }
+        }
+        
+        // Função otimizada para atualizar posição do drone
+        let lastUpdateTime = 0;
+        const UPDATE_THROTTLE = 50; // Limitar atualizações a cada 50ms
+        
+        function updateDronePosition(lat, lon, alt, heading, speed) {
+            // Throttling para evitar atualizações muito frequentes
+            const now = Date.now();
+            if (now - lastUpdateTime < UPDATE_THROTTLE) {
+                return;
+            }
+            lastUpdateTime = now;
+            
+            if (!map || !droneMarker) {
+                console.warn('Mapa ou marcador não inicializado');
+                return;
+            }
+            
+            try {
+                // Usar requestAnimationFrame para animações mais suaves
+                requestAnimationFrame(() => {
+                    droneMarker.setLatLng([lat, lon]);
+                    rotateDroneMarker(heading);
+                    
+                    // Batch DOM updates
+                    const latElement = document.getElementById('drone-lat');
+                    const lonElement = document.getElementById('drone-lon');
+                    const altElement = document.getElementById('drone-alt');
+                    const headingElement = document.getElementById('drone-heading');
+                    const speedElement = document.getElementById('drone-speed');
+                    
+                    if (latElement) latElement.textContent = lat.toFixed(6);
+                    if (lonElement) lonElement.textContent = lon.toFixed(6);
+                    if (altElement) altElement.textContent = alt.toFixed(1);
+                    if (headingElement) headingElement.textContent = heading.toFixed(1);
+                    if (speedElement) speedElement.textContent = speed.toFixed(1);
+                });
+                
+            } catch (error) {
+                console.error('Erro ao atualizar posição do drone:', error);
+            }
+        }
+        
+        // Função para definir coordenadas iniciais via parâmetros
+        function setMapCenter(lat, lon, zoom = 18) {
+            if (!map || !droneMarker) {
+                console.warn('Mapa ou marcador não inicializado');
+                return;
+            }
+            
+            try {
+                defaultLat = lat;
+                defaultLon = lon;
+                map.setView([lat, lon], zoom);
+                droneMarker.setLatLng([lat, lon]);
+                
+                document.getElementById('drone-lat').textContent = lat.toFixed(6);
+                document.getElementById('drone-lon').textContent = lon.toFixed(6);
+            } catch (error) {
+                console.error('Erro ao definir centro do mapa:', error);
+            }
+        }
+        
+        // Função para zoom programático
+        function setZoom(level) {
+            if (map) {
+                map.setZoom(level);
+            }
+        }
+        
+        // Função para seguir o drone
+        function followDrone(follow = true) {
+            if (map && droneMarker && follow) {
+                map.panTo(droneMarker.getLatLng());
+            }
+        }
+        
+        // Expor funções para o Python
+        window.updateDronePosition = updateDronePosition;
+        window.setMapCenter = setMapCenter;
+        window.setZoom = setZoom;
+        window.followDrone = followDrone;
+        window.zoomIn = zoomIn;
+        window.zoomOut = zoomOut;
+        window.toggleOverlay = toggleOverlay;
+        window.changeOpacity = changeOpacity;
+        window.adjustOverlayBounds = adjustOverlayBounds;
+        
+        // Inicializar quando o DOM estiver pronto
+        document.addEventListener('DOMContentLoaded', function() {
+            initializeMap();
+        });
+        
+        // Fallback caso o DOMContentLoaded já tenha passado
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+            initializeMap();
+        }
+    </script>
+</body>
+</html>

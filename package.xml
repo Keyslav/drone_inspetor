@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>drone_inspetor</name>
+  <version>0.0.0</version>
+  <description>Pacote ROS2 para o dashboard de monitoramento do drone, com arquitetura modular e integração de controles, FSM e mapa.</description>
+  <maintainer email="user@todo.todo">user</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>ros_gz_bridge</depend>
+  <depend>cv_bridge</depend>
+  <depend>python3-pyqt6</depend>
+  <depend>python3-pyqt6.qtwebengine</depend>
+  <depend>python3-opencv</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-pillow</depend>
+  <depend>python3-yaml</depend>
+  <!-- Dependências adicionais para a nova arquitetura -->
+  <depend>python3-psutil</depend> <!-- Para verificação de processos (GazeboChecker) -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
+
