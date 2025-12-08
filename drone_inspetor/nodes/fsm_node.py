@@ -193,7 +193,7 @@ class FSMNode(Node):
         # --- Verificação de Saúde dos Tópicos Essenciais ---
         # Dicionário com informações dos tópicos essenciais: {nome_tópico: {"last_received": timestamp}}
         self.essencial_topics = {
-            "control_status": {"last_received": 0.0, "description": "Status do drone_node"},
+            "drone_status": {"last_received": 0.0, "description": "Status do drone_node"},
             #"cv_detections": {"last_received": 0.0, "description": "Detecções do cv_node"},
             # "dashboard_commands": {"last_received": 0.0, "description": "Comandos do dashboard"}
         }
@@ -207,14 +207,14 @@ class FSMNode(Node):
         self.fsm_state_pub = self.create_publisher(String, "/drone_inspetor/interno/fsm_node/state", qos_status)
         
         # Envia comandos para o drone_node
-        self.fsm_command_pub = self.create_publisher(String, "/drone_inspetor/interno/fsm_node/control_commands", qos_commands)
+        self.fsm_command_pub = self.create_publisher(String, "/drone_inspetor/interno/fsm_node/drone_commands", qos_commands)
 
         # ==================================================================
         # SUBSCRIBERS
         # ==================================================================
         # Recebe status do drone_node (armado, decolagem concluída, chegou ao destino, etc.)
-        self.control_status_sub = self.create_subscription(
-            String, "/drone_inspetor/interno/drone_node/status", self.control_status_callback, qos_status)
+        self.drone_status_sub = self.create_subscription(
+            String, "/drone_inspetor/interno/drone_node/status", self.drone_status_callback, qos_status)
         
         # Recebe comandos do dashboard_node (start_inspection, abort_mission, etc.)
         self.dashboard_command_sub = self.create_subscription(
@@ -606,7 +606,7 @@ class FSMNode(Node):
                 # Verifica se já enviou o comando
                 if not self.drone_state.startswith("POUSADO"):
                     self.get_logger().info("Enviando comando RTL...", throttle_duration_sec=2)
-                    self.publish_control_command({"command": "RTL"})
+                    self.publish_drone_command({"command": "RTL"})
                 else:
                     # Drone pousou, transiciona para DESARMANDO
                     self.get_logger().info("Drone pousou. Transicionando para DESARMANDO...")
@@ -616,7 +616,7 @@ class FSMNode(Node):
                 # Objetivo: Desarmar motores e finalizar missão
                 if self.drone_state.startswith("POUSADO"):
                     self.get_logger().info("Enviando comando DISARM...")
-                    self.publish_control_command({"command": "DISARM"})
+                    self.publish_drone_command({"command": "DISARM"})
                     self.get_logger().info("Missão concluída com sucesso. Reiniciando FSM para próxima missão.")
                     self.reset_FSM()
 
@@ -709,7 +709,7 @@ class FSMNode(Node):
         return "NENHUM"
 
 
-    def publish_control_command(self, command_dict):
+    def publish_drone_command(self, command_dict):
         """
         Publica um comando para o drone_node em formato JSON, evitando repetições consecutivas do mesmo comando.
         
@@ -726,7 +726,7 @@ class FSMNode(Node):
         msg = String()
         msg.data = command_json
 
-        self.get_logger().info(f"--> Comando para ControlNode (JSON): {command_json}")
+        self.get_logger().info(f"--> Comando para DroneNode (JSON): {command_json}")
         self.fsm_command_pub.publish(msg)
 
     def send_command_and_wait(self, command_dict, expected_state, timeout=10.0):
@@ -747,7 +747,7 @@ class FSMNode(Node):
             self.get_logger().warn(f"Já está aguardando estado {self.waiting_for_state}. Comando ignorado.")
             return False
         
-        self.publish_control_command(command_dict)
+        self.publish_drone_command(command_dict)
         self.waiting_for_state = expected_state
         self.command_sent_time = time.time()
         self.command_timeout = timeout
@@ -795,7 +795,7 @@ class FSMNode(Node):
             self.get_logger().warn(f"Não é possível girar: drone não está VOANDO_PRONTO (estado: {self.drone_state})")
             return False
         
-        self.publish_control_command({
+        self.publish_drone_command({
             "command": "GOTO",
             "lat": self.drone_global_position_lat,
             "lon": self.drone_global_position_lon,
@@ -872,7 +872,7 @@ class FSMNode(Node):
             # Processa o comando emergency_land
             elif command == "emergency_land":
                 self.get_logger().error("COMANDO 'EMERGENCY_LAND' RECEBIDO. POUSANDO IMEDIATAMENTE.")
-                self.publish_control_command({"command": "LAND"})
+                self.publish_drone_command({"command": "LAND"})
             
             else:
                 self.get_logger().warn(f"Comando desconhecido recebido: {command}")
@@ -893,14 +893,14 @@ class FSMNode(Node):
             elif command_str == "abort_mission":
                 self.set_state(FSMState.RETORNO_HELIDECK, FSMSubState.RETORNANDO)
             elif command_str == "emergency_land":
-                self.publish_control_command({"command": "LAND"})
+                self.publish_drone_command({"command": "LAND"})
 
-    def control_status_callback(self, msg):
+    def drone_status_callback(self, msg):
         """
         Processa feedback do drone_node para transitar entre estados.
         Recebe dados como JSON contendo todas as variáveis de status do drone.
         
-        CAMPOS JSON RECEBIDOS DO CONTROL_NODE:
+        CAMPOS JSON RECEBIDOS DO DRONE_NODE:
         - "offboard_mode_control" (bool): Indica se o modo OFFBOARD está ativo
         - "drone_armed" (bool): Indica se os motores estão armados
         - "drone_arming" (bool): Indica se os motores estão sendo armados
@@ -915,7 +915,7 @@ class FSMNode(Node):
         A FSM usa drone_state para aguardar confirmação de comandos enviados ao drone_node.
         """
         # Atualiza timestamp do tópico essencial para verificação de saúde
-        self.essencial_topics["control_status"]["last_received"] = time.time()
+        self.essencial_topics["drone_status"]["last_received"] = time.time()
 
         # Decodifica mensagem JSON recebida do drone_node
         try:

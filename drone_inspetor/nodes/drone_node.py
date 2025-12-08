@@ -141,12 +141,12 @@ class DroneFSM:
         "RTL": [DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
     }
     
-    def __init__(self, node: 'ControlNode'):
+    def __init__(self, node: 'DroneNode'):
         """
         Inicializa a máquina de estados.
         
         Args:
-            node: Referência ao ControlNode para acessar variáveis de estado do drone
+            node: Referência ao DroneNode para acessar variáveis de estado do drone
         """
         self.node = node
         self.state = DroneState.POUSADO_DESARMADO
@@ -236,7 +236,7 @@ class DroneFSM:
     def _update_trajectory_sub_state(self):
         """
         Atualiza o sub-estado dentro de EM_TRAJETORIA baseado na fase de trajetória atual.
-        Mapeia a variável trajectory_phase do ControlNode para os sub-estados.
+        Mapeia a variável trajectory_phase do DroneNode para os sub-estados.
         """
         n = self.node
         old_sub_state = self.sub_state
@@ -363,7 +363,7 @@ class DroneFSM:
         return self.sub_state
 
 
-class ControlNode(Node):
+class DroneNode(Node):
     """
     Gerencia a comunicação bidirecional com o PX4 e executa as ações de baixo nível
     sob o comando da FSM. Atua como a camada de abstração de hardware para o drone.
@@ -496,7 +496,7 @@ class ControlNode(Node):
         # Este é o canal principal de comunicação com a FSM
         self.fsm_command_sub = self.create_subscription(
             String, 
-            "/drone_inspetor/interno/fsm_node/control_commands", 
+            "/drone_inspetor/interno/fsm_node/drone_commands", 
             self.fsm_command_callback, 
             qos_profile
         )
@@ -557,7 +557,7 @@ class ControlNode(Node):
         # --- Tópicos de Status para a FSM e Dashboard ---
         # Estes tópicos comunicam o estado do drone para outros nós do sistema
         
-        self.control_status_pub = self.create_publisher(String, "/drone_inspetor/interno/drone_node/status", qos_status)
+        self.drone_status_pub = self.create_publisher(String, "/drone_inspetor/interno/drone_node/status", qos_status)
         # self.global_position_pub = self.create_publisher(VehicleGlobalPosition, "/drone_inspetor/interno/drone_node/global_position", 10)
         #self.attitude_pub = self.create_publisher(VehicleAttitude, "/drone_inspetor/interno/drone_node/attitude", 10)
         # self.current_yaw_pub = self.create_publisher(String, "/drone_inspetor/interno/drone_node/current_yaw", 10)
@@ -578,7 +578,7 @@ class ControlNode(Node):
         self.offboard_setpoint_timer = self.create_timer(0.1, self.publish_offboard_setpoints)
 
         # Timer para publicação periódica de status JSON (a cada 0.5 segundos)
-        self.status_pub_timer = self.create_timer(0.5, lambda: self.publish_control_status())
+        self.status_pub_timer = self.create_timer(0.5, lambda: self.publish_drone_status())
 
         # Timer para atualização da máquina de estados (a cada 0.5 segundos)
         self.state_machine_timer = self.create_timer(0.5, self.update_state_machine)
@@ -647,7 +647,7 @@ class ControlNode(Node):
         self.offboard_control_mode_pub.publish(offboard_msg)
 
 
-    def publish_control_status(self):
+    def publish_drone_status(self):
         """
         Publica o status completo do drone_node como JSON.
         Inclui todas as variáveis necessárias para a FSM.
@@ -687,7 +687,7 @@ class ControlNode(Node):
         # Publica como JSON
         msg = String()
         msg.data = json.dumps(status_dict)
-        self.control_status_pub.publish(msg)
+        self.drone_status_pub.publish(msg)
         
 
     def create_static_position_setpoint(self):
@@ -1612,7 +1612,7 @@ class ControlNode(Node):
 def main(args=None):
     """Função principal do nó."""
     rclpy.init(args=args)
-    drone_node = ControlNode()
+    drone_node = DroneNode()
 
     try:
         rclpy.spin(drone_node)
