@@ -32,8 +32,7 @@ setup(
         'opencv-python',
         'numpy',
         'pillow',
-        'pyyaml',
-        'psutil' # Adicionado para GazeboChecker
+        'pyyaml'
     ],
     zip_safe=True,
     maintainer='user',

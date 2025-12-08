@@ -21,8 +21,6 @@
   <depend>python3-numpy</depend>
   <depend>python3-pillow</depend>
   <depend>python3-yaml</depend>
-  <!-- Dependências adicionais para a nova arquitetura -->
-  <depend>python3-psutil</depend> <!-- Para verificação de processos (GazeboChecker) -->
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

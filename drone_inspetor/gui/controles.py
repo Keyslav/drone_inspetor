@@ -173,25 +173,11 @@ class ControlesManager:
         # Cria e configura o botão 'Ações de Simulação Gazebo'.
         self.gazebo_button = CleanButton("⚙️ Ações de Simulação Gazebo", "#9b59b6")
         self.gazebo_button.clicked.connect(self.open_gazebo_simulation)
-        self.gazebo_button.setEnabled(False) # Inicialmente desabilitado.
+        self.gazebo_button.setEnabled(True)  # Mantém o botão sempre habilitado.
         buttons_layout.addWidget(self.gazebo_button, 3, 0, 1, 2)
         
         # Adiciona o layout dos botões ao layout fornecido.
         layout.addLayout(buttons_layout)
-
-    def update_gazebo_button_status(self, gazebo_running):
-        """
-        Atualiza o estado de habilitação do botão do Gazebo com base no status da simulação.
-
-        Args:
-            gazebo_running (bool): True se o Gazebo estiver em execução, False caso contrário.
-        """
-        # Habilita ou desabilita o botão do Gazebo
-        self.gazebo_button.setEnabled(gazebo_running)
-        if gazebo_running:
-            gui_log_info("ControlesManager", "Servidor Gazebo detectado - habilitando botão Gazebo")
-        else:
-            gui_log_info("ControlesManager", "Servidor Gazebo não detectado - desabilitando botão Gazebo")
 
     def open_gazebo_simulation(self):
         """

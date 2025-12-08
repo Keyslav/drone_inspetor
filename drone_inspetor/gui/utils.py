@@ -6,18 +6,15 @@ Módulo de utilitários compartilhados para o dashboard ROS2 do drone.
 Contém classes e funções auxiliares utilizadas por todos os módulos de tela, incluindo:
 - Classes de janelas auxiliares (ExpandedWindow, BaseScreen)
 - Processamento de imagens (ImageProcessor)
-- Verificação de sistema (GazeboChecker)
 - Funções matemáticas e de formatação
 - Sistema de logging padronizado para GUI
 =================================================================================================
 """
 
 # ==================== IMPORTAÇÕES ====================
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QMainWindow, QWidget, QVBoxLayout, QLabel
 from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt
-import subprocess
 import math
 import cv2
 import numpy as np
@@ -70,66 +67,6 @@ def gui_log_debug(module_name, message):
     """
     timestamp = datetime.now().strftime("%H:%M:%S")
     # print(f"[{timestamp}] [DEBUG] [{module_name}] {message}", file=sys.stdout)
-
-# ==================== CLASSES DE VERIFICAÇÃO DE SISTEMA ====================
-
-class GazeboChecker(QThread):
-    """
-    Thread dedicada para verificação contínua do status do simulador Gazebo.
-    
-    Esta classe monitora continuamente se o Gazebo está em execução, permitindo
-    que o dashboard mostre o status da simulação em tempo real.
-    
-    Herda de QThread para executar verificações em background sem travar a interface.
-    """
-    
-    # Sinal emitido quando o status do Gazebo muda (True=rodando, False=parado)
-    gazebo_status_changed = pyqtSignal(bool)
-    
-    def __init__(self, parent=None):
-        """
-        Inicializa a thread de verificação do Gazebo.
-        
-        Args:
-            parent: Widget pai (opcional, para gerenciamento de memória do Qt)
-        """
-        super().__init__(parent)
-        self.running = True  # Flag de controle para parar a thread de forma segura
-        
-    def run(self):
-        """
-        Método principal da thread que executa o loop de verificação.
-        
-        Este método roda em background e verifica periodicamente se o Gazebo está ativo.
-        O loop continua até que self.running seja definido como False.
-        """
-        while self.running:
-            try:
-                # Verifica se o processo Gazebo está rodando
-                result = subprocess.run(["pgrep", "-f", "gz sim.*"], 
-                                      capture_output=True, text=True, timeout=5)
-                
-                # pgrep retorna código 0 se encontrar processos
-                gazebo_running = result.returncode == 0
-                self.gazebo_status_changed.emit(gazebo_running)
-                
-            except Exception:
-                # Em caso de erro, assume que Gazebo não está rodando
-                self.gazebo_status_changed.emit(False)
-            
-            # Aguarda 3 segundos antes da próxima verificação
-            self.msleep(3000)
-    
-    def stop(self):
-        """
-        Para a thread de verificação de forma segura.
-        
-        Este método deve ser chamado antes de fechar a aplicação.
-        """
-        self.running = False
-        self.quit()
-        self.wait()
-
 # ==================== CLASSES DE JANELAS AUXILIARES ====================
 
 class ExpandedWindow(QMainWindow):

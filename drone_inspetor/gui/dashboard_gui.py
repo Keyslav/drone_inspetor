@@ -40,8 +40,8 @@ from .depth_screen import DepthScreen
 from .lidar_screen import LidarScreen
 
 # Importações de utilitários e gerenciadores
-# Utilitários: estilos comuns, tópicos ROS, verificador de status do Gazebo
-from .utils import COMMON_STYLES, ROS_TOPICS, GazeboChecker
+# Utilitários: estilos comuns, tópicos ROS
+from .utils import COMMON_STYLES, ROS_TOPICS
 # Gerenciadores: controlam funcionalidades específicas do dashboard
 from .controles import ControlesManager
 from .fsm import FSMManager
@@ -132,15 +132,6 @@ class DashboardGUI(QWidget):
         # Dicionário para armazenar referências às instâncias das telas
         # Facilita acesso programático às telas por nome
         self.screen_instances = {}
-        
-        # ==================== VERIFICADOR DE STATUS DO GAZEBO ========================================
-        # Verifica periodicamente se o servidor Gazebo está em execução
-        # Atualiza o estado do botão de simulação Gazebo no painel de controles
-        self.gazebo_checker = GazeboChecker()
-        # Conecta sinal de mudança de status ao método de atualização do botão
-        self.gazebo_checker.gazebo_status_changed.connect(self.controles_manager.update_gazebo_button_status)
-        # Inicia verificação periódica em thread separada
-        self.gazebo_checker.start()
         
         # ==================== CONFIGURAÇÃO DA INTERFACE ===============================================
         # Aplica tema escuro personalizado a todos os widgets
