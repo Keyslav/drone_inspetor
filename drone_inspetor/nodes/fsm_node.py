@@ -151,8 +151,8 @@ class FSMNode(Node):
         self.inspection_distance = 5.0          # Distância ideal do drone ao target durante a inspeção (metros)
         self.anomaly_approach_distance = 2.0    # Quanto o drone se aproxima ao detectar uma anomalia (metros)
         self.waypoint_tolerance = 0.5           # Tolerância em metros para considerar que chegou ao waypoint
-        self.inspection_point_lat = -22.633169  # Latitude do ponto de inspeção
-        self.inspection_point_lon = -40.093330  # Longitude do ponto de inspeção
+        self.inspection_point_lat = -22.634010  # Latitude do ponto de inspeção
+        self.inspection_point_lon = -40.092463  # Longitude do ponto de inspeção
         self.inspection_point_alt = 99.0        # Altitude do ponto de inspeção
         self.target_lat = -22.633061            # Latitude do centro do target para órbita
         self.target_lon = -40.093330            # Longitude do centro do target para órbita
@@ -202,7 +202,6 @@ class FSMNode(Node):
         # ==================================================================
         # PUBLISHERS
         # ==================================================================
-        # Configuração de QoS padronizada para o projeto
         # Publica o estado atual da FSM para o dashboard
         self.fsm_state_pub = self.create_publisher(String, "/drone_inspetor/interno/fsm_node/state", qos_status)
         

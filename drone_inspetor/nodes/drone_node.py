@@ -80,289 +80,6 @@ from std_msgs.msg import String
 from enum import IntEnum
 
 
-# ==================================================================================================
-# ENUMS DE ESTADOS DO DRONE
-# ==================================================================================================
-
-class DroneState(IntEnum):
-    """
-    Estados principais do drone.
-    Representam o estado geral do veículo em relação a armamento, pouso e movimento.
-    Usa IntEnum para comparações mais rápidas. Use .name para obter o nome como string.
-    """
-    POUSADO_DESARMADO = 0     # No chão, desarmado
-    POUSADO_ARMADO = 1        # No chão, armado
-    POUSADO_ARMANDO = 2       # Processo de arm em andamento no chão
-    POUSADO_DESARMANDO = 3    # Processo de desarm em andamento no chão
-    VOANDO_PRONTO = 4         # Voando estável, aguardando comando (hover)
-    VOANDO_EM_TRAJETORIA = 5  # Executando trajetória
-    EMERGENCIA = 6            # Failsafe/emergência ativa
-
-
-class TrajectorySubState(IntEnum):
-    """
-    Sub-estados dentro do estado EM_TRAJETORIA.
-    Detalham qual fase específica da trajetória o drone está executando.
-    Usa IntEnum para comparações mais rápidas. Use .name para obter o nome como string.
-    """
-    NENHUM = 0            # Sem sub-estado ativo
-    DECOLANDO = 1         # Subindo até altitude de decolagem
-    GIRANDO_INICIO = 2    # Girando para direção do target
-    A_CAMINHO = 3         # Voando em direção ao target
-    GIRANDO_FIM = 4       # Girando para yaw final
-    POUSANDO = 5          # Descendo para pousar
-    DESARMANDO = 6        # Desarmando após pouso
-    RTL = 7               # Retornando para home
-
-
-# ==================================================================================================
-# MÁQUINA DE ESTADOS DO DRONE
-# ==================================================================================================
-
-class DroneFSM:
-    """
-    Máquina de estados do drone.
-    Gerencia transições automáticas baseadas em condições e valida comandos por estado.
-    
-    RESPONSABILIDADES:
-    - Monitorar condições do drone e transicionar estados automaticamente
-    - Validar se comandos são permitidos no estado atual
-    - Fornecer informações de estado para publicação de status
-    - Manter histórico de transições para debug
-    """
-    
-    # Mapeamento de comandos para estados permitidos
-    VALID_COMMANDS = {
-        "ARM": [DroneState.POUSADO_DESARMADO],
-        "DISARM": [DroneState.POUSADO_ARMADO, DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
-        "TAKEOFF": [DroneState.POUSADO_ARMADO],
-        "GOTO": [DroneState.VOANDO_PRONTO],
-        "LAND": [DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
-        "RTL": [DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
-    }
-    
-    def __init__(self, node: 'DroneNode'):
-        """
-        Inicializa a máquina de estados.
-        
-        Args:
-            node: Referência ao DroneNode para acessar variáveis de estado do drone
-        """
-        self.node = node
-        self.state = DroneState.POUSADO_DESARMADO
-        self.sub_state = TrajectorySubState.NENHUM
-        self.state_entry_time = time.time()
-        self.sub_state_entry_time = time.time()
-        
-        # Histórico de transições para debug
-        self.state_history = []
-        self.max_history_size = 50
-    
-    def fsm_drone_control(self):
-        """
-        Atualiza o estado baseado nas condições atuais do drone.
-        Chamado periodicamente pelo timer (a cada 0.5s).
-        
-        Lógica de prioridade:
-        1. Emergência (bateria crítica, failsafe)
-        2. Estados de armamento (desarmado, armando, armado)
-        3. Estados de voo (pronto, em trajetória)
-        """
-        # Guarda estado anterior para detectar mudanças
-        old_state = self.state
-        old_sub_state = self.sub_state
-        
-        # Executa lógica de transição automática
-        self._check_transitions()
-        
-        # Se o estado mudou, registra no histórico e loga
-        if old_state != self.state or old_sub_state != self.sub_state:
-            self._on_state_changed(old_state, old_sub_state)
-    
-    def _check_transitions(self):
-        """
-        Verifica e executa transições automáticas baseadas nas condições do drone.
-        """
-        n = self.node  # Atalho para o nó
-        
-        # === PRIORIDADE 1: Verificar emergência ===
-        if self._check_emergency_conditions():
-            self._transition_to(DroneState.EMERGENCIA)
-            self.sub_state = TrajectorySubState.NENHUM
-            return
-        
-        # === PRIORIDADE 2: Estados de armamento/desarmamento em solo ===
-        
-        # Se desarmando (comando enviado) e ainda reportado armado
-        if n.is_disarming and n.PX4_is_armed:
-            self._transition_to(DroneState.POUSADO_DESARMANDO)
-            self.sub_state = TrajectorySubState.NENHUM
-            return
-        
-        # Se desarmado e não está armando
-        if not n.PX4_is_armed and not n.is_arming:
-            self._transition_to(DroneState.POUSADO_DESARMADO)
-            self.sub_state = TrajectorySubState.NENHUM
-            n.is_disarming = False
-            return
-        
-        # Se está armando
-        if n.is_arming and not n.PX4_is_armed:
-            self._transition_to(DroneState.POUSADO_ARMANDO)
-            self.sub_state = TrajectorySubState.NENHUM
-            return
-        
-        # === PRIORIDADE 3: Estados de voo (armado) ===
-        if n.PX4_is_armed:
-            n.is_disarming = False
-            # Armado mas no chão e sem trajetória
-            if n.PX4_is_landed and not n.on_trajectory:
-                self._transition_to(DroneState.POUSADO_ARMADO)
-                self.sub_state = TrajectorySubState.NENHUM
-                return
-            
-            # Em trajetória
-            if n.on_trajectory:
-                self._transition_to(DroneState.VOANDO_EM_TRAJETORIA)
-                self._update_trajectory_sub_state()
-                return
-            
-            # Voando mas sem trajetória = VOANDO_PRONTO (hover)
-            if not n.PX4_is_landed and not n.on_trajectory:
-                self._transition_to(DroneState.VOANDO_PRONTO)
-                self.sub_state = TrajectorySubState.NENHUM
-                return
-    
-    def _update_trajectory_sub_state(self):
-        """
-        Atualiza o sub-estado dentro de EM_TRAJETORIA baseado na fase de trajetória atual.
-        Mapeia a variável trajectory_phase do DroneNode para os sub-estados.
-        """
-        n = self.node
-        old_sub_state = self.sub_state
-        
-        # Mapeia trajectory_phase para sub-estado
-        phase_to_substate = {
-            "TAKEOFF": TrajectorySubState.DECOLANDO,
-            "ROTATING_TO_DIRECTION": TrajectorySubState.GIRANDO_INICIO,
-            "MOVING": TrajectorySubState.A_CAMINHO,
-            "ROTATING_TO_TARGET_YAW": TrajectorySubState.GIRANDO_FIM,
-            "LANDING": TrajectorySubState.POUSANDO,
-            "RTL": TrajectorySubState.RTL,
-            "COMPLETE": TrajectorySubState.NENHUM,
-        }
-        
-        new_sub_state = phase_to_substate.get(n.trajectory_phase, TrajectorySubState.NENHUM)
-        
-        if new_sub_state != self.sub_state:
-            self.sub_state = new_sub_state
-            self.sub_state_entry_time = time.time()
-    
-    def _transition_to(self, new_state: DroneState):
-        """
-        Executa transição para novo estado principal.
-        
-        Args:
-            new_state: Novo estado para transicionar
-        """
-        if self.state != new_state:
-            self.state = new_state
-            self.state_entry_time = time.time()
-    
-    def _on_state_changed(self, old_state: DroneState, old_sub_state: TrajectorySubState):
-        """
-        Callback executado quando o estado muda.
-        Registra no histórico e loga a transição.
-        
-        Args:
-            old_state: Estado anterior
-            old_sub_state: Sub-estado anterior
-        """
-        # Registra no histórico
-        self.state_history.append({
-            'time': time.time(),
-            'from_state': old_state.name,
-            'to_state': self.state.name,
-            'from_sub': old_sub_state.name,
-            'to_sub': self.sub_state.name
-        })
-        
-        # Limita tamanho do histórico
-        if len(self.state_history) > self.max_history_size:
-            self.state_history.pop(0)
-        
-        # Log da transição
-        sub_info = f" ({self.sub_state.name})" if self.sub_state != TrajectorySubState.NENHUM else ""
-        self.node.get_logger().info(
-            f"Estado: {old_state.name} -> {self.state.name}{sub_info}"
-        )
-    
-    def _check_emergency_conditions(self) -> bool:
-        """
-        Verifica condições de emergência que requerem transição imediata.
-        
-        Returns:
-            bool: True se há condição de emergência ativa
-        """
-        n = self.node
-        
-        # Bateria crítica (menos de 10%)
-        if n.PX4_battery_status and n.PX4_battery_status.remaining < 0.10:
-            self.node.get_logger().warn("EMERGÊNCIA: Bateria crítica!")
-            return True
-        
-        # Adicione outras condições de emergência aqui conforme necessário
-        # Exemplo: perda de GPS, failsafe do PX4, etc.
-        
-        return False
-    
-    def can_execute_command(self, command: str) -> tuple:
-        """
-        Verifica se um comando pode ser executado no estado atual.
-        
-        Args:
-            command: Nome do comando (ARM, DISARM, TAKEOFF, GOTO, LAND, RTL)
-        
-        Returns:
-            tuple: (pode_executar: bool, mensagem_erro: str)
-        """
-        allowed_states = self.VALID_COMMANDS.get(command, [])
-        
-        if not allowed_states:
-            # Comando desconhecido - permite execução (será tratado pelo callback)
-            return True, ""
-        
-        if self.state in allowed_states:
-            return True, ""
-        else:
-            allowed_names = [s.name for s in allowed_states]
-            return False, (
-                f"Comando '{command}' não permitido no estado {self.state.name}. "
-                f"Estados permitidos: {allowed_names}"
-            )
-    
-    def get_status_dict(self) -> dict:
-        """
-        Retorna dicionário com informações de estado para publicação de status.
-        
-        Returns:
-            dict: Dicionário com estado, sub-estado e duração
-        """
-        return {
-            "drone_state": self.state.name,
-            "drone_sub_state": self.sub_state.name,
-            "state_duration_sec": round(time.time() - self.state_entry_time, 2),
-        }
-    
-    def get_state(self) -> DroneState:
-        """Retorna o estado atual."""
-        return self.state
-    
-    def get_sub_state(self) -> TrajectorySubState:
-        """Retorna o sub-estado atual."""
-        return self.sub_state
-
-
 class DroneNode(Node):
     """
     Gerencia a comunicação bidirecional com o PX4 e executa as ações de baixo nível
@@ -625,12 +342,12 @@ class DroneNode(Node):
         self.trajectory_setpoint_pub.publish(trajectory_msg)
 
         # Log dos valores do trajectory publicado
-        self.get_logger().info(
-            f"Trajectory Setpoint publicado - "
-            f"\nPosição: [{trajectory_msg.position[0]:.3f}, {trajectory_msg.position[1]:.3f}, {trajectory_msg.position[2]:.3f}] | "
-            f"\nYaw: {trajectory_msg.yaw if not math.isnan(trajectory_msg.yaw) else 'NaN'}",
-            throttle_duration_sec=2.0
-        )
+#        self.get_logger().info(
+#            f"Trajectory Setpoint publicado - "
+#            f"\nPosição: [{trajectory_msg.position[0]:.3f}, {trajectory_msg.position[1]:.3f}, {trajectory_msg.position[2]:.3f}] | "
+#            f"\nYaw: {trajectory_msg.yaw if not math.isnan(trajectory_msg.yaw) else 'NaN'}",
+#            throttle_duration_sec=2.0
+#        )
 
 
     def publish_offboard_control_mode(self):
@@ -1605,6 +1322,292 @@ class DroneNode(Node):
             param1=1.0,  # Custom mode enabled
             param2=3.0   # Position mode (POSCTL)
         )
+
+
+
+
+# ==================================================================================================
+# ENUMS DE ESTADOS DO DRONE
+# ==================================================================================================
+
+class DroneState(IntEnum):
+    """
+    Estados principais do drone.
+    Representam o estado geral do veículo em relação a armamento, pouso e movimento.
+    Usa IntEnum para comparações mais rápidas. Use .name para obter o nome como string.
+    """
+    POUSADO_DESARMADO = 0     # No chão, desarmado
+    POUSADO_ARMADO = 1        # No chão, armado
+    POUSADO_ARMANDO = 2       # Processo de arm em andamento no chão
+    POUSADO_DESARMANDO = 3    # Processo de desarm em andamento no chão
+    VOANDO_PRONTO = 4         # Voando estável, aguardando comando (hover)
+    VOANDO_EM_TRAJETORIA = 5  # Executando trajetória
+    EMERGENCIA = 6            # Failsafe/emergência ativa
+
+
+class TrajectorySubState(IntEnum):
+    """
+    Sub-estados dentro do estado EM_TRAJETORIA.
+    Detalham qual fase específica da trajetória o drone está executando.
+    Usa IntEnum para comparações mais rápidas. Use .name para obter o nome como string.
+    """
+    NENHUM = 0            # Sem sub-estado ativo
+    DECOLANDO = 1         # Subindo até altitude de decolagem
+    GIRANDO_INICIO = 2    # Girando para direção do target
+    A_CAMINHO = 3         # Voando em direção ao target
+    GIRANDO_FIM = 4       # Girando para yaw final
+    POUSANDO = 5          # Descendo para pousar
+    DESARMANDO = 6        # Desarmando após pouso
+    RTL = 7               # Retornando para home
+
+
+# ==================================================================================================
+# MÁQUINA DE ESTADOS DO DRONE
+# ==================================================================================================
+
+class DroneFSM:
+    """
+    Máquina de estados do drone.
+    Gerencia transições automáticas baseadas em condições e valida comandos por estado.
+    
+    RESPONSABILIDADES:
+    - Monitorar condições do drone e transicionar estados automaticamente
+    - Validar se comandos são permitidos no estado atual
+    - Fornecer informações de estado para publicação de status
+    - Manter histórico de transições para debug
+    """
+    
+    # Mapeamento de comandos para estados permitidos
+    VALID_COMMANDS = {
+        "ARM": [DroneState.POUSADO_DESARMADO],
+        "DISARM": [DroneState.POUSADO_ARMADO, DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
+        "TAKEOFF": [DroneState.POUSADO_ARMADO],
+        "GOTO": [DroneState.VOANDO_PRONTO],
+        "LAND": [DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
+        "RTL": [DroneState.VOANDO_PRONTO, DroneState.VOANDO_EM_TRAJETORIA],
+    }
+    
+    def __init__(self, node: 'DroneNode'):
+        """
+        Inicializa a máquina de estados.
+        
+        Args:
+            node: Referência ao DroneNode para acessar variáveis de estado do drone
+        """
+        self.node = node
+        self.state = DroneState.POUSADO_DESARMADO
+        self.sub_state = TrajectorySubState.NENHUM
+        self.state_entry_time = time.time()
+        self.sub_state_entry_time = time.time()
+        
+        # Histórico de transições para debug
+        self.state_history = []
+        self.max_history_size = 50
+    
+    def fsm_drone_control(self):
+        """
+        Atualiza o estado baseado nas condições atuais do drone.
+        Chamado periodicamente pelo timer (a cada 0.5s).
+        
+        Lógica de prioridade:
+        1. Emergência (bateria crítica, failsafe)
+        2. Estados de armamento (desarmado, armando, armado)
+        3. Estados de voo (pronto, em trajetória)
+        """
+        # Guarda estado anterior para detectar mudanças
+        old_state = self.state
+        old_sub_state = self.sub_state
+        
+        # Executa lógica de transição automática
+        self._check_transitions()
+        
+        # Se o estado mudou, registra no histórico e loga
+        if old_state != self.state or old_sub_state != self.sub_state:
+            self._on_state_changed(old_state, old_sub_state)
+    
+    def _check_transitions(self):
+        """
+        Verifica e executa transições automáticas baseadas nas condições do drone.
+        """
+        n = self.node  # Atalho para o nó
+        
+        # === PRIORIDADE 1: Verificar emergência ===
+        if self._check_emergency_conditions():
+            self._transition_to(DroneState.EMERGENCIA)
+            self.sub_state = TrajectorySubState.NENHUM
+            return
+        
+        # === PRIORIDADE 2: Estados de armamento/desarmamento em solo ===
+        
+        # Se desarmando (comando enviado) e ainda reportado armado
+        if n.is_disarming and n.PX4_is_armed:
+            self._transition_to(DroneState.POUSADO_DESARMANDO)
+            self.sub_state = TrajectorySubState.NENHUM
+            return
+        
+        # Se desarmado e não está armando
+        if not n.PX4_is_armed and not n.is_arming:
+            self._transition_to(DroneState.POUSADO_DESARMADO)
+            self.sub_state = TrajectorySubState.NENHUM
+            n.is_disarming = False
+            return
+        
+        # Se está armando
+        if n.is_arming and not n.PX4_is_armed:
+            self._transition_to(DroneState.POUSADO_ARMANDO)
+            self.sub_state = TrajectorySubState.NENHUM
+            return
+        
+        # === PRIORIDADE 3: Estados de voo (armado) ===
+        if n.PX4_is_armed:
+            n.is_disarming = False
+            # Armado mas no chão e sem trajetória
+            if n.PX4_is_landed and not n.on_trajectory:
+                self._transition_to(DroneState.POUSADO_ARMADO)
+                self.sub_state = TrajectorySubState.NENHUM
+                return
+            
+            # Em trajetória
+            if n.on_trajectory:
+                self._transition_to(DroneState.VOANDO_EM_TRAJETORIA)
+                self._update_trajectory_sub_state()
+                return
+            
+            # Voando mas sem trajetória = VOANDO_PRONTO (hover)
+            if not n.PX4_is_landed and not n.on_trajectory:
+                self._transition_to(DroneState.VOANDO_PRONTO)
+                self.sub_state = TrajectorySubState.NENHUM
+                return
+    
+    def _update_trajectory_sub_state(self):
+        """
+        Atualiza o sub-estado dentro de EM_TRAJETORIA baseado na fase de trajetória atual.
+        Mapeia a variável trajectory_phase do DroneNode para os sub-estados.
+        """
+        n = self.node
+        old_sub_state = self.sub_state
+        
+        # Mapeia trajectory_phase para sub-estado
+        phase_to_substate = {
+            "TAKEOFF": TrajectorySubState.DECOLANDO,
+            "ROTATING_TO_DIRECTION": TrajectorySubState.GIRANDO_INICIO,
+            "MOVING": TrajectorySubState.A_CAMINHO,
+            "ROTATING_TO_TARGET_YAW": TrajectorySubState.GIRANDO_FIM,
+            "LANDING": TrajectorySubState.POUSANDO,
+            "RTL": TrajectorySubState.RTL,
+            "COMPLETE": TrajectorySubState.NENHUM,
+        }
+        
+        new_sub_state = phase_to_substate.get(n.trajectory_phase, TrajectorySubState.NENHUM)
+        
+        if new_sub_state != self.sub_state:
+            self.sub_state = new_sub_state
+            self.sub_state_entry_time = time.time()
+    
+    def _transition_to(self, new_state: DroneState):
+        """
+        Executa transição para novo estado principal.
+        
+        Args:
+            new_state: Novo estado para transicionar
+        """
+        if self.state != new_state:
+            self.state = new_state
+            self.state_entry_time = time.time()
+    
+    def _on_state_changed(self, old_state: DroneState, old_sub_state: TrajectorySubState):
+        """
+        Callback executado quando o estado muda.
+        Registra no histórico e loga a transição.
+        
+        Args:
+            old_state: Estado anterior
+            old_sub_state: Sub-estado anterior
+        """
+        # Registra no histórico
+        self.state_history.append({
+            'time': time.time(),
+            'from_state': old_state.name,
+            'to_state': self.state.name,
+            'from_sub': old_sub_state.name,
+            'to_sub': self.sub_state.name
+        })
+        
+        # Limita tamanho do histórico
+        if len(self.state_history) > self.max_history_size:
+            self.state_history.pop(0)
+        
+        # Log da transição
+        sub_info = f" ({self.sub_state.name})" if self.sub_state != TrajectorySubState.NENHUM else ""
+        self.node.get_logger().info(
+            f"Estado: {old_state.name} -> {self.state.name}{sub_info}"
+        )
+    
+    def _check_emergency_conditions(self) -> bool:
+        """
+        Verifica condições de emergência que requerem transição imediata.
+        
+        Returns:
+            bool: True se há condição de emergência ativa
+        """
+        n = self.node
+        
+        # Bateria crítica (menos de 10%)
+        if n.PX4_battery_status and n.PX4_battery_status.remaining < 0.10:
+            self.node.get_logger().warn("EMERGÊNCIA: Bateria crítica!")
+            return True
+        
+        # Adicione outras condições de emergência aqui conforme necessário
+        # Exemplo: perda de GPS, failsafe do PX4, etc.
+        
+        return False
+    
+    def can_execute_command(self, command: str) -> tuple:
+        """
+        Verifica se um comando pode ser executado no estado atual.
+        
+        Args:
+            command: Nome do comando (ARM, DISARM, TAKEOFF, GOTO, LAND, RTL)
+        
+        Returns:
+            tuple: (pode_executar: bool, mensagem_erro: str)
+        """
+        allowed_states = self.VALID_COMMANDS.get(command, [])
+        
+        if not allowed_states:
+            # Comando desconhecido - permite execução (será tratado pelo callback)
+            return True, ""
+        
+        if self.state in allowed_states:
+            return True, ""
+        else:
+            allowed_names = [s.name for s in allowed_states]
+            return False, (
+                f"Comando '{command}' não permitido no estado {self.state.name}. "
+                f"Estados permitidos: {allowed_names}"
+            )
+    
+    def get_status_dict(self) -> dict:
+        """
+        Retorna dicionário com informações de estado para publicação de status.
+        
+        Returns:
+            dict: Dicionário com estado, sub-estado e duração
+        """
+        return {
+            "drone_state": self.state.name,
+            "drone_sub_state": self.sub_state.name,
+            "state_duration_sec": round(time.time() - self.state_entry_time, 2),
+        }
+    
+    def get_state(self) -> DroneState:
+        """Retorna o estado atual."""
+        return self.state
+    
+    def get_sub_state(self) -> TrajectorySubState:
+        """Retorna o sub-estado atual."""
+        return self.sub_state
+
 
 
 
