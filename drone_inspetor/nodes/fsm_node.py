@@ -119,7 +119,7 @@ class FSMNode(Node):
         self.state = [FSMState.DESATIVADO, FSMSubState.NENHUM, FSMInspectionState.NENHUM, FSMScanState.NENHUM]
         self.state_anterior = [FSMState.DESATIVADO, FSMSubState.NENHUM, FSMInspectionState.NENHUM, FSMScanState.NENHUM]
 
-        # --- Variáveis de Controle ---
+        # --- Variáveis do Drone ---
         self.drone_offboard_mode = False      # Indica se o modo OFFBOARD está ativo no Drone (drone_node)
         self.drone_arming = False             # Indica se o drone está sendo armado
         self.drone_armed = False              # Indica se o drone está armado
