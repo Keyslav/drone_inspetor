@@ -1544,6 +1544,10 @@ class DroneState:
                 if self.state == DroneStateDescription.VOANDO_DECOLANDO:
                     current_alt = -current_z
                     target_alt = -target_z
+                    self.node.get_logger().info(
+                        f"Decolagem: altitude atual={current_alt:.2f}m, alvo={target_alt:.2f}m",
+                        throttle_duration_sec=1.0
+                    )
                     if abs(current_alt - target_alt) <= n.position_tolerance:
                         n.stop_movement()
                         self._transition_to(DroneStateDescription.VOANDO_PRONTO)
