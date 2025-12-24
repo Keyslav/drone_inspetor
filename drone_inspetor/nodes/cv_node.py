@@ -28,11 +28,13 @@ from cv_bridge import CvBridge
 from std_msgs.msg import String
 import cv2
 import numpy as np
-import json
 from datetime import datetime
 from ultralytics import YOLO
 import os
 from ament_index_python.packages import get_package_share_directory
+
+# Importação das mensagens ROS customizadas
+from drone_inspetor_msgs.msg import CVDetectionMSG, CVDetectionItemMSG
 
 class CVNode(Node):
     """
@@ -112,10 +114,10 @@ class CVNode(Node):
         )
         self.get_logger().info(f"Publicando no tópico: {self.processed_image_publisher.topic_name}")
         
-        # Publica dados estruturados de detecção de objetos em formato JSON
+        # Publica dados estruturados de detecção de objetos como mensagem ROS
         # Estes dados são consumidos pela FSM para tomar decisões baseadas em detecções
         self.detection_publisher = self.create_publisher(
-            String,
+            CVDetectionMSG,
             "/drone_inspetor/interno/cv_node/object_detections",
             qos_sensor_data
         )
@@ -133,7 +135,7 @@ class CVNode(Node):
         1. Converte a mensagem ROS para formato OpenCV
         2. Aplica detecção de objetos usando YOLO
         3. Publica a imagem anotada
-        4. Publica dados estruturados de detecção em formato JSON
+        4. Publica dados estruturados de detecção como mensagem ROS
         
         Args:
             msg (sensor_msgs.msg.Image): Mensagem de imagem recebida da câmera.
@@ -157,18 +159,26 @@ class CVNode(Node):
             except Exception as e:
                 self.get_logger().error(f"Erro ao publicar imagem processada: {e}")
             
-            # Publica dados de detecção em formato JSON
+            # Publica dados de detecção como mensagem ROS
             # Apenas publica se houver detecções
             if detections:
-                # Cria estrutura de dados com timestamp e lista de detecções
-                detection_data = {
-                    "timestamp": datetime.now().isoformat(),
-                    "detections": detections,
-                    "count": len(detections)
-                }
-                # Serializa para JSON e publica
-                detection_msg = String()
-                detection_msg.data = json.dumps(detection_data)
+                # Cria mensagem CVDetectionMSG
+                detection_msg = CVDetectionMSG()
+                detection_msg.timestamp = datetime.now().isoformat()
+                detection_msg.count = len(detections)
+                
+                # Converte cada detecção para CVDetectionItemMSG
+                detection_items = []
+                for det in detections:
+                    item = CVDetectionItemMSG()
+                    item.object_type = det.get("object_type", "")
+                    item.class_name = det.get("class", "")
+                    item.confidence = det.get("confidence", 0.0)
+                    item.bbox = det.get("bbox", [])
+                    item.bbox_center = det.get("bbox_center", [])
+                    detection_items.append(item)
+                
+                detection_msg.detections = detection_items
                 self.detection_publisher.publish(detection_msg)
             
         except Exception as e:

@@ -45,6 +45,7 @@ class ControlesManager:
         self.return_button = None
         self.log_button = None
         self.gazebo_button = None
+        self.enable_offboard_button = None
         self.gazebo_window = None
 
     def setup_b3_controls(self):
@@ -175,6 +176,11 @@ class ControlesManager:
         self.gazebo_button.clicked.connect(self.open_gazebo_simulation)
         self.gazebo_button.setEnabled(True)  # Mantém o botão sempre habilitado.
         buttons_layout.addWidget(self.gazebo_button, 3, 0, 1, 2)
+
+        # Cria e configura o botão 'Habilitar Offboard Mode'
+        self.enable_offboard_button = CleanButton("⚡ Habilitar Offboard Mode", "#3498db")
+        self.enable_offboard_button.clicked.connect(self.enable_offboard_mode)
+        buttons_layout.addWidget(self.enable_offboard_button, 4, 0, 1, 2)
         
         # Adiciona o layout dos botões ao layout fornecido.
         layout.addLayout(buttons_layout)
@@ -278,6 +284,20 @@ class ControlesManager:
         }
         command_json = json.dumps(command_dict)
         
+        # Usa o método de publicação incorporado nos signals para publicar o comando
+        self.signals.send_mission_command(command_json)
+
+    def enable_offboard_mode(self):
+        """
+        Publica um comando ROS2 para habilitar o envio de OffboardControlMode/TrajectorySetpoint no drone_node.
+        """
+        gui_log_info("ControlesManager", "Botão Habilitar Offboard Mode clicado")
+
+        command_dict = {
+            "command": "enable_offboard_control_mode"
+        }
+        command_json = json.dumps(command_dict)
+
         # Usa o método de publicação incorporado nos signals para publicar o comando
         self.signals.send_mission_command(command_json)
 
