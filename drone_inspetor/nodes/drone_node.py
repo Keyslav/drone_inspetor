@@ -125,55 +125,6 @@ class DroneNode(Node):
             depth=1
         )
 
-        # --- Armazenamento de Estado Interno do Veículo ---
-        self.PX4_vehicle_status = None        # Último status geral do drone (armado, modo, etc.)
-        self.PX4_local_position = None        # Última posição local (X, Y, Z) em metros
-        self.PX4_home_position = None         # Posição de home (ponto de partida)
-        self.PX4_global_position = None       # Última posição global (latitude, longitude, altitude)
-        self.PX4_vehicle_attitude = None      # Última atitude (orientação) do drone
-        self.PX4_current_yaw_deg = 0.0        # Yaw atual do drone (em graus)
-        self.PX4_current_yaw_rad = 0.0        # Yaw atual do drone (em radianos)
-        self.PX4_current_yaw_deg_normalized = 0.0 # Yaw atual do drone (em graus) normalizado (0-360)
-        self.PX4_current_control_mode = None   # Modo de controle atual do PX4
-        self.PX4_is_armed = False             # Flag booleano para o estado de armamento
-        self.is_arming = False                # Flag booleano para o estado de armamento
-        self.is_disarming = False             # Flag booleano para processo de desarmamento
-        self.PX4_is_landed = False            # Flag booleano para o estado de pouso
-        # Indica se o drone está publicando setpoints de trajetória de movimento (moving),
-        # ao invés de manter posição (static).
-        self.on_trajectory = False
-        self.PX4_last_command_ack = None      # Última confirmação de comando recebida do PX4
-        self.offboard_setpoint_counter = 0    # Contador para garantir envio contínuo de setpoints
-        self.PX4_offboard_mode_active = False # Flag para indicar se o modo Offboard está ativo
-        self.trajectory_start_time = None     # Timestamp do início do movimento (em segundos)
-        self.PX4_battery_status = None        # Status da bateria
-        self.OffboardControlMode_internal_enabled = False  # Habilita publicação OffboardControlMode/TrajectorySetpoint
-
-        # --- Parâmetros de Trajetória Simplificada ---
-        self.max_velocity = 1.0               # Velocidade máxima (m/s)
-        self.step_distance = 3.0              # Distância do próximo passo (metros)
-
-        # --- Parâmetros de Navegação ---
-        self.origin_local_position = None     # Posição de origem quando inicia trajetória [x, y, z]
-        self.target_local_position = None     # Posição alvo para trajetória [x, y, z]
-        self.target_latitude = None           # Latitude alvo para trajetória (graus)
-        self.target_longitude = None          # Longitude alvo para trajetória (graus)
-        self.target_altitude = None           # Altitude alvo para trajetória (metros)
-        self.origin_latitude = None           # Latitude de origem quando inicia trajetória (graus)
-        self.origin_longitude = None          # Longitude de origem quando inicia trajetória (graus)
-        self.origin_altitude = None           # Altitude de origem quando inicia trajetória (metros)
-        self.target_yaw = None                # Yaw alvo final (graus, 0-360) - None significa manter yaw atual
-        self.position_tolerance = 0.5         # Tolerância em metros para considerar que chegou ao destino
-        self.yaw_tolerance_deg = 5.0          # Tolerância em graus para o yaw (apontamento)
-        
-        # --- Estados da Trajetória ---
-        # A fase da trajetória agora é representada diretamente por DroneStateDescription (state machine)
-        self.direction_yaw = None             # Yaw necessário para apontar na direção do destino (graus)
-        self.takeoff_altitude = 2.5           # Altitude padrão de decolagem (metros)
-        self.rtl_altitude = 30.0              # Altitude do RTL em metros (sobe antes de ir para home)
-        self.rtl_auto_disarm = False          # Se True, desarma automaticamente após pousar (usado pelo RTL)
-        self.rtl_pending_land = False         # Se True, após chegar ao destino transiciona para VOANDO_POUSANDO
-
         # ==================================================================
         # SUBSCRIBERS (Ouvindo o PX4 e a FSM)
         # ==================================================================
@@ -301,21 +252,21 @@ class DroneNode(Node):
         # ==================================================================
         
         # Inicializa a máquina de estados do drone
-        self.state_machine = DroneState(self)
+        self.drone_state = DroneState(self)
 
         # ==================================================================
         # TIMERS (Executando ações periódicas)
         # ==================================================================
 
         # Timers separados (0.1s): OffboardControlMode e TrajectorySetpoint
-        self.offboard_control_mode_timer = self.create_timer(0.1, self.timer_offboard_control_mode)
-        self.trajectory_setpoint_timer = self.create_timer(0.1, self.timer_trajectory_setpoint)
+        self.offboard_control_mode_timer = self.create_timer(0.1, self.publish_offboard_control_mode)
+        self.trajectory_setpoint_timer = self.create_timer(0.1, self.publish_trajectory_setpoint)
 
         # Timer para publicação periódica de status JSON (a cada 0.5 segundos)
-        self.status_pub_timer = self.create_timer(0.5, lambda: self.publish_drone_status())
+        self.status_pub_timer = self.create_timer(0.5, self.publish_drone_status())
 
         # Timer para atualização da máquina de estados (a cada 0.5 segundos)
-        self.state_machine_timer = self.create_timer(0.5, self.update_state_machine)
+        self.drone_state_timer = self.create_timer(0.5, self.update_drone_state)
 
         self.get_logger().info("================ DRONE NODE PRONTO ================")
 
@@ -323,34 +274,28 @@ class DroneNode(Node):
     # SEÇÃO 1: TIMERS - Funções Principais (executadas periodicamente)
     # ==================================================================
 
-    def update_state_machine(self):
+    def update_drone_state(self):
         """
         Atualiza a máquina de estados periodicamente (a cada 0.5s).
-        Este método é chamado pelo timer state_machine_timer.
+        Este método é chamado pelo timer drone_state_timer.
         """
-        old_state = self.state_machine.get_state()
-        self.state_machine._check_transitions()
-        if old_state != self.state_machine.get_state():
-            self.state_machine._on_state_changed(old_state)
+        old_state = self.drone_state.state
+        self.drone_state.verifica_mudanca_de_estado()
+        if old_state != self.drone_state.state:
+            self.drone_state.ao_mudar_estado(old_state)
 
-    def timer_offboard_control_mode(self):
-        """Publica OffboardControlMode a cada 0.1s (se habilitado)."""
-        if not self.OffboardControlMode_internal_enabled:
-            return
-        self.publish_offboard_control_mode()
-
-    def timer_trajectory_setpoint(self):
+    def publish_trajectory_setpoint(self):
         """Publica TrajectorySetpoint a cada 0.1s (se habilitado)."""
-        if not self.OffboardControlMode_internal_enabled:
+        if not self.drone_state.OffboardControlMode_internal_enabled:
             return
 
         # Validação: precisa ter posição local e global para enviar setpoints
-        if self.PX4_global_position is None or self.PX4_local_position is None:
+        if self.drone_state.px4.global_position is None or self.drone_state.px4.local_position is None:
             self.get_logger().error(f"{self.PX4_RX_PREFIX}Não é possível publicar setpoints Offboard: Posição local desconhecida.")
             return
 
         # Decide qual tipo de setpoint enviar baseado em on_trajectory (controlada pelos comandos/transições)
-        if self.on_trajectory and self.target_local_position is not None:
+        if self.drone_state.on_trajectory and self.drone_state.target_local_position is not None:
             trajectory_msg = self.create_moving_trajectory_setpoint()
         else:
             # Nenhum movimento: mantém posição atual (hover)
@@ -372,7 +317,7 @@ class DroneNode(Node):
         """
         Publica o modo de controle Offboard habilitando apenas posição.
         """
-        if not self.OffboardControlMode_internal_enabled:
+        if not self.drone_state.OffboardControlMode_internal_enabled:
             return
 
         offboard_msg = OffboardControlMode()
@@ -394,40 +339,39 @@ class DroneNode(Node):
         msg = DroneStateMSG()
         
         # Status de controle
-        msg.offboard_mode_active = self.PX4_offboard_mode_active
-        msg.is_armed = self.PX4_is_armed
-        msg.is_arming = self.is_arming
-        msg.is_landed = self.PX4_is_landed
-        msg.on_trajectory = self.on_trajectory
+        msg.offboard_mode_active = self.drone_state.px4.offboard_mode_active
+        msg.is_armed = self.drone_state.px4.is_armed
+        msg.is_arming = self.drone_state.is_arming
+        msg.is_landed = self.drone_state.px4.is_landed
+        msg.on_trajectory = self.drone_state.on_trajectory
         
         # Posição local (NED)
-        if self.PX4_local_position:
-            msg.local_x = self.PX4_local_position.x
-            msg.local_y = self.PX4_local_position.y
-            msg.local_z = -self.PX4_local_position.z  # Z é negativo, então invertemos
+        if self.drone_state.px4.local_position:
+            msg.local_x = self.drone_state.px4.local_position.x
+            msg.local_y = self.drone_state.px4.local_position.y
+            msg.local_z = -self.drone_state.px4.local_position.z  # Z é negativo, então invertemos
         else:
             msg.local_x = 0.0
             msg.local_y = 0.0
             msg.local_z = 0.0
         
         # Posição global (GPS)
-        if self.PX4_global_position:
-            msg.latitude = self.PX4_global_position.lat
-            msg.longitude = self.PX4_global_position.lon
-            msg.altitude = self.PX4_global_position.alt
+        if self.drone_state.px4.global_position:
+            msg.latitude = self.drone_state.px4.global_position.lat
+            msg.longitude = self.drone_state.px4.global_position.lon
+            msg.altitude = self.drone_state.px4.global_position.alt
         else:
             msg.latitude = 0.0
             msg.longitude = 0.0
             msg.altitude = 0.0
         
         # Orientação
-        msg.yaw_deg = self.PX4_current_yaw_deg
-        msg.yaw_rad = self.PX4_current_yaw_rad
+        msg.yaw_deg = self.drone_state.px4.current_yaw_deg
+        msg.yaw_rad = self.drone_state.px4.current_yaw_rad
         
         # Estado da máquina de estados do drone (sem sub_state_name)
-        state_dict = self.state_machine.get_status_dict()
-        msg.state_name = state_dict.get("drone_state", "POUSADO_DESARMADO")
-        msg.state_duration_sec = state_dict.get("state_duration_sec", 0.0)
+        msg.state_name = self.drone_state.state.name
+        msg.state_duration_sec = round(time.time() - self.drone_state.state_entry_time, 2)
         
         # Publica mensagem
         self.drone_state_pub.publish(msg)
@@ -444,9 +388,9 @@ class DroneNode(Node):
         trajectory_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         
         # Mantém a posição atual
-        trajectory_msg.position[0] = self.PX4_local_position.x
-        trajectory_msg.position[1] = self.PX4_local_position.y
-        trajectory_msg.position[2] = self.PX4_local_position.z
+        trajectory_msg.position[0] = self.drone_state.px4.local_position.x
+        trajectory_msg.position[1] = self.drone_state.px4.local_position.y
+        trajectory_msg.position[2] = self.drone_state.px4.local_position.z
         
         # Deixa o PX4 controlar o yaw por padrão
         trajectory_msg.yaw = float('nan')
@@ -502,14 +446,14 @@ class DroneNode(Node):
             - yaw: Yaw alvo em graus (0-360) ou None se não precisa controlar yaw
         """
         # Obtém posição atual
-        current_x = self.PX4_local_position.x
-        current_y = self.PX4_local_position.y
-        current_z = self.PX4_local_position.z
+        current_x = self.drone_state.px4.local_position.x
+        current_y = self.drone_state.px4.local_position.y
+        current_z = self.drone_state.px4.local_position.z
         
         # Obtém posição alvo
-        target_x = self.target_local_position[0]
-        target_y = self.target_local_position[1]
-        target_z = self.target_local_position[2]
+        target_x = self.drone_state.target_local_position[0]
+        target_y = self.drone_state.target_local_position[1]
+        target_z = self.drone_state.target_local_position[2]
         
         # Calcula o vetor de deslocamento da posição atual para o destino
         dx = target_x - current_x
@@ -520,7 +464,7 @@ class DroneNode(Node):
         distance_to_target = math.sqrt(dx**2 + dy**2 + dz**2)
         
         # Estado atual (fonte única de verdade para fases)
-        current_state = self.state_machine.get_state()
+        current_state = self.drone_state.state
 
         # FASE 0: TAKEOFF - Subindo até altitude de decolagem
         if current_state == DroneStateDescription.VOANDO_DECOLANDO:
@@ -533,25 +477,25 @@ class DroneNode(Node):
                 f"TAKEOFF: altitude atual={current_alt:.2f}m, alvo={target_alt:.2f}m",
                 throttle_duration_sec=1.0
             )
-            return (current_x, current_y, target_z, self.direction_yaw)
+            return (current_x, current_y, target_z, self.drone_state.direction_yaw)
         
         # FASE 1: ROTATING_TO_DIRECTION - Rotaciona para apontar na direção do destino
         if current_state == DroneStateDescription.VOANDO_GIRANDO_INICIO:
             # Apenas ajusta yaw, transições são tratadas em _check_transitions()
-            return (current_x, current_y, current_z, self.direction_yaw)
+            return (current_x, current_y, current_z, self.drone_state.direction_yaw)
 
         # FASE 2: MOVING - Move até a posição alvo
         if current_state == DroneStateDescription.VOANDO_A_CAMINHO:
             # Pode acontecer do estado ainda não ter sido atualizado (timer de 0.5s),
             # mas a posição já estar exatamente no alvo (distância zero). Evita divisão por zero.
             if distance_to_target <= 1e-6:
-                return (target_x, target_y, target_z, self.direction_yaw)
+                return (target_x, target_y, target_z, self.drone_state.direction_yaw)
 
             # Normaliza o vetor de direção
             direction = [dx / distance_to_target, dy / distance_to_target, dz / distance_to_target]
             
             # Calcula a distância do próximo passo (1 metro ou a distância restante, o que for menor)
-            step_dist = min(self.step_distance, distance_to_target)
+            step_dist = min(self.drone_state.step_distance, distance_to_target)
             
             # Calcula o próximo ponto a 1 metro (ou menos) em direção ao destino
             next_x = current_x + direction[0] * step_dist
@@ -559,31 +503,31 @@ class DroneNode(Node):
             next_z = current_z + direction[2] * step_dist
             
             # Durante o movimento, mantém o yaw de direção
-            return (next_x, next_y, next_z, self.direction_yaw)
+            return (next_x, next_y, next_z, self.drone_state.direction_yaw)
         
         # FASE 3: ROTATING_TO_TARGET_YAW - Rotaciona para o yaw alvo final
         if current_state == DroneStateDescription.VOANDO_GIRANDO_FIM:
             # Apenas ajusta yaw, transições são tratadas em _check_transitions()
-            return (target_x, target_y, target_z, self.target_yaw)
+            return (target_x, target_y, target_z, self.drone_state.target_yaw)
         
         # FASE 4: VOANDO_POUSANDO - Move até home e pousa
         if current_state == DroneStateDescription.VOANDO_POUSANDO:
             # Evita divisão por zero se já está no alvo
             if distance_to_target <= 1e-6:
-                return (target_x, target_y, target_z, self.direction_yaw)
+                return (target_x, target_y, target_z, self.drone_state.direction_yaw)
             
             # Normaliza o vetor de direção
             direction = [dx / distance_to_target, dy / distance_to_target, dz / distance_to_target]
             
             # Calcula a distância do próximo passo
-            step_dist = min(self.step_distance, distance_to_target)
+            step_dist = min(self.drone_state.step_distance, distance_to_target)
             
             # Calcula o próximo ponto em direção ao destino (home)
             next_x = current_x + direction[0] * step_dist
             next_y = current_y + direction[1] * step_dist
             next_z = current_z + direction[2] * step_dist
             
-            return (next_x, next_y, next_z, self.direction_yaw)
+            return (next_x, next_y, next_z, self.drone_state.direction_yaw)
         
         # Estado desconhecido - mantém posição alvo
         return (target_x, target_y, target_z, None)
@@ -602,14 +546,14 @@ class DroneNode(Node):
             Lista [x, y, z] com posição local em metros (coordenadas NED)
             None se não houver posição global atual disponível
         """
-        if self.PX4_global_position is None or self.PX4_local_position is None:
+        if self.drone_state.px4.global_position is None or self.drone_state.px4.local_position is None:
             return None
         
         # Calcula offset da posição global atual para a posição alvo global
         offset = self.global_to_local_offset(
-            self.PX4_global_position.lat,
-            self.PX4_global_position.lon,
-            self.PX4_global_position.alt,
+            self.drone_state.px4.global_position.lat,
+            self.drone_state.px4.global_position.lon,
+            self.drone_state.px4.global_position.alt,
             target_lat,
             target_lon,
             target_alt
@@ -617,9 +561,9 @@ class DroneNode(Node):
         
         # Aplica offset à posição local atual
         # No frame NED: X=norte, Y=leste, Z=para baixo (negativo = para cima)
-        local_x = self.PX4_local_position.x + offset[0]  # Norte
-        local_y = self.PX4_local_position.y + offset[1]   # Leste
-        local_z = self.PX4_local_position.z - offset[2]  # Para cima (inverte porque Z é negativo para cima)
+        local_x = self.drone_state.px4.local_position.x + offset[0]  # Norte
+        local_y = self.drone_state.px4.local_position.y + offset[1]   # Leste
+        local_z = self.drone_state.px4.local_position.z - offset[2]  # Para cima (inverte porque Z é negativo para cima)
         
         return [local_x, local_y, local_z]
     
@@ -643,24 +587,6 @@ class DroneNode(Node):
         return [lat_diff, lon_diff, alt_diff]
     
 
-    def stop_movement(self):
-        """
-        Para a trajetória e limpa todas as variáveis relacionadas.
-        """
-        self.on_trajectory = False
-        self.target_latitude = None
-        self.target_longitude = None
-        self.target_altitude = None
-        self.origin_latitude = None
-        self.origin_longitude = None
-        self.origin_altitude = None
-        self.origin_local_position = None
-        self.target_local_position = None
-        self.target_yaw = None
-        self.direction_yaw = None
-        self.trajectory_start_time = None
-        self.rtl_pending_land = False
-
     def fsm_command_callback(self, msg: MissionCommandMSG):
         """
         Processa comandos de alto nível recebidos da FSM via mensagem MissionCommandMSG.
@@ -679,12 +605,12 @@ class DroneNode(Node):
         
         self.get_logger().info(f"--> Comando da FSM recebido (MissionCommandMSG): {command}")
 
-        if self.PX4_local_position is None:
+        if self.drone_state.px4.local_position is None:
             self.get_logger().error("Não é possível processar comando: Posição local desconhecida.")
             return
 
         # Valida se o comando é permitido no estado atual
-        can_execute, error_msg = self.state_machine.can_execute_command(command)
+        can_execute, error_msg = self.drone_state.verifica_validade_do_comando(command)
         if not can_execute:
             self.get_logger().warn(f"Comando rejeitado: {error_msg}")
             return
@@ -696,12 +622,12 @@ class DroneNode(Node):
             case "DISARM":
                 self.disarm()
             case "ENABLE_OFFBOARD":
-                if not self.OffboardControlMode_internal_enabled:
+                if not self.drone_state.OffboardControlMode_internal_enabled:
                     self.get_logger().info("OffboardControlMode_internal_enabled habilitado via comando da FSM")
-                self.OffboardControlMode_internal_enabled = True
+                self.drone_state.OffboardControlMode_internal_enabled = True
             case "TAKEOFF":
                 # Extrai altitude da mensagem (usa padrão se não especificado ou zero)
-                alt = msg.altitude if msg.altitude > 0.0 else self.takeoff_altitude
+                alt = msg.altitude if msg.altitude > 0.0 else self.drone_state.takeoff_altitude
                 self.takeoff(alt)
             case "GOTO":
                 # Extrai coordenadas da mensagem
@@ -731,210 +657,210 @@ class DroneNode(Node):
         - Estado de navegação (decolando, voando, pousando, etc.)
         - Flags de sistema e segurança
         """
-        self.PX4_vehicle_status = msg
+        self.drone_state.px4.vehicle_status = msg
         
         # Atualiza o estado de armamento
-        self.PX4_is_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
-        if self.PX4_is_armed:
-            self.is_arming = False
+        self.drone_state.px4.is_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
+        if self.drone_state.px4.is_armed:
+            self.drone_state.is_arming = False
         else:
-            self.is_disarming = False
+            self.drone_state.is_disarming = False
             
         # Atualiza o estado de navegação
-        self.PX4_nav_state = msg.nav_state
+        self.drone_state.px4.nav_state = msg.nav_state
         
         # ==================== MONITORAMENTO DE ESTADOS DE NAVEGAÇÃO ====================
         # Monitora todos os estados de navegação possíveis do PX4 para detectar eventos importantes
         
         # ==================== ESTADO OFFBOARD ====================
         # Controle externo via ROS2 (usado pelo drone_node)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD:
             # Drone está em modo offboard: controle externo via ROS2
             # Este é o modo principal usado pelo drone_node para controle autônomo
-            if not self.PX4_offboard_mode_active:
-                self.PX4_offboard_mode_active = True
+            if not self.drone_state.px4.offboard_mode_active:
+                self.drone_state.px4.offboard_mode_active = True
                 self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: OFFBOARD (Modo Offboard Ativado)", throttle_duration_sec=2)
             pass
         else:
             # Detecta saída do modo offboard apenas quando há mudança de estado
-            if self.PX4_offboard_mode_active:
-                self.PX4_offboard_mode_active = False
-                self.OffboardControlMode_internal_enabled = False
+            if self.drone_state.px4.offboard_mode_active:
+                self.drone_state.px4.offboard_mode_active = False
+                self.drone_state.OffboardControlMode_internal_enabled = False
                 self.get_logger().warn(f"{self.PX4_RX_PREFIX}Estado de navegação: Modo Offboard Desativado", throttle_duration_sec=2)
         
         return
 
         # ==================== ESTADOS MANUAIS ====================
         # Controle manual direto pelo piloto (sem assistência de estabilização)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_MANUAL:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_MANUAL:
             # Modo manual: controle direto dos motores pelo piloto
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: MANUAL", throttle_duration_sec=2)
             pass
         
         # Controle manual com estabilização de atitude
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_STAB:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_STAB:
             # Modo de estabilização: mantém atitude nivelada, mas permite controle manual
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: STAB (Estabilização)", throttle_duration_sec=2)
             pass
         
         # Controle acrobático: permite manobras acrobáticas sem estabilização
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_ACRO:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_ACRO:
             # Modo acrobático: controle direto das taxas de rotação
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: ACRO (Acrobático)", throttle_duration_sec=2)
             pass
         
         # ==================== ESTADOS ASSISTIDOS ====================
         # Controle manual com assistência de altitude
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_ALTCTL:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_ALTCTL:
             # Modo de controle de altitude: mantém altitude fixa, permite controle manual horizontal
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: ALTCTL (Controle de Altitude)", throttle_duration_sec=2)
             pass
         
         # Controle manual com assistência de posição
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_POSCTL:
             # Modo de controle de posição: mantém posição fixa quando não há input do piloto
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: POSCTL (Controle de Posição)", throttle_duration_sec=2)
             pass
         
         # Controle de posição em velocidade reduzida (para voos próximos a objetos)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_POSITION_SLOW:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_POSITION_SLOW:
             # Modo de posição lenta: permite voo mais preciso e controlado
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: POSITION_SLOW (Posição Lenta)", throttle_duration_sec=2)
             pass
         
         # ==================== ESTADOS AUTOMÁTICOS ====================
         # Decolagem automática
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF:
             # Drone está em processo de decolagem automática
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_TAKEOFF (Decolagem Automática)", throttle_duration_sec=2)
             pass
         
         # Missão automática
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_MISSION:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_MISSION:
             # Drone está executando uma missão automática pré-programada
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_MISSION (Missão Automática)", throttle_duration_sec=2)
             pass
         
         # Retorno automático ao ponto de partida (RTL - Return To Launch)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_RTL:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_RTL:
             # Drone está retornando automaticamente para o ponto de partida
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_RTL (Retorno ao Ponto de Partida)", throttle_duration_sec=2)
             pass
         
         # Pouso automático
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LAND:
             # Drone está pousando automaticamente
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_LAND (Pouso Automático)", throttle_duration_sec=2)
             pass
         
         # Loiter automático (voar em círculos mantendo posição)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_LOITER:
             # Drone está em modo loiter: voa em círculos mantendo posição fixa
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_LOITER (Loiter Automático)", throttle_duration_sec=2)
             pass
         
         # Seguir alvo automaticamente
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_FOLLOW_TARGET:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_FOLLOW_TARGET:
             # Drone está seguindo um alvo automaticamente
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_FOLLOW_TARGET (Seguir Alvo)", throttle_duration_sec=2)
             pass
         
         # Órbita automática ao redor de um ponto
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_ORBIT:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_ORBIT:
             # Drone está orbitando ao redor de um ponto específico
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: ORBIT (Órbita)", throttle_duration_sec=2)
             pass
         
         # Pouso preciso automático (usando sensores de precisão)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND:
             # Drone está em modo de pouso preciso usando sensores de precisão
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_PRECLAND (Pouso Preciso)", throttle_duration_sec=2)
             pass
         
         # Decolagem automática VTOL (para veículos VTOL)
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_VTOL_TAKEOFF:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_AUTO_VTOL_TAKEOFF:
             # Veículo VTOL está em processo de decolagem automática
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: AUTO_VTOL_TAKEOFF (Decolagem VTOL)", throttle_duration_sec=2)
             pass
         
         # Descida controlada
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_DESCEND:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_DESCEND:
             # Drone está em descida controlada
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: DESCEND (Descida)", throttle_duration_sec=2)
             pass
         
         # ==================== ESTADOS EXTERNOS (CUSTOMIZADOS) ====================
         # Estados externos permitem controle customizado por aplicações externas
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL1:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL1:
             # Estado externo 1: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL1", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL2:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL2:
             # Estado externo 2: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL2", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL3:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL3:
             # Estado externo 3: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL3", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL4:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL4:
             # Estado externo 4: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL4", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL5:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL5:
             # Estado externo 5: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL5", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL6:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL6:
             # Estado externo 6: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL6", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL7:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL7:
             # Estado externo 7: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL7", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL8:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_EXTERNAL8:
             # Estado externo 8: modo customizado para aplicações externas
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: EXTERNAL8", throttle_duration_sec=2)
             pass
         
         # ==================== ESTADOS LIVRES (RESERVADOS) ====================
         # Estados livres reservados para uso futuro ou customização
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_FREE1:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_FREE1:
             # Estado livre 1: reservado para uso futuro
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: FREE1", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_FREE2:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_FREE2:
             # Estado livre 2: reservado para uso futuro
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: FREE2", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_FREE3:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_FREE3:
             # Estado livre 3: reservado para uso futuro
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: FREE3", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_FREE4:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_FREE4:
             # Estado livre 4: reservado para uso futuro
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: FREE4", throttle_duration_sec=2)
             pass
         
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_FREE5:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_FREE5:
             # Estado livre 5: reservado para uso futuro
             self.get_logger().info(f"{self.PX4_RX_PREFIX}Estado de navegação: FREE5", throttle_duration_sec=2)
             pass
         
         # ==================== ESTADO DE TERMINAÇÃO ====================
         # Estado de emergência: sistema está sendo terminado
-        if self.PX4_nav_state == VehicleStatus.NAVIGATION_STATE_TERMINATION:
+        if self.drone_state.px4.nav_state == VehicleStatus.NAVIGATION_STATE_TERMINATION:
             # Estado de terminação: sistema está sendo desligado por segurança
             self.get_logger().warn(f"{self.PX4_RX_PREFIX}Estado de navegação: TERMINATION (Terminação de Emergência)", throttle_duration_sec=2)
             pass
@@ -952,7 +878,7 @@ class DroneNode(Node):
         A posição local é relativa ao ponto de partida (home) e é dada em metros.
         Coordenadas: X (norte), Y (leste), Z (para baixo, negativo = para cima)
         """
-        self.PX4_local_position = msg
+        self.drone_state.px4.local_position = msg
         
 
     def vehicle_global_position_callback(self, msg):
@@ -960,7 +886,7 @@ class DroneNode(Node):
         Processa a mensagem de posição global (GPS) do drone.
         Contém latitude, longitude e altitude em coordenadas globais.
         """
-        self.PX4_global_position = msg
+        self.drone_state.px4.global_position = msg
         
 
     def vehicle_attitude_callback(self, msg):
@@ -968,7 +894,7 @@ class DroneNode(Node):
         Processa a mensagem de atitude (orientação) do drone.
         A atitude é representada como um quaternião (q[0]=w, q[1]=x, q[2]=y, q[3]=z).
         """
-        self.PX4_vehicle_attitude = msg
+        self.drone_state.px4.vehicle_attitude = msg
         
         # Calcula e publica o yaw atual em graus
         q_w = msg.q[0]
@@ -980,10 +906,10 @@ class DroneNode(Node):
         siny_cosp = 2 * (q_w * q_z + q_x * q_y)
         cosy_cosp = 1 - 2 * (q_y * q_y + q_z * q_z)
         
-        self.PX4_current_yaw_rad = math.atan2(siny_cosp, cosy_cosp)
-        self.PX4_current_yaw_deg = math.degrees(self.PX4_current_yaw_rad)
+        self.drone_state.px4.current_yaw_rad = math.atan2(siny_cosp, cosy_cosp)
+        self.drone_state.px4.current_yaw_deg = math.degrees(self.drone_state.px4.current_yaw_rad)
         # Normaliza para 0-360 graus
-        self.PX4_current_yaw_deg_normalized = (self.PX4_current_yaw_deg + 360) % 360
+        self.drone_state.px4.current_yaw_deg_normalized = (self.drone_state.px4.current_yaw_deg + 360) % 360
         
 
     def land_detected_callback(self, msg):
@@ -991,17 +917,56 @@ class DroneNode(Node):
         Processa a mensagem de detecção de pouso.
         Indica se o drone detectou que pousou (através de sensores de pressão, acelerômetros, etc.)
         """
-        self.PX4_is_landed = msg.landed
+        self.drone_state.px4.is_landed = msg.landed
 
+
+    def _get_command_description(self, command_id: int) -> str:
+        """
+        Retorna a descrição legível de um comando PX4 baseado no seu ID.
+        
+        Args:
+            command_id: ID numérico do comando
+            
+        Returns:
+            str: Descrição do comando ou "Comando_{ID}" se não encontrado
+        """
+        # Mapeamento dos comandos mais comuns do PX4
+        command_descriptions = {
+            VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM: "ARMAR/DESARMAR",
+            VehicleCommand.VEHICLE_CMD_DO_SET_MODE: "DEFINIR_MODO",
+            VehicleCommand.VEHICLE_CMD_NAV_TAKEOFF: "DECOLAGEM",
+            VehicleCommand.VEHICLE_CMD_NAV_LAND: "POUSO",
+            VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH: "RETORNAR_AO_LANÇAMENTO",
+            VehicleCommand.VEHICLE_CMD_DO_SET_HOME: "DEFINIR_HOME",
+            VehicleCommand.VEHICLE_CMD_DO_SET_PARAMETER: "DEFINIR_PARÂMETRO",
+            VehicleCommand.VEHICLE_CMD_DO_FLIGHTTERMINATION: "TERMINAÇÃO_DE_VOO",
+            VehicleCommand.VEHICLE_CMD_DO_CHANGE_SPEED: "ALTERAR_VELOCIDADE",
+            VehicleCommand.VEHICLE_CMD_DO_SET_ROI: "DEFINIR_ROI",
+            VehicleCommand.VEHICLE_CMD_DO_MOUNT_CONTROL: "CONTROLE_DE_MOUNT",
+            # VehicleCommand.VEHICLE_CMD_DO_SET_CAMERA_TRIGGER: "DISPARAR_CÂMERA",
+            VehicleCommand.VEHICLE_CMD_DO_VTOL_TRANSITION: "TRANSIÇÃO_VTOL",
+            VehicleCommand.VEHICLE_CMD_NAV_VTOL_TAKEOFF: "DECOLAGEM_VTOL",
+            VehicleCommand.VEHICLE_CMD_NAV_VTOL_LAND: "POUSO_VTOL",
+            # VehicleCommand.VEHICLE_CMD_NAV_GUIDED_ENABLE: "HABILITAR_GUIDADO",
+            # VehicleCommand.VEHICLE_CMD_NAV_ORBIT: "ÓRBITA",
+            VehicleCommand.VEHICLE_CMD_PREFLIGHT_CALIBRATION: "CALIBRAÇÃO_PREFLIGHT",
+            VehicleCommand.VEHICLE_CMD_PREFLIGHT_REBOOT_SHUTDOWN: "REINICIAR_DESLIGAR",
+            VehicleCommand.VEHICLE_CMD_DO_REPOSITION: "REPOSICIONAR",
+            VehicleCommand.VEHICLE_CMD_DO_PAUSE_CONTINUE: "PAUSAR_CONTINUAR",
+            VehicleCommand.VEHICLE_CMD_DO_ORBIT: "ÓRBITA",
+            VehicleCommand.VEHICLE_CMD_DO_MOTOR_TEST: "TESTE_DE_MOTOR",
+        }
+        return command_descriptions.get(command_id, f"Comando_{command_id}")
 
     def command_ack_callback(self, msg):
         """
         Processa confirmações de comandos enviados ao PX4.
         Cada comando enviado via VehicleCommand recebe uma confirmação indicando se foi aceito ou rejeitado.
         """
-        self.PX4_last_command_ack = msg
+        self.drone_state.px4.last_command_ack = msg
         result_text = "ACEITO" if msg.result == VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED else "REJEITADO"
-        self.get_logger().info(f"{self.PX4_RX_PREFIX}ACK Comando {msg.command}: {result_text} (código: {msg.result})")
+        command_description = self._get_command_description(msg.command)
+        self.get_logger().info(f"{self.PX4_RX_PREFIX}ACK Comando {command_description} ({msg.command}): {result_text} (código: {msg.result})")
 
 
     def vehicle_control_mode_callback(self, msg):
@@ -1009,12 +974,12 @@ class DroneNode(Node):
         Processa modo de controle atual do veículo (VehicleControlMode).
         Usado para verificar se o drone está no modo Offboard.
         """
-        self.PX4_current_control_mode = msg
-        self.PX4_offboard_mode_active = msg.flag_control_offboard_enabled
+        self.drone_state.px4.current_control_mode = msg
+        self.drone_state.px4.offboard_mode_active = msg.flag_control_offboard_enabled
 
         # Habilita automaticamente o envio interno quando entrar em Offboard por qualquer razão
-        if self.PX4_offboard_mode_active and not self.OffboardControlMode_internal_enabled:
-            self.OffboardControlMode_internal_enabled = True
+        if self.drone_state.px4.offboard_mode_active and not self.drone_state.OffboardControlMode_internal_enabled:
+            self.drone_state.OffboardControlMode_internal_enabled = True
             self.get_logger().info(f"{self.PX4_RX_PREFIX}OffboardControlMode_internal_enabled habilitado (modo Offboard ativo)")
 
 
@@ -1022,14 +987,14 @@ class DroneNode(Node):
         """
         Processa posição de home (HomePosition).
         """
-        self.PX4_home_position = msg # Armazena a posição home
+        self.drone_state.px4.home_position = msg # Armazena a posição home
 
 
     def battery_status_callback(self, msg):
         """
         Processa status da bateria (BatteryStatus)."""
 
-        self.PX4_battery_status = msg
+        self.drone_state.px4.battery_status = msg
         self.battery_status_pub.publish(msg)
 
 
@@ -1078,8 +1043,8 @@ class DroneNode(Node):
         Envia o comando para armar os motores do drone.
         Comando: VEHICLE_CMD_COMPONENT_ARM_DISARM com param1=1.0
         """
-        if not self.is_arming:
-            self.is_arming = True
+        if not self.drone_state.is_arming:
+            self.drone_state.is_arming = True
             self.get_logger().info(
                 f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
                 "Enviando comando para ARMAR motores..."
@@ -1091,7 +1056,7 @@ class DroneNode(Node):
         Envia o comando para desarmar os motores do drone.
         Comando: VEHICLE_CMD_COMPONENT_ARM_DISARM com param1=0.0
         """
-        self.is_disarming = True
+        self.drone_state.is_disarming = True
         self.get_logger().info(
             f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
             "Enviando comando para DESARMAR motores..."
@@ -1107,7 +1072,7 @@ class DroneNode(Node):
             altitude: Altitude alvo em metros. Se None, usa takeoff_altitude padrão.
         """
         if altitude is None:
-            altitude = self.takeoff_altitude
+            altitude = self.drone_state.takeoff_altitude
         
         self.get_logger().info(
             f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
@@ -1115,30 +1080,30 @@ class DroneNode(Node):
         )
         
         # Configura trajetória de decolagem (vertical)
-        self.origin_local_position = [
-            self.PX4_local_position.x, 
-            self.PX4_local_position.y, 
-            self.PX4_local_position.z
+        self.drone_state.origin_local_position = [
+            self.drone_state.px4.local_position.x, 
+            self.drone_state.px4.local_position.y, 
+            self.drone_state.px4.local_position.z
         ]
         
         # Z negativo = para cima no frame NED
-        self.target_local_position = [
-            self.PX4_local_position.x, 
-            self.PX4_local_position.y, 
+        self.drone_state.target_local_position = [
+            self.drone_state.px4.local_position.x, 
+            self.drone_state.px4.local_position.y, 
             -altitude
         ]
         
         # Mantém yaw atual durante decolagem
-        self.target_yaw = None
-        self.direction_yaw = self.PX4_current_yaw_deg_normalized
+        self.drone_state.target_yaw = None
+        self.drone_state.direction_yaw = self.drone_state.px4.current_yaw_deg_normalized
         
         # Define fase de trajetória como TAKEOFF
-        self.state_machine._transition_to(DroneStateDescription.VOANDO_DECOLANDO)
-        self.on_trajectory = True
-        self.trajectory_start_time = time.time()
+        self.drone_state.mudar_estado(DroneStateDescription.VOANDO_DECOLANDO)
+        self.drone_state.on_trajectory = True
+        self.drone_state.trajectory_start_time = time.time()
         
         self.get_logger().info(
-            f"TAKEOFF configurado: posição atual Z={-self.PX4_local_position.z:.2f}m, "
+            f"TAKEOFF configurado: posição atual Z={-self.drone_state.px4.local_position.z:.2f}m, "
             f"altitude alvo={altitude}m"
         )
 
@@ -1164,62 +1129,63 @@ class DroneNode(Node):
             return
         
         # Armazena coordenadas globais para referência e verificação de chegada
-        self.origin_latitude = self.PX4_global_position.lat
-        self.origin_longitude = self.PX4_global_position.lon
-        self.origin_altitude = self.PX4_global_position.alt
-        self.target_latitude = lat
-        self.target_longitude = lon
-        self.target_altitude = alt
-        self.target_yaw = yaw  # Pode ser None
+        self.drone_state.origin_latitude = self.drone_state.px4.global_position.lat
+        self.drone_state.origin_longitude = self.drone_state.px4.global_position.lon
+        self.drone_state.origin_altitude = self.drone_state.px4.global_position.alt
+        self.drone_state.target_latitude = lat
+        self.drone_state.target_longitude = lon
+        self.drone_state.target_altitude = alt
+        self.drone_state.target_yaw = yaw  # Pode ser None
         
         # Converte coordenadas globais para locais e armazena para cálculos de trajetória
-        self.origin_local_position = [self.PX4_local_position.x, self.PX4_local_position.y, self.PX4_local_position.z]
+        self.drone_state.origin_local_position = [self.drone_state.px4.local_position.x, self.drone_state.px4.local_position.y, self.drone_state.px4.local_position.z]
         
         target_local = self.global_to_local_position(lat, lon, alt)
         if target_local is None:
             self.get_logger().error("Não é possível executar GOTO: Erro ao converter coordenadas globais para locais.")
             return
         
-        self.target_local_position = target_local
+        self.drone_state.target_local_position = target_local
         
         # Calcula o yaw necessário para apontar na direção do destino
-        dx = target_local[0] - self.PX4_local_position.x
-        dy = target_local[1] - self.PX4_local_position.y
-        self.direction_yaw = math.degrees(math.atan2(dy, dx))
-        self.direction_yaw = (self.direction_yaw + 360) % 360  # Normaliza para 0-360
+        dx = target_local[0] - self.drone_state.px4.local_position.x
+        dy = target_local[1] - self.drone_state.px4.local_position.y
+        self.drone_state.direction_yaw = math.degrees(math.atan2(dy, dx))
+        self.drone_state.direction_yaw = (self.drone_state.direction_yaw + 360) % 360  # Normaliza para 0-360
         
         # Verifica se já está muito próximo do destino
-        distance_to_target = math.sqrt(dx**2 + dy**2 + (target_local[2] - self.PX4_local_position.z)**2)
+        distance_to_target = math.sqrt(dx**2 + dy**2 + (target_local[2] - self.drone_state.px4.local_position.z)**2)
         
-        if distance_to_target <= self.position_tolerance:
+        if distance_to_target <= self.drone_state.position_tolerance:
             # Já está na posição alvo, pula direto para rotação final ou completa
-            if self.target_yaw is not None:
-                self.state_machine._transition_to(DroneStateDescription.VOANDO_GIRANDO_FIM)
-                self.get_logger().info(f"Já está próximo do destino. Iniciando rotação para yaw alvo ({self.target_yaw:.1f}°).")
+            if self.drone_state.target_yaw is not None:
+                self.drone_state.mudar_estado(DroneStateDescription.VOANDO_GIRANDO_FIM)
+                self.get_logger().info(f"Já está próximo do destino. Iniciando rotação para yaw alvo ({self.drone_state.target_yaw:.1f}°).")
             else:
-                self.on_trajectory = False
-                self.state_machine._transition_to(DroneStateDescription.VOANDO_PRONTO)
+                self.drone_state.on_trajectory = False
+                self.drone_state.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
                 self.get_logger().info("Já está próximo do destino. Trajetória completa.")
-        elif self.PX4_is_landed:
+        elif self.drone_state.px4.is_landed:
             # Se o drone está pousado, não pode rotacionar - pula direto para movimento
-            self.state_machine._transition_to(DroneStateDescription.VOANDO_A_CAMINHO)
+            self.drone_state.mudar_estado(DroneStateDescription.VOANDO_A_CAMINHO)
             self.get_logger().info("Drone está pousado. Pulando rotação inicial e iniciando movimento direto.")
         else:
             # Inicia na fase de rotação para direção
-            self.state_machine._transition_to(DroneStateDescription.VOANDO_GIRANDO_INICIO)
+            self.drone_state.mudar_estado(DroneStateDescription.VOANDO_GIRANDO_INICIO)
         
         # Marca que o drone está em trajetória e salva o momento inicial
-        if self.state_machine.get_state() in (
+        if self.drone_state.state in (
             DroneStateDescription.VOANDO_GIRANDO_INICIO,
             DroneStateDescription.VOANDO_A_CAMINHO,
             DroneStateDescription.VOANDO_GIRANDO_FIM,
         ):
-            self.on_trajectory = True
-        self.trajectory_start_time = time.time()
+            self.drone_state.on_trajectory = True
+        self.drone_state.trajectory_start_time = time.time()
         
         yaw_info = f", yaw_alvo={yaw:.1f}°" if yaw is not None else ", yaw_alvo=None (mantém atual)"
-        self.get_logger().info(f"GOTO iniciado: origem global=[{self.origin_latitude:.6f}, {self.origin_longitude:.6f}, {self.origin_altitude:.2f}], alvo global=[{lat:.6f}, {lon:.6f}, {alt:.2f}]{yaw_info}")
-        self.get_logger().info(f"GOTO: origem local=[{self.origin_local_position[0]:.2f}, {self.origin_local_position[1]:.2f}, {self.origin_local_position[2]:.2f}], alvo local=[{target_local[0]:.2f}, {target_local[1]:.2f}, {target_local[2]:.2f}], yaw_direção={self.direction_yaw:.1f}°")
+        self.get_logger().info(f"GOTO iniciado: origem global=[{self.drone_state.origin_latitude:.6f}, {self.drone_state.origin_longitude:.6f}, {self.drone_state.origin_altitude:.2f}], alvo global=[{lat:.6f}, {lon:.6f}, {alt:.2f}]{yaw_info}")
+        self.get_logger().info(f"GOTO: origem local=[{self.drone_state.origin_local_position[0]:.2f}, {self.drone_state.origin_local_position[1]:.2f}, {self.drone_state.origin_local_position[2]:.2f}], alvo local=[{target_local[0]:.2f}, {target_local[1]:.2f}, {target_local[2]:.2f}], yaw_direção={self.drone_state.direction_yaw:.1f}°")
+
 
     def land(self):
         """
@@ -1229,42 +1195,42 @@ class DroneNode(Node):
         self.get_logger().info("Iniciando POUSO via Offboard (ir para home e pousar)...")
         
         # Configura origem da trajetória
-        self.origin_local_position = [
-            self.PX4_local_position.x,
-            self.PX4_local_position.y,
-            self.PX4_local_position.z
+        self.drone_state.origin_local_position = [
+            self.drone_state.px4.local_position.x,
+            self.drone_state.px4.local_position.y,
+            self.drone_state.px4.local_position.z
         ]
         
         # Alvo: posição home (0, 0) no frame local, Z = 0 (chão)
-        self.target_local_position = [0.0, 0.0, 0.0]
+        self.drone_state.target_local_position = [0.0, 0.0, 0.0]
         
         # Calcula yaw de direção para apontar para home
-        dx = 0.0 - self.PX4_local_position.x
-        dy = 0.0 - self.PX4_local_position.y
+        dx = 0.0 - self.drone_state.px4.local_position.x
+        dy = 0.0 - self.drone_state.px4.local_position.y
         if abs(dx) > 0.1 or abs(dy) > 0.1:
-            self.direction_yaw = math.degrees(math.atan2(dy, dx))
-            self.direction_yaw = (self.direction_yaw + 360) % 360
+            self.drone_state.direction_yaw = math.degrees(math.atan2(dy, dx))
+            self.drone_state.direction_yaw = (self.drone_state.direction_yaw + 360) % 360
         else:
             # Já está no home, mantém yaw atual
-            self.direction_yaw = self.PX4_current_yaw_deg_normalized
+            self.drone_state.direction_yaw = self.drone_state.px4.current_yaw_deg_normalized
         
         # Sem yaw alvo final específico
-        self.target_yaw = None
+        self.drone_state.target_yaw = None
         
         # Não desarma automaticamente após pouso (diferença do RTL)
-        self.rtl_auto_disarm = False
+        self.drone_state.rtl_auto_disarm = False
         
         # Marca início da trajetória
-        self.on_trajectory = True
-        self.trajectory_start_time = time.time()
+        self.drone_state.on_trajectory = True
+        self.drone_state.trajectory_start_time = time.time()
         
         # Transiciona para estado de pouso
-        self.state_machine._transition_to(DroneStateDescription.VOANDO_POUSANDO)
+        self.drone_state.mudar_estado(DroneStateDescription.VOANDO_POUSANDO)
         
         self.get_logger().info(
-            f"LAND configurado: origem=[{self.origin_local_position[0]:.2f}, "
-            f"{self.origin_local_position[1]:.2f}, {-self.origin_local_position[2]:.2f}m], "
-            f"alvo=home [0, 0, 0], yaw_direção={self.direction_yaw:.1f}°"
+            f"LAND configurado: origem=[{self.drone_state.origin_local_position[0]:.2f}, "
+            f"{self.drone_state.origin_local_position[1]:.2f}, {-self.drone_state.origin_local_position[2]:.2f}m], "
+            f"alvo=home [0, 0, 0], yaw_direção={self.drone_state.direction_yaw:.1f}°"
         )
 
     def return_to_launch(self):
@@ -1276,47 +1242,47 @@ class DroneNode(Node):
         4. Pousa e desarma automaticamente
         """
         self.get_logger().info(
-            f"Iniciando RTL via Offboard: girar → subir {self.rtl_altitude}m → ir para home → pousar → desarmar..."
+            f"Iniciando RTL via Offboard: girar → subir {self.drone_state.rtl_altitude}m → ir para home → pousar → desarmar..."
         )
         
         # Configura origem da trajetória
-        self.origin_local_position = [
-            self.PX4_local_position.x,
-            self.PX4_local_position.y,
-            self.PX4_local_position.z
+        self.drone_state.origin_local_position = [
+            self.drone_state.px4.local_position.x,
+            self.drone_state.px4.local_position.y,
+            self.drone_state.px4.local_position.z
         ]
         
         # Alvo: posição home (0, 0) na altitude RTL (Z negativo = para cima no frame NED)
-        self.target_local_position = [0.0, 0.0, -self.rtl_altitude]
+        self.drone_state.target_local_position = [0.0, 0.0, -self.drone_state.rtl_altitude]
         
         # Calcula yaw de direção para apontar para home
-        dx = 0.0 - self.PX4_local_position.x
-        dy = 0.0 - self.PX4_local_position.y
+        dx = 0.0 - self.drone_state.px4.local_position.x
+        dy = 0.0 - self.drone_state.px4.local_position.y
         if abs(dx) > 0.1 or abs(dy) > 0.1:
-            self.direction_yaw = math.degrees(math.atan2(dy, dx))
-            self.direction_yaw = (self.direction_yaw + 360) % 360
+            self.drone_state.direction_yaw = math.degrees(math.atan2(dy, dx))
+            self.drone_state.direction_yaw = (self.drone_state.direction_yaw + 360) % 360
         else:
             # Já está no home, mantém yaw atual
-            self.direction_yaw = self.PX4_current_yaw_deg_normalized
+            self.drone_state.direction_yaw = self.drone_state.px4.current_yaw_deg_normalized
         
         # Sem yaw alvo final específico
-        self.target_yaw = None
+        self.drone_state.target_yaw = None
         
         # Flags do RTL: após chegar ao destino, transiciona para POUSANDO e depois desarma
-        self.rtl_pending_land = True
-        self.rtl_auto_disarm = True
+        self.drone_state.rtl_pending_land = True
+        self.drone_state.rtl_auto_disarm = True
         
         # Marca início da trajetória
-        self.on_trajectory = True
-        self.trajectory_start_time = time.time()
+        self.drone_state.on_trajectory = True
+        self.drone_state.trajectory_start_time = time.time()
         
         # Inicia na fase de rotação para direção do home
-        self.state_machine._transition_to(DroneStateDescription.VOANDO_GIRANDO_INICIO)
+        self.drone_state.mudar_estado(DroneStateDescription.VOANDO_GIRANDO_INICIO)
         
         self.get_logger().info(
-            f"RTL configurado: origem=[{self.origin_local_position[0]:.2f}, "
-            f"{self.origin_local_position[1]:.2f}, {-self.origin_local_position[2]:.2f}m], "
-            f"alvo=home [0, 0, {self.rtl_altitude}m], yaw_direção={self.direction_yaw:.1f}°"
+            f"RTL configurado: origem=[{self.drone_state.origin_local_position[0]:.2f}, "
+            f"{self.drone_state.origin_local_position[1]:.2f}, {-self.drone_state.origin_local_position[2]:.2f}m], "
+            f"alvo=home [0, 0, {self.drone_state.rtl_altitude}m], yaw_direção={self.drone_state.direction_yaw:.1f}°"
         )
 
     # ==================================================================
@@ -1332,31 +1298,31 @@ class DroneNode(Node):
             bool: True se o drone está dentro da tolerância do alvo (posição e yaw), False caso contrário
         """
         # Calcula distância usando coordenadas locais diretamente
-        dx = self.PX4_local_position.x - self.target_local_position[0]
-        dy = self.PX4_local_position.y - self.target_local_position[1]
-        dz = self.PX4_local_position.z - self.target_local_position[2]
+        dx = self.drone_state.px4.local_position.x - self.drone_state.target_local_position[0]
+        dy = self.drone_state.px4.local_position.y - self.drone_state.target_local_position[1]
+        dz = self.drone_state.px4.local_position.z - self.drone_state.target_local_position[2]
         
         distance_2d = math.sqrt(dx**2 + dy**2)
         distance_3d = math.sqrt(dx**2 + dy**2 + dz**2)
         
         # Verifica se está na posição alvo
-        position_reached = distance_3d <= self.position_tolerance
+        position_reached = distance_3d <= self.drone_state.position_tolerance
         
         # Verifica se o yaw está no alvo (se especificado)
         yaw_reached = True
         yaw_diff = None
-        if self.target_yaw is not None:
-            yaw_diff = self.PX4_current_yaw_deg_normalized - self.target_yaw
+        if self.drone_state.target_yaw is not None:
+            yaw_diff = self.drone_state.px4.current_yaw_deg_normalized - self.drone_state.target_yaw
             # Normaliza para lidar com transição 360°->0°
             if yaw_diff < -180:
                 yaw_diff += 360
             if yaw_diff > 180:
                 yaw_diff -= 360
-            yaw_reached = abs(yaw_diff) <= self.yaw_tolerance_deg
+            yaw_reached = abs(yaw_diff) <= self.drone_state.yaw_tolerance_deg
         
         self.get_logger().info(
-            f"Verificação de chegada: distância={distance_3d:.2f}m (tol: {self.position_tolerance}m), "
-            f"yaw_diff={abs(yaw_diff) if yaw_diff is not None else 'N/A'}° (tol: {self.yaw_tolerance_deg}°)",
+            f"Verificação de chegada: distância={distance_3d:.2f}m (tol: {self.drone_state.position_tolerance}m), "
+            f"yaw_diff={abs(yaw_diff) if yaw_diff is not None else 'N/A'}° (tol: {self.drone_state.yaw_tolerance_deg}°)",
             throttle_duration_sec=2.0
         )
         
@@ -1431,6 +1397,36 @@ class DroneStateDescription(IntEnum):
 
 
 # ==================================================================================================
+# CLASSE DE ESTADO DO PX4
+# ==================================================================================================
+
+class DroneStatePX4:
+    """
+    Encapsula o estado interno do PX4 (autopilot).
+    Contém todas as variáveis relacionadas à telemetria e status do PX4.
+    """
+    
+    def __init__(self):
+        """Inicializa todas as variáveis de estado do PX4 com valores padrão."""
+        # Status e controle do veículo
+        self.vehicle_status = None        # Último status geral do drone (armado, modo, etc.)
+        self.local_position = None        # Última posição local (X, Y, Z) em metros
+        self.home_position = None         # Posição de home (ponto de partida)
+        self.global_position = None       # Última posição global (latitude, longitude, altitude)
+        self.vehicle_attitude = None      # Última atitude (orientação) do drone
+        self.current_yaw_deg = 0.0        # Yaw atual do drone (em graus)
+        self.current_yaw_rad = 0.0        # Yaw atual do drone (em radianos)
+        self.current_yaw_deg_normalized = 0.0 # Yaw atual do drone (em graus) normalizado (0-360)
+        self.current_control_mode = None   # Modo de controle atual do PX4
+        self.is_armed = False             # Flag booleano para o estado de armamento
+        self.is_landed = False            # Flag booleano para o estado de pouso
+        self.last_command_ack = None      # Última confirmação de comando recebida do PX4
+        self.offboard_mode_active = False # Flag para indicar se o modo Offboard está ativo
+        self.battery_status = None        # Status da bateria
+        self.nav_state = None            # Estado de navegação atual do PX4
+
+
+# ==================================================================================================
 # MÁQUINA DE ESTADOS DO DRONE
 # ==================================================================================================
 
@@ -1467,17 +1463,75 @@ class DroneState:
         Inicializa a máquina de estados.
         
         Args:
-            node: Referência ao DroneNode para acessar variáveis de estado do drone
+            node: Referência ao DroneNode para acessar métodos do nó (get_logger, stop_movement, etc.)
         """
         self.node = node
+        
+        # Cria instância do estado PX4
+        self.px4 = DroneStatePX4()
+        
+        # Estado da máquina de estados
         self.state = DroneStateDescription.POUSADO_DESARMADO
         self.state_entry_time = time.time()
         
         # Histórico de transições para debug
         self.state_history = []
         self.max_history_size = 50
+        
+        # --- Armazenamento de Estado Interno do Drone ---
+        self.is_arming = False                # Flag booleano para o estado de armamento
+        self.is_disarming = False             # Flag booleano para processo de desarmamento
+        # Indica se o drone está publicando setpoints de trajetória de movimento (moving),
+        # ao invés de manter posição (static).
+        self.on_trajectory = False
+        self.offboard_setpoint_counter = 0    # Contador para garantir envio contínuo de setpoints
+        self.trajectory_start_time = None     # Timestamp do início do movimento (em segundos)
+        self.OffboardControlMode_internal_enabled = False  # Habilita publicação OffboardControlMode/TrajectorySetpoint
+
+        # --- Parâmetros de Trajetória Simplificada ---
+        self.max_velocity = 1.0               # Velocidade máxima (m/s)
+        self.step_distance = 3.0              # Distância do próximo passo (metros)
+
+        # --- Parâmetros de Navegação ---
+        self.origin_local_position = None     # Posição de origem quando inicia trajetória [x, y, z]
+        self.target_local_position = None     # Posição alvo para trajetória [x, y, z]
+        self.target_latitude = None           # Latitude alvo para trajetória (graus)
+        self.target_longitude = None          # Longitude alvo para trajetória (graus)
+        self.target_altitude = None           # Altitude alvo para trajetória (metros)
+        self.origin_latitude = None           # Latitude de origem quando inicia trajetória (graus)
+        self.origin_longitude = None          # Longitude de origem quando inicia trajetória (graus)
+        self.origin_altitude = None           # Altitude de origem quando inicia trajetória (metros)
+        self.target_yaw = None                # Yaw alvo final (graus, 0-360) - None significa manter yaw atual
+        self.position_tolerance = 0.5         # Tolerância em metros para considerar que chegou ao destino
+        self.yaw_tolerance_deg = 5.0          # Tolerância em graus para o yaw (apontamento)
+        
+        # --- Estados da Trajetória ---
+        # A fase da trajetória agora é representada diretamente por DroneStateDescription (state machine)
+        self.direction_yaw = None             # Yaw necessário para apontar na direção do destino (graus)
+        self.takeoff_altitude = 2.5           # Altitude padrão de decolagem (metros)
+        self.rtl_altitude = 30.0              # Altitude do RTL em metros (sobe antes de ir para home)
+        self.rtl_auto_disarm = False          # Se True, desarma automaticamente após pousar (usado pelo RTL)
+        self.rtl_pending_land = False         # Se True, após chegar ao destino transiciona para VOANDO_POUSANDO
     
-    def _check_transitions(self):
+    def stop_movement(self):
+        """
+        Para a trajetória e limpa todas as variáveis relacionadas.
+        """
+        self.on_trajectory = False
+        self.target_latitude = None
+        self.target_longitude = None
+        self.target_altitude = None
+        self.origin_latitude = None
+        self.origin_longitude = None
+        self.origin_altitude = None
+        self.origin_local_position = None
+        self.target_local_position = None
+        self.target_yaw = None
+        self.direction_yaw = None
+        self.trajectory_start_time = None
+        self.rtl_pending_land = False
+    
+    def verifica_mudanca_de_estado(self):
         """
         Verifica e executa transições automáticas baseadas nas condições do drone.
         Usa o enum unificado DroneStateDescription.
@@ -1485,35 +1539,35 @@ class DroneState:
         n = self.node  # Atalho para o nó
         
         # === PRIORIDADE 1: Verificar emergência ===
-        if self._check_emergency_conditions():
-            self._transition_to(DroneStateDescription.EMERGENCIA)
+        if self.verifica_condicao_de_emergencia():
+            self.mudar_estado(DroneStateDescription.EMERGENCIA)
             return
         
         # === PRIORIDADE 2: Estados de armamento/desarmamento em solo ===
         
         # Se desarmando (comando enviado) e ainda reportado armado
-        if n.is_disarming and n.PX4_is_armed:
-            self._transition_to(DroneStateDescription.POUSADO_DESARMANDO)
+        if self.is_disarming and self.px4.is_armed:
+            self.mudar_estado(DroneStateDescription.POUSADO_DESARMANDO)
             return
         
         # Se desarmado e não está armando
-        if not n.PX4_is_armed and not n.is_arming:
-            self._transition_to(DroneStateDescription.POUSADO_DESARMADO)
-            n.is_disarming = False
+        if not self.px4.is_armed and not self.is_arming:
+            self.mudar_estado(DroneStateDescription.POUSADO_DESARMADO)
+            self.is_disarming = False
             return
         
         # Se está armando
-        if n.is_arming and not n.PX4_is_armed:
-            self._transition_to(DroneStateDescription.POUSADO_ARMANDO)
+        if self.is_arming and not self.px4.is_armed:
+            self.mudar_estado(DroneStateDescription.POUSADO_ARMANDO)
             return
         
         # === PRIORIDADE 3: Estados de voo (armado) ===
-        if n.PX4_is_armed:
-            n.is_disarming = False
+        if self.px4.is_armed:
+            self.is_disarming = False
             
             # Armado mas no chão e sem trajetória ativa
-            if n.PX4_is_landed and not n.on_trajectory:
-                self._transition_to(DroneStateDescription.POUSADO_ARMADO)
+            if self.px4.is_landed and not self.on_trajectory:
+                self.mudar_estado(DroneStateDescription.POUSADO_ARMADO)
                 return
 
             # Em trajetória Offboard (fases) - transições centralizadas aqui
@@ -1526,14 +1580,14 @@ class DroneState:
             ):
 
                 # Proteções: precisa de posição local e alvo para avaliar transições
-                if n.PX4_local_position is None or n.target_local_position is None:
+                if self.px4.local_position is None or self.target_local_position is None:
                     return
 
-                current_x = n.PX4_local_position.x
-                current_y = n.PX4_local_position.y
-                current_z = n.PX4_local_position.z
+                current_x = self.px4.local_position.x
+                current_y = self.px4.local_position.y
+                current_z = self.px4.local_position.z
 
-                target_x, target_y, target_z = n.target_local_position
+                target_x, target_y, target_z = self.target_local_position
 
                 dx = target_x - current_x
                 dy = target_y - current_y
@@ -1548,9 +1602,9 @@ class DroneState:
                         f"Decolagem: altitude atual={current_alt:.2f}m, alvo={target_alt:.2f}m",
                         throttle_duration_sec=1.0
                     )
-                    if abs(current_alt - target_alt) <= n.position_tolerance:
-                        n.stop_movement()
-                        self._transition_to(DroneStateDescription.VOANDO_PRONTO)
+                    if abs(current_alt - target_alt) <= self.position_tolerance:
+                        self.stop_movement()
+                        self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
                         self.node.get_logger().info(
                             f"Decolagem completa! Altitude atual: {current_alt:.2f}m"
                         )
@@ -1558,104 +1612,98 @@ class DroneState:
 
                 # VOANDO_GIRANDO_INICIO -> VOANDO_A_CAMINHO
                 if self.state == DroneStateDescription.VOANDO_GIRANDO_INICIO:
-                    if n.PX4_is_landed:
-                        self._transition_to(DroneStateDescription.VOANDO_A_CAMINHO)
+                    if self.px4.is_landed:
+                        self.mudar_estado(DroneStateDescription.VOANDO_A_CAMINHO)
                         self.node.get_logger().info(
                             "Drone está pousado. Pulando rotação inicial e iniciando movimento direto."
                         )
                         return
 
-                    if n.direction_yaw is None:
+                    if self.direction_yaw is None:
                         return
 
-                    yaw_diff = n.PX4_current_yaw_deg_normalized - n.direction_yaw
+                    yaw_diff = self.px4.current_yaw_deg_normalized - self.direction_yaw
                     if yaw_diff < -180:
                         yaw_diff += 360
                     if yaw_diff > 180:
                         yaw_diff -= 360
 
-                    if abs(yaw_diff) <= n.yaw_tolerance_deg:
-                        self._transition_to(DroneStateDescription.VOANDO_A_CAMINHO)
+                    if abs(yaw_diff) <= self.yaw_tolerance_deg:
+                        self.mudar_estado(DroneStateDescription.VOANDO_A_CAMINHO)
                         self.node.get_logger().info(
-                            f"Yaw de direção alcançado ({n.direction_yaw:.1f}°). Iniciando movimento."
+                            f"Yaw de direção alcançado ({self.direction_yaw:.1f}°). Iniciando movimento."
                         )
                     return
 
                 # VOANDO_A_CAMINHO -> VOANDO_GIRANDO_FIM | VOANDO_PRONTO | VOANDO_POUSANDO (RTL)
                 if self.state == DroneStateDescription.VOANDO_A_CAMINHO:
-                    if distance_to_target <= n.position_tolerance:
+                    if distance_to_target <= self.position_tolerance:
                         # RTL: ao chegar no home (altitude RTL), transiciona para pouso
-                        if n.rtl_pending_land:
-                            n.rtl_pending_land = False
+                        if self.rtl_pending_land:
+                            self.rtl_pending_land = False
                             # Atualiza alvo para descer até o chão (home no Z=0)
-                            n.target_local_position = [0.0, 0.0, 0.0]
-                            self._transition_to(DroneStateDescription.VOANDO_POUSANDO)
+                            self.target_local_position = [0.0, 0.0, 0.0]
+                            self.mudar_estado(DroneStateDescription.VOANDO_POUSANDO)
                             self.node.get_logger().info(
                                 "RTL: Posição home alcançada. Iniciando descida para pouso..."
                             )
-                        elif n.target_yaw is not None:
-                            self._transition_to(DroneStateDescription.VOANDO_GIRANDO_FIM)
+                        elif self.target_yaw is not None:
+                            self.mudar_estado(DroneStateDescription.VOANDO_GIRANDO_FIM)
                             self.node.get_logger().info(
-                                f"Posição alvo alcançada. Iniciando rotação para yaw alvo ({n.target_yaw:.1f}°)."
+                                f"Posição alvo alcançada. Iniciando rotação para yaw alvo ({self.target_yaw:.1f}°)."
                             )
                         else:
-                            n.stop_movement()
-                            self._transition_to(DroneStateDescription.VOANDO_PRONTO)
+                            self.stop_movement()
+                            self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
                             self.node.get_logger().info("Posição alvo alcançada. Trajetória completa.")
                     return
 
                 # VOANDO_GIRANDO_FIM -> VOANDO_PRONTO
                 if self.state == DroneStateDescription.VOANDO_GIRANDO_FIM:
-                    if n.target_yaw is None:
-                        n.stop_movement()
-                        self._transition_to(DroneStateDescription.VOANDO_PRONTO)
+                    if self.target_yaw is None:
+                        self.stop_movement()
+                        self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
                         return
 
-                    yaw_diff = n.PX4_current_yaw_deg_normalized - n.target_yaw
+                    yaw_diff = self.px4.current_yaw_deg_normalized - self.target_yaw
                     if yaw_diff < -180:
                         yaw_diff += 360
                     if yaw_diff > 180:
                         yaw_diff -= 360
 
-                    if abs(yaw_diff) <= n.yaw_tolerance_deg:
-                        n.stop_movement()
-                        self._transition_to(DroneStateDescription.VOANDO_PRONTO)
+                    if abs(yaw_diff) <= self.yaw_tolerance_deg:
+                        self.stop_movement()
+                        self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
                         self.node.get_logger().info(
-                            f"Yaw alvo alcançado ({n.target_yaw:.1f}°). Trajetória completa."
+                            f"Yaw alvo alcançado ({self.target_yaw:.1f}°). Trajetória completa."
                         )
                     return
 
                 # VOANDO_POUSANDO -> POUSADO_ARMADO | POUSADO_DESARMANDO (quando pousou)
                 if self.state == DroneStateDescription.VOANDO_POUSANDO:
-                    if n.PX4_is_landed:
-                        n.stop_movement()
-                        if n.rtl_auto_disarm:
-                            n.rtl_auto_disarm = False
-                            n.disarm()
-                            self._transition_to(DroneStateDescription.POUSADO_DESARMANDO)
+                    if self.px4.is_landed:
+                        self.stop_movement()
+                        if self.rtl_auto_disarm:
+                            self.rtl_auto_disarm = False
+                            self.node.disarm()
+                            self.mudar_estado(DroneStateDescription.POUSADO_DESARMANDO)
                             self.node.get_logger().info("Pouso completo. Desarmando automaticamente (RTL)...")
                         else:
-                            self._transition_to(DroneStateDescription.POUSADO_ARMADO)
+                            self.mudar_estado(DroneStateDescription.POUSADO_ARMADO)
                             self.node.get_logger().info("Pouso completo. Drone armado no chão.")
                     return
 
                 return
             
             # Voando mas sem trajetória = VOANDO_PRONTO (hover)
-            if not n.PX4_is_landed and not n.on_trajectory:
+            if not self.px4.is_landed and not self.on_trajectory:
                 # Não sobrescreve o estado POUSANDO que ainda está em processo de descida
                 if self.state != DroneStateDescription.VOANDO_POUSANDO:
-                    self._transition_to(DroneStateDescription.VOANDO_PRONTO)
+                    self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
                     return
     
-    def _update_trajectory_state(self):
-        """
-        Mantido por compatibilidade, mas a fase agora é controlada diretamente
-        pelo `state` (DroneStateDescription). Não faz mais mapeamento por string.
-        """
-        return
-    
-    def _transition_to(self, new_state: DroneStateDescription):
+
+    def mudar_estado(self, new_state: DroneStateDescription):
         """
         Executa transição para novo estado.
         
@@ -1666,7 +1714,7 @@ class DroneState:
             self.state = new_state
             self.state_entry_time = time.time()
     
-    def _on_state_changed(self, old_state: DroneStateDescription):
+    def ao_mudar_estado(self, old_state: DroneStateDescription):
         """
         Callback executado quando o estado muda.
         Registra no histórico e loga a transição.
@@ -1690,17 +1738,15 @@ class DroneState:
             f"Estado: {old_state.name} -> {self.state.name}"
         )
     
-    def _check_emergency_conditions(self) -> bool:
+    def verifica_condicao_de_emergencia(self) -> bool:
         """
         Verifica condições de emergência que requerem transição imediata.
         
         Returns:
             bool: True se há condição de emergência ativa
         """
-        n = self.node
-        
         # Bateria crítica (menos de 10%)
-        if n.PX4_battery_status and n.PX4_battery_status.remaining < 0.10:
+        if self.px4.battery_status and self.px4.battery_status.remaining < 0.10:
             self.node.get_logger().warn("EMERGÊNCIA: Bateria crítica!")
             return True
         
@@ -1709,7 +1755,7 @@ class DroneState:
         
         return False
     
-    def can_execute_command(self, command: str) -> tuple:
+    def verifica_validade_do_comando(self, command: str) -> tuple:
         """
         Verifica se um comando pode ser executado no estado atual.
         
@@ -1734,21 +1780,6 @@ class DroneState:
                 f"Estados permitidos: {allowed_names}"
             )
     
-    def get_status_dict(self) -> dict:
-        """
-        Retorna dicionário com informações de estado para publicação de status.
-        
-        Returns:
-            dict: Dicionário com estado e duração (sem sub-estado)
-        """
-        return {
-            "drone_state": self.state.name,
-            "state_duration_sec": round(time.time() - self.state_entry_time, 2),
-        }
-    
-    def get_state(self) -> DroneStateDescription:
-        """Retorna o estado atual."""
-        return self.state
 
 
 
