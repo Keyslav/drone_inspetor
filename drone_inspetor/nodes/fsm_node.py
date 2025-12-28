@@ -73,7 +73,6 @@ class DroneStateData:
         """Inicializa todas as variáveis do drone com valores padrão."""
         # Status de controle
         self.offboard_mode = False
-        self.arming = False
         self.armed = False
         self.landed = False
         self.on_trajectory = False
@@ -107,7 +106,6 @@ class DroneStateData:
             msg: Mensagem DroneStateMSG recebida do drone_node
         """
         self.offboard_mode = msg.offboard_mode_active
-        self.arming = msg.is_arming
         self.armed = msg.is_armed
         self.landed = msg.is_landed
         self.on_trajectory = msg.on_trajectory
