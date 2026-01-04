@@ -1011,7 +1011,6 @@ class DroneNode(Node):
             f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
             "Enviando comando para ARMAR motores..."
         )
-        self.drone_state_timer.reset()
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
 
     def disarm(self):
@@ -1023,7 +1022,6 @@ class DroneNode(Node):
             f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
             "Enviando comando para DESARMAR motores..."
         )
-        self.drone_state_timer.reset()
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=0.0)
 
     def takeoff(self, altitude=None):
@@ -1068,7 +1066,6 @@ class DroneNode(Node):
             f"TAKEOFF solicitado: posição atual Z={-self.drone_state.px4.local_position.z:.2f}m, "
             f"altitude alvo={altitude}m"
         )
-        self.drone_state_timer.reset()
 
 
 
@@ -1129,8 +1126,6 @@ class DroneNode(Node):
         self.get_logger().info(f"GOTO solicitado: origem global=[{self.drone_state.origin_latitude:.6f}, {self.drone_state.origin_longitude:.6f}, {self.drone_state.origin_altitude:.2f}], alvo global=[{lat:.6f}, {lon:.6f}, {alt:.2f}]{yaw_info}")
         self.get_logger().info(f"GOTO: origem local=[{self.drone_state.origin_local_position[0]:.2f}, {self.drone_state.origin_local_position[1]:.2f}, {self.drone_state.origin_local_position[2]:.2f}], alvo local=[{target_local[0]:.2f}, {target_local[1]:.2f}, {target_local[2]:.2f}], yaw_direção={self.drone_state.direction_yaw:.1f}°")
 
-        self.drone_state_timer.reset()
-
 
 
     def land(self):
@@ -1175,7 +1170,6 @@ class DroneNode(Node):
             f"alvo=home [0, 0, 0], yaw_direção={self.drone_state.direction_yaw:.1f}°"
         )
 
-        self.drone_state_timer.reset()
 
 
 
@@ -1226,8 +1220,6 @@ class DroneNode(Node):
             f"{self.drone_state.origin_local_position[1]:.2f}, {-self.drone_state.origin_local_position[2]:.2f}m], "
             f"alvo=home [0, 0, {self.drone_state.rtl_altitude}m], yaw_direção={self.drone_state.direction_yaw:.1f}°"
         )
-
-        self.drone_state_timer.reset()
 
 
 
@@ -1496,10 +1488,10 @@ class DroneState:
         # === PRIORIDADE ABSOLUTA: Emergência ===
         if self.verifica_condicao_de_emergencia():
             self.mudar_estado(DroneStateDescription.EMERGENCIA)
-            return
         
         # === MATCH/CASE PRINCIPAL: Processa estado atual ===
-        match self.state:
+        current_state = self.state  
+        match current_state:
             
             case DroneStateDescription.POUSADO_DESARMADO:
 
