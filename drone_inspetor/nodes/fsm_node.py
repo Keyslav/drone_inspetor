@@ -757,19 +757,24 @@ class FSMNode(Node):
         msg = MissionCommandMSG()
         msg.command = command_dict.get("command", "")
         
-        # Parâmetros para GOTO
-        msg.lat = command_dict.get("lat", 0.0)
-        msg.lon = command_dict.get("lon", 0.0)
-        msg.alt = command_dict.get("alt", 0.0)
-        msg.yaw = command_dict.get("yaw", 0.0)
+        # Parâmetros para GOTO - define NaN se não fornecido (indica "não especificado")
+        msg.lat = command_dict.get("lat", float('nan'))
+        msg.lon = command_dict.get("lon", float('nan'))
+        msg.alt = command_dict.get("alt", float('nan'))
+        msg.yaw = command_dict.get("yaw", float('nan'))
         
         # Parâmetros para TAKEOFF
-        msg.altitude = command_dict.get("alt", 0.0)
+        if "altitude" in command_dict:
+            msg.altitude = command_dict["altitude"]
+        elif "alt" in command_dict:
+            msg.altitude = command_dict["alt"]
+        else:
+            msg.altitude = float('nan')
         
         # Tipo de inspeção
         msg.inspection_type = command_dict.get("inspection_type", "")
 
-        self.get_logger().info(f"--> Comando para DroneNode (MissionCommandMSG): {msg.command}")
+        self.get_logger().info(f"--\> Comando para DroneNode (MissionCommandMSG): {msg.command}")
         self.fsm_command_pub.publish(msg)
 
     def send_command_and_wait(self, command_dict, expected_state, timeout=10.0):
