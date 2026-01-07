@@ -411,13 +411,11 @@ class FSMNode(Node):
     def fsm_step(self):
         """
         O coração da FSM, executado a cada 100ms.
-        Implementa a máquina de estados completa usando enum unificado.
+        Implementa a máquina de estados completa usando match/case.
         """
         current_state = self.fsm_state.state
 
-        # =================================================
-        # ESTADO: DESATIVADO
-        # =================================================
+        # Verificação especial para estado DESATIVADO (antes do match)
         if current_state == FSMStateDescription.DESATIVADO:
             if not self.drone.offboard_mode:
                 self.get_logger().info(f">>> Aguardando mudança para Modo OFFBOARD!", throttle_duration_sec=2)
@@ -434,285 +432,282 @@ class FSMNode(Node):
             return
 
         # =================================================
-        # ESTADO: PRONTO
+        # MÁQUINA DE ESTADOS USANDO MATCH/CASE
         # =================================================
-        if current_state == FSMStateDescription.PRONTO:
-            if self.fsm_state.mission_started:
-                self.get_logger().info("\033[1m\033[31mINICIANDO MISSÃO: Iniciando sequência de missão!\033[0m")
-                self.fsm_state.mission_started = False
-                self.get_logger().info(f"INICIANDO MISSÃO: Tipo de inspeção selecionada: {self.fsm_state.inspection_type}")
-                self.get_logger().info("INICIANDO MISSÃO: Transicionando para estado EXECUTANDO_ARMANDO...")
-                self.set_state(FSMStateDescription.EXECUTANDO_ARMANDO)
-                return
-            
-            self.get_logger().info("Estado PRONTO: Comando para iniciar a missão não recebido. Aguardando comando...", throttle_duration_sec=2)
-            return
+        match current_state:
+            # =================================================
+            # ESTADO: PRONTO
+            # =================================================
+            case FSMStateDescription.PRONTO:
+                if self.fsm_state.mission_started:
+                    self.get_logger().info("\033[1m\033[31mINICIANDO MISSÃO: Iniciando sequência de missão!\033[0m")
+                    self.fsm_state.mission_started = False
+                    self.get_logger().info(f"INICIANDO MISSÃO: Tipo de inspeção selecionada: {self.fsm_state.inspection_type}")
+                    self.get_logger().info("INICIANDO MISSÃO: Transicionando para estado EXECUTANDO_ARMANDO...")
+                    self.set_state(FSMStateDescription.EXECUTANDO_ARMANDO)
+                    return
+                
+                self.get_logger().info("Estado PRONTO: Comando para iniciar a missão não recebido. Aguardando comando...", throttle_duration_sec=2)
 
-        # =================================================
-        # ESTADO: EXECUTANDO_ARMANDO
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_ARMANDO:
-            wait_status = self.check_waiting_state()
-            if wait_status == "waiting":
-                self.get_logger().info(f"Aguardando drone armar... Estado atual: {self.drone.state}", throttle_duration_sec=2)
-                return
-            elif wait_status == "timeout":
-                self.get_logger().error("Timeout ao armar! Abortando missão.")
-                self.set_state(FSMStateDescription.DESATIVADO)
-                return
-
-            if self.drone.state == "POUSADO_ARMADO":
-                self.get_logger().info("Drone ARMADO confirmado. Transicionando para DECOLANDO...")
-                self.set_state(FSMStateDescription.EXECUTANDO_DECOLANDO)
-                return
-
-            if self.drone.state == "POUSADO_DESARMADO":
-                self.get_logger().info("Enviando comando ARM e aguardando confirmação...")
-                self.send_command_and_wait({"command": "ARM"}, "POUSADO_ARMADO", timeout=10.0)
-                return
-            
-            self.get_logger().warn(f"Estado inesperado do drone durante ARMANDO: {self.drone.state}", throttle_duration_sec=2)
-            return
-
-        # =================================================
-        # ESTADO: EXECUTANDO_DECOLANDO
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_DECOLANDO:
-            wait_status = self.check_waiting_state()
-            if wait_status == "waiting":
-                self.get_logger().info(f"Aguardando decolagem... Estado: {self.drone.state}", throttle_duration_sec=2)
-                return
-            elif wait_status == "timeout":
-                self.get_logger().error("Timeout na decolagem! Abortando missão.")
-                self.set_state(FSMStateDescription.DESATIVADO)
-                return
-
-            if self.drone.state == "VOANDO_PRONTO":
-                self.get_logger().info("Decolagem concluída! Drone em VOANDO_PRONTO. Transicionando para VOANDO...")
-                self.set_state(FSMStateDescription.EXECUTANDO_VOANDO)
-                return
-
-            if self.drone.state == "POUSADO_ARMADO":
-                self.get_logger().info(f"Enviando comando TAKEOFF para {self.fsm_state.takeoff_altitude}m...")
-                self.send_command_and_wait(
-                    {"command": "TAKEOFF", "alt": self.fsm_state.takeoff_altitude},
-                    "VOANDO_PRONTO",
-                    timeout=30.0
-                )
-                return
-            
-            if self.drone.state == "VOANDO_DECOLANDO":
-                self.get_logger().info("Drone decolando...", throttle_duration_sec=2)
-                return
-            
-            self.get_logger().warn(f"Estado inesperado durante DECOLANDO: {self.drone.state}", throttle_duration_sec=2)
-            return
-
-        # =================================================
-        # ESTADO: EXECUTANDO_VOANDO
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_VOANDO:
-            wait_status = self.check_waiting_state()
-            if wait_status == "waiting":
-                self.get_logger().info(f"Voando para ponto de inspeção... Estado: {self.drone.state}", throttle_duration_sec=2)
-                return
-
-            if self.drone.state == "VOANDO_PRONTO":
-                drone_reached_waypoint = self.is_at_waypoint(
-                    self.fsm_state.inspection_point_lat,
-                    self.fsm_state.inspection_point_lon,
-                    self.fsm_state.inspection_point_alt
-                )
-
-                if drone_reached_waypoint:
-                    self.get_logger().info("Drone chegou ao ponto de inspeção. Transicionando para INSPECIONANDO_DETECTANDO...")
-                    self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO)
+            # =================================================
+            # ESTADO: EXECUTANDO_ARMANDO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_ARMANDO:
+                wait_status = self.check_waiting_state()
+                if wait_status == "waiting":
+                    self.get_logger().info(f"Aguardando drone armar... Estado atual: {self.drone.state}", throttle_duration_sec=2)
+                    return
+                elif wait_status == "timeout":
+                    self.get_logger().error("Timeout ao armar! Abortando missão.")
+                    self.set_state(FSMStateDescription.DESATIVADO)
                     return
 
-                self.get_logger().info(f"Navegando para ponto de inspeção ({self.fsm_state.inspection_point_lat:.6f}, {self.fsm_state.inspection_point_lon:.6f}, {self.fsm_state.inspection_point_alt:.1f})...")
-                self.send_command_and_wait(
-                    {"command": "GOTO", "lat": self.fsm_state.inspection_point_lat, "lon": self.fsm_state.inspection_point_lon, "alt": self.fsm_state.inspection_point_alt},
-                    "VOANDO_PRONTO",
-                    timeout=60.0
-                )
-                return
-            
-            # Estados de trajetória (novos estados unificados)
-            if self.drone.state in ["VOANDO_GIRANDO_INICIO", "VOANDO_A_CAMINHO", "VOANDO_GIRANDO_FIM"]:
-                self.get_logger().info(f"Em trajetória... Estado: {self.drone.state}", throttle_duration_sec=2)
-                return
-            
-            self.get_logger().warn(f"Estado inesperado durante VOANDO: {self.drone.state}", throttle_duration_sec=2)
-            return
+                if self.drone.state == "POUSADO_ARMADO":
+                    self.get_logger().info("Drone ARMADO confirmado. Transicionando para DECOLANDO...")
+                    self.set_state(FSMStateDescription.EXECUTANDO_DECOLANDO)
+                    return
 
-        # =================================================
-        # ESTADO: EXECUTANDO_INSPECIONANDO_DETECTANDO
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO:
-            if not self.fsm_state.flare_detected:
-                if self.fsm_state.flare_detection_start_yaw is None:
-                    self.fsm_state.flare_detection_start_yaw = self.drone.yaw
-                    self.fsm_state.flare_detection_current_target_yaw = self.drone.yaw
-                    self.fsm_state.flare_detection_yaw_covered = 0.0
-                    self.fsm_state.flare_detection_yaw_reached = False
-                    self.get_logger().info(f"Iniciando busca incremental de flare a partir do yaw {self.fsm_state.flare_detection_start_yaw:.1f}°...")
+                if self.drone.state == "POUSADO_DESARMADO":
+                    self.get_logger().info("Enviando comando ARM e aguardando confirmação...")
+                    self.send_command_and_wait({"command": "ARM"}, "POUSADO_ARMADO", timeout=10.0)
+                    return
                 
-                if self.fsm_state.flare_detection_current_target_yaw is not None:
-                    yaw_diff_to_target = self.drone.yaw - self.fsm_state.flare_detection_current_target_yaw
-                    if yaw_diff_to_target < -180:
-                        yaw_diff_to_target += 360
-                    if yaw_diff_to_target > 180:
-                        yaw_diff_to_target -= 360
-                    
-                    if abs(yaw_diff_to_target) <= 1.0:
-                        if not self.fsm_state.flare_detection_yaw_reached:
-                            self.fsm_state.flare_detection_yaw_reached = True
-                            self.get_logger().info(f"Yaw alvo {self.fsm_state.flare_detection_current_target_yaw:.1f}° alcançado. Aguardando detecção...")
-                    else:
-                        self.get_logger().debug(f"Aguardando alcançar yaw {self.fsm_state.flare_detection_current_target_yaw:.1f}° (atual: {self.drone.yaw:.1f}°)", 
-                                               throttle_duration_sec=1)
+                self.get_logger().warn(f"Estado inesperado do drone durante ARMANDO: {self.drone.state}", throttle_duration_sec=2)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_DECOLANDO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_DECOLANDO:
+                wait_status = self.check_waiting_state()
+                if wait_status == "waiting":
+                    self.get_logger().info(f"Aguardando decolagem... Estado: {self.drone.state}", throttle_duration_sec=2)
+                    return
+                elif wait_status == "timeout":
+                    self.get_logger().error("Timeout na decolagem! Abortando missão.")
+                    self.set_state(FSMStateDescription.DESATIVADO)
+                    return
+
+                if self.drone.state == "VOANDO_PRONTO":
+                    self.get_logger().info("Decolagem concluída! Drone em VOANDO_PRONTO. Transicionando para VOANDO...")
+                    self.set_state(FSMStateDescription.EXECUTANDO_VOANDO)
+                    return
+
+                if self.drone.state == "POUSADO_ARMADO":
+                    self.get_logger().info(f"Enviando comando TAKEOFF para {self.fsm_state.takeoff_altitude}m...")
+                    self.send_command_and_wait(
+                        {"command": "TAKEOFF", "alt": self.fsm_state.takeoff_altitude},
+                        "VOANDO_PRONTO",
+                        timeout=30.0
+                    )
+                    return
+                
+                if self.drone.state == "VOANDO_DECOLANDO":
+                    self.get_logger().info("Drone decolando...", throttle_duration_sec=2)
+                    return
+                
+                self.get_logger().warn(f"Estado inesperado durante DECOLANDO: {self.drone.state}", throttle_duration_sec=2)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_VOANDO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_VOANDO:
+                wait_status = self.check_waiting_state()
+                if wait_status == "waiting":
+                    self.get_logger().info(f"Voando para ponto de inspeção... Estado: {self.drone.state}", throttle_duration_sec=2)
+                    return
+
+                if self.drone.state == "VOANDO_PRONTO":
+                    drone_reached_waypoint = self.is_at_waypoint(
+                        self.fsm_state.inspection_point_lat,
+                        self.fsm_state.inspection_point_lon,
+                        self.fsm_state.inspection_point_alt
+                    )
+
+                    if drone_reached_waypoint:
+                        self.get_logger().info("Drone chegou ao ponto de inspeção. Transicionando para INSPECIONANDO_DETECTANDO...")
+                        self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO)
                         return
-                
-                if self.fsm_state.flare_detection_yaw_reached:
-                    yaw_diff = self.drone.yaw - self.fsm_state.flare_detection_start_yaw
-                    if yaw_diff < -180:
-                        yaw_diff += 360
-                    if yaw_diff > 180:
-                        yaw_diff -= 360
-                    
-                    self.fsm_state.flare_detection_yaw_covered = abs(yaw_diff)
-                    
-                    if self.fsm_state.flare_detection_yaw_covered >= 360.0:
-                        self.get_logger().warn("Flare não detectado após busca completa de 360°.")
-                        self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA)
-                        return
-                    
-                    next_target_yaw = (self.fsm_state.flare_detection_current_target_yaw + self.fsm_state.flare_detection_increment) % 360.0
-                    self.fsm_state.flare_detection_current_target_yaw = next_target_yaw
-                    self.fsm_state.flare_detection_yaw_reached = False
-                    
-                    self.get_logger().info(f"Girando para próximo yaw alvo: {next_target_yaw:.1f}° (coberto: {self.fsm_state.flare_detection_yaw_covered:.1f}°)")
-                    self.send_yaw_command(next_target_yaw)
-            return
 
-        # =================================================
-        # ESTADO: EXECUTANDO_INSPECIONANDO_CENTRALIZANDO
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO:
-            if not self.fsm_state.target_centralized:
-                if self.fsm_state.target_yaw_offset != 0.0:
-                    target_yaw = (self.drone.yaw + self.fsm_state.target_yaw_offset) % 360.0
-                    yaw_diff = self.drone.yaw - target_yaw
-                    if yaw_diff < -180:
-                        yaw_diff += 360
-                    if yaw_diff > 180:
-                        yaw_diff -= 360
+                    self.get_logger().info(f"Navegando para ponto de inspeção ({self.fsm_state.inspection_point_lat:.6f}, {self.fsm_state.inspection_point_lon:.6f}, {self.fsm_state.inspection_point_alt:.1f})...")
+                    self.send_command_and_wait(
+                        {"command": "GOTO", "lat": self.fsm_state.inspection_point_lat, "lon": self.fsm_state.inspection_point_lon, "alt": self.fsm_state.inspection_point_alt},
+                        "VOANDO_PRONTO",
+                        timeout=60.0
+                    )
+                    return
+                
+                # Estados de trajetória (novos estados unificados)
+                if self.drone.state in ["VOANDO_GIRANDO_INICIO", "VOANDO_A_CAMINHO", "VOANDO_GIRANDO_FIM"]:
+                    self.get_logger().info(f"Em trajetória... Estado: {self.drone.state}", throttle_duration_sec=2)
+                    return
+                
+                self.get_logger().warn(f"Estado inesperado durante VOANDO: {self.drone.state}", throttle_duration_sec=2)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_DETECTANDO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO:
+                if not self.fsm_state.flare_detected:
+                    if self.fsm_state.flare_detection_start_yaw is None:
+                        self.fsm_state.flare_detection_start_yaw = self.drone.yaw
+                        self.fsm_state.flare_detection_current_target_yaw = self.drone.yaw
+                        self.fsm_state.flare_detection_yaw_covered = 0.0
+                        self.fsm_state.flare_detection_yaw_reached = False
+                        self.get_logger().info(f"Iniciando busca incremental de flare a partir do yaw {self.fsm_state.flare_detection_start_yaw:.1f}°...")
                     
-                    if abs(yaw_diff) <= self.fsm_state.centralization_tolerance:
-                        self.fsm_state.target_centralized = True
-                        self.get_logger().info("Target centralizado! Transicionando para próximo estado...")
+                    if self.fsm_state.flare_detection_current_target_yaw is not None:
+                        yaw_diff_to_target = self.drone.yaw - self.fsm_state.flare_detection_current_target_yaw
+                        if yaw_diff_to_target < -180:
+                            yaw_diff_to_target += 360
+                        if yaw_diff_to_target > 180:
+                            yaw_diff_to_target -= 360
+                        
+                        if abs(yaw_diff_to_target) <= 1.0:
+                            if not self.fsm_state.flare_detection_yaw_reached:
+                                self.fsm_state.flare_detection_yaw_reached = True
+                                self.get_logger().info(f"Yaw alvo {self.fsm_state.flare_detection_current_target_yaw:.1f}° alcançado. Aguardando detecção...")
+                        else:
+                            self.get_logger().debug(f"Aguardando alcançar yaw {self.fsm_state.flare_detection_current_target_yaw:.1f}° (atual: {self.drone.yaw:.1f}°)", 
+                                                   throttle_duration_sec=1)
+                            return
+                    
+                    if self.fsm_state.flare_detection_yaw_reached:
+                        yaw_diff = self.drone.yaw - self.fsm_state.flare_detection_start_yaw
+                        if yaw_diff < -180:
+                            yaw_diff += 360
+                        if yaw_diff > 180:
+                            yaw_diff -= 360
+                        
+                        self.fsm_state.flare_detection_yaw_covered = abs(yaw_diff)
+                        
+                        if self.fsm_state.flare_detection_yaw_covered >= 360.0:
+                            self.get_logger().warn("Flare não detectado após busca completa de 360°.")
+                            self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA)
+                            return
+                        
+                        next_target_yaw = (self.fsm_state.flare_detection_current_target_yaw + self.fsm_state.flare_detection_increment) % 360.0
+                        self.fsm_state.flare_detection_current_target_yaw = next_target_yaw
+                        self.fsm_state.flare_detection_yaw_reached = False
+                        
+                        self.get_logger().info(f"Girando para próximo yaw alvo: {next_target_yaw:.1f}° (coberto: {self.fsm_state.flare_detection_yaw_covered:.1f}°)")
+                        self.send_yaw_command(next_target_yaw)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_CENTRALIZANDO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO:
+                if not self.fsm_state.target_centralized:
+                    if self.fsm_state.target_yaw_offset != 0.0:
+                        target_yaw = (self.drone.yaw + self.fsm_state.target_yaw_offset) % 360.0
+                        yaw_diff = self.drone.yaw - target_yaw
+                        if yaw_diff < -180:
+                            yaw_diff += 360
+                        if yaw_diff > 180:
+                            yaw_diff -= 360
+                        
+                        if abs(yaw_diff) <= self.fsm_state.centralization_tolerance:
+                            self.fsm_state.target_centralized = True
+                            self.get_logger().info("Target centralizado! Transicionando para próximo estado...")
+                        else:
+                            self.get_logger().info(f"Centralizando target... Offset: {self.fsm_state.target_yaw_offset:.1f}° (atual: {self.drone.yaw:.1f}°, alvo: {target_yaw:.1f}°)", 
+                                                  throttle_duration_sec=0.5)
+                            self.send_yaw_command(target_yaw)
                     else:
-                        self.get_logger().info(f"Centralizando target... Offset: {self.fsm_state.target_yaw_offset:.1f}° (atual: {self.drone.yaw:.1f}°, alvo: {target_yaw:.1f}°)", 
-                                              throttle_duration_sec=0.5)
-                        self.send_yaw_command(target_yaw)
-                else:
-                    self.get_logger().warn("Aguardando cálculo do offset de centralização...")
-            
-            if self.fsm_state.target_centralized:
-                self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA)
-            return
-
-        # =================================================
-        # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA:
-            if not self.fsm_state.inspection_completed:
-                if self.fsm_state.inspection_start_angle == 0.0:
-                    self.fsm_state.inspection_start_angle = time.time()
-                    self.get_logger().warn("Voo orbital não implementado. Simulando escaneamento por 5 segundos...")
+                        self.get_logger().warn("Aguardando cálculo do offset de centralização...")
                 
-                elapsed = time.time() - self.fsm_state.inspection_start_angle
-                if elapsed >= 5.0:
-                    self.get_logger().info("Escaneamento simulado concluído. Finalizando inspeção.")
-                    self.fsm_state.inspection_completed = True
+                if self.fsm_state.target_centralized:
+                    self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA:
+                if not self.fsm_state.inspection_completed:
+                    if self.fsm_state.inspection_start_angle == 0.0:
+                        self.fsm_state.inspection_start_angle = time.time()
+                        self.get_logger().warn("Voo orbital não implementado. Simulando escaneamento por 5 segundos...")
+                    
+                    elapsed = time.time() - self.fsm_state.inspection_start_angle
+                    if elapsed >= 5.0:
+                        self.get_logger().info("Escaneamento simulado concluído. Finalizando inspeção.")
+                        self.fsm_state.inspection_completed = True
+                        self.set_state(FSMStateDescription.INSPECAO_FINALIZADA)
+                    else:
+                        self.get_logger().info(f"Escaneando... {5.0 - elapsed:.1f}s restantes", throttle_duration_sec=1)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_FALHA
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA:
+                if self.fsm_state.failure_pause_start_time == 0.0:
+                    self.fsm_state.failure_pause_start_time = time.time()
+                    self.get_logger().error("Falha na detecção do flare. Pausando por 3 segundos antes de abortar.")
+                
+                if time.time() - self.fsm_state.failure_pause_start_time >= 3.0:
+                    self.get_logger().info("Pausa de falha concluída. Abortando inspeção.")
                     self.set_state(FSMStateDescription.INSPECAO_FINALIZADA)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO_ANOMALIA
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_ANOMALIA:
+                self.get_logger().info("Anomalia detectada durante escaneamento!")
+                self.fsm_state.anomaly_focus_start_time = time.time()
+                self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_FOCANDO)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO_FOCANDO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_FOCANDO:
+                elapsed_time = time.time() - self.fsm_state.anomaly_focus_start_time
+                remaining_time = 5.0 - elapsed_time
+                
+                self.get_logger().info(f"Focando anomalia... {remaining_time:.1f}s restantes", 
+                                    throttle_duration_sec=1)
+                
+                if elapsed_time >= 5.0:
+                    self.get_logger().info("5 segundos de foco concluídos. Retornando ao escaneamento.")
+                    self.fsm_state.anomaly_detected = False
+                    self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA)
+
+            # =================================================
+            # ESTADO: INSPECAO_FINALIZADA
+            # =================================================
+            case FSMStateDescription.INSPECAO_FINALIZADA:
+                if self.fsm_state.inspection_pause_start_time == 0.0:
+                    self.fsm_state.inspection_pause_start_time = time.time()
+                    self.get_logger().info("Inspeção finalizada. Pausando por 3 segundos...")
+                
+                if time.time() - self.fsm_state.inspection_pause_start_time >= 3.0:
+                    self.get_logger().info("Pausa concluída. Iniciando retorno ao helideck.")
+                    self.set_state(FSMStateDescription.RETORNO_RETORNANDO)
+
+            # =================================================
+            # ESTADO: RETORNO_RETORNANDO
+            # =================================================
+            case FSMStateDescription.RETORNO_RETORNANDO:
+                if not self.drone.state.startswith("POUSADO"):
+                    self.get_logger().info("Enviando comando RTL...", throttle_duration_sec=2)
+                    self.publish_drone_command({"command": "RTL"})
                 else:
-                    self.get_logger().info(f"Escaneando... {5.0 - elapsed:.1f}s restantes", throttle_duration_sec=1)
-            return
+                    self.get_logger().info("Drone pousou. Transicionando para DESARMANDO...")
+                    self.set_state(FSMStateDescription.RETORNO_DESARMANDO)
 
-        # =================================================
-        # ESTADO: EXECUTANDO_INSPECIONANDO_FALHA
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA:
-            if self.fsm_state.failure_pause_start_time == 0.0:
-                self.fsm_state.failure_pause_start_time = time.time()
-                self.get_logger().error("Falha na detecção do flare. Pausando por 3 segundos antes de abortar.")
-            
-            if time.time() - self.fsm_state.failure_pause_start_time >= 3.0:
-                self.get_logger().info("Pausa de falha concluída. Abortando inspeção.")
-                self.set_state(FSMStateDescription.INSPECAO_FINALIZADA)
-            return
+            # =================================================
+            # ESTADO: RETORNO_DESARMANDO
+            # =================================================
+            case FSMStateDescription.RETORNO_DESARMANDO:
+                if self.drone.state.startswith("POUSADO"):
+                    self.get_logger().info("Enviando comando DISARM...")
+                    self.publish_drone_command({"command": "DISARM"})
+                    self.get_logger().info("Missão concluída com sucesso. Reiniciando FSM para próxima missão.")
+                    self.reset_FSM()
 
-        # =================================================
-        # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO_ANOMALIA
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_ANOMALIA:
-            self.get_logger().info("Anomalia detectada durante escaneamento!")
-            self.fsm_state.anomaly_focus_start_time = time.time()
-            self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_FOCANDO)
-            return
-
-        # =================================================
-        # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO_FOCANDO
-        # =================================================
-        if current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_FOCANDO:
-            elapsed_time = time.time() - self.fsm_state.anomaly_focus_start_time
-            remaining_time = 5.0 - elapsed_time
-            
-            self.get_logger().info(f"Focando anomalia... {remaining_time:.1f}s restantes", 
-                                throttle_duration_sec=1)
-            
-            if elapsed_time >= 5.0:
-                self.get_logger().info("5 segundos de foco concluídos. Retornando ao escaneamento.")
-                self.fsm_state.anomaly_detected = False
-                self.set_state(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA)
-            return
-
-        # =================================================
-        # ESTADO: INSPECAO_FINALIZADA
-        # =================================================
-        if current_state == FSMStateDescription.INSPECAO_FINALIZADA:
-            if self.fsm_state.inspection_pause_start_time == 0.0:
-                self.fsm_state.inspection_pause_start_time = time.time()
-                self.get_logger().info("Inspeção finalizada. Pausando por 3 segundos...")
-            
-            if time.time() - self.fsm_state.inspection_pause_start_time >= 3.0:
-                self.get_logger().info("Pausa concluída. Iniciando retorno ao helideck.")
-                self.set_state(FSMStateDescription.RETORNO_RETORNANDO)
-            return
-
-        # =================================================
-        # ESTADO: RETORNO_RETORNANDO
-        # =================================================
-        if current_state == FSMStateDescription.RETORNO_RETORNANDO:
-            if not self.drone.state.startswith("POUSADO"):
-                self.get_logger().info("Enviando comando RTL...", throttle_duration_sec=2)
-                self.publish_drone_command({"command": "RTL"})
-            else:
-                self.get_logger().info("Drone pousou. Transicionando para DESARMANDO...")
-                self.set_state(FSMStateDescription.RETORNO_DESARMANDO)
-            return
-
-        # =================================================
-        # ESTADO: RETORNO_DESARMANDO
-        # =================================================
-        if current_state == FSMStateDescription.RETORNO_DESARMANDO:
-            if self.drone.state.startswith("POUSADO"):
-                self.get_logger().info("Enviando comando DISARM...")
-                self.publish_drone_command({"command": "DISARM"})
-                self.get_logger().info("Missão concluída com sucesso. Reiniciando FSM para próxima missão.")
-                self.reset_FSM()
-            return
+            # =================================================
+            # ESTADO NÃO RECONHECIDO
+            # =================================================
+            case _:
+                self.get_logger().error(f"Estado não reconhecido: {current_state}")
 
     # ==================================================================
     # CHECAGEM ESSENCIAIS DE TÓPICOS
