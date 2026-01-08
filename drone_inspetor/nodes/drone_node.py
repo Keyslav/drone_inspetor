@@ -414,6 +414,16 @@ class DroneNode(Node):
             msg.focus_lon = float('nan')
             msg.focus_yaw = float('nan')
         
+        # Posição estática para hover (última posição armazenada)
+        if self.drone_state.last_static_position is not None:
+            msg.last_static_position_x = self.drone_state.last_static_position[0]
+            msg.last_static_position_y = self.drone_state.last_static_position[1]
+            msg.last_static_position_z = -self.drone_state.last_static_position[2]  # Z é negativo, então invertemos
+        else:
+            msg.last_static_position_x = float('nan')
+            msg.last_static_position_y = float('nan')
+            msg.last_static_position_z = float('nan')
+        
         # Estado da máquina de estados do drone (sem sub_state_name)
         msg.state_name = self.drone_state.state.name
         msg.state_duration_sec = round(time.time() - self.drone_state.state_entry_time, 2)
@@ -428,18 +438,48 @@ class DroneNode(Node):
 
     def create_static_position_setpoint(self):
         """
-        Cria um setpoint de trajetória para manter a posição atual (hover).
+        Cria um setpoint de trajetória para manter a posição estável (hover).
+        
+        Usa a última posição estática armazenada (last_static_position) ao invés da posição atual
+        para evitar instabilidade causada por flutuações de GPS ou vento.
+        A last_static_position é atualizada ao finalizar cada comando de movimento.
+        
+        IMPORTANTE: Nunca envia local_position diretamente para o trajectory. Se não houver
+        last_static_position, armazena a posição atual primeiro e depois usa esse valor.
         
         Returns:
-            TrajectorySetpoint: Mensagem com posição atual e velocidades zeradas
+            TrajectorySetpoint: Mensagem com última posição estática conhecida e yaw
         """
         trajectory_msg = TrajectorySetpoint()
         trajectory_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         
-        # Mantém a posição atual
-        trajectory_msg.position[0] = self.drone_state.px4.local_position.x
-        trajectory_msg.position[1] = self.drone_state.px4.local_position.y
-        trajectory_msg.position[2] = self.drone_state.px4.local_position.z
+        # Se não houver posição estática, armazena a posição atual primeiro
+        if self.drone_state.last_static_position is None:
+            if self.drone_state.px4.local_position is not None:
+                self.drone_state.last_static_position = [
+                    self.drone_state.px4.local_position.x,
+                    self.drone_state.px4.local_position.y,
+                    self.drone_state.px4.local_position.z
+                ]
+                self.get_logger().debug(
+                    f"Posição estática inicializada: "
+                    f"[{self.drone_state.last_static_position[0]:.2f}, "
+                    f"{self.drone_state.last_static_position[1]:.2f}, "
+                    f"{self.drone_state.last_static_position[2]:.2f}]"
+                )
+            else:
+                # Posição local indisponível - usa origem como fallback seguro
+                self.get_logger().warn("Posição local indisponível para criar static setpoint")
+                trajectory_msg.position[0] = 0.0
+                trajectory_msg.position[1] = 0.0
+                trajectory_msg.position[2] = 0.0
+                trajectory_msg.yaw = float('nan')
+                return trajectory_msg
+        
+        # Usa a posição estática armazenada para manter estabilidade
+        trajectory_msg.position[0] = self.drone_state.last_static_position[0]
+        trajectory_msg.position[1] = self.drone_state.last_static_position[1]
+        trajectory_msg.position[2] = self.drone_state.last_static_position[2]
         
         # Deixa o PX4 controlar o yaw por padrão
         trajectory_msg.yaw = float('nan')
@@ -646,7 +686,7 @@ class DroneNode(Node):
             
             case DroneStateDescription.RETORNANDO_GIRANDO_FIM:
                 # Na posição HOME, gira para yaw final (home_yaw)
-                return (target_x, target_y, target_z, self.drone_state.home_yaw)
+                return (target_x, target_y, target_z, self.drone_state.px4.home_yaw)
             
             # ============== ESTADO POUSANDO ==============
             
@@ -670,7 +710,7 @@ class DroneNode(Node):
         """
         Converte coordenadas globais (GPS) para coordenadas locais (NED).
         
-        Usa a posição GPS de REFERÊNCIA (onde local = 0,0,0) armazenada quando o drone armou.
+        Usa a posição GPS do HOME (onde local = 0,0,0) armazenada quando o drone armou.
         Isso garante que a conversão seja consistente durante todo o voo.
         
         Args:
@@ -680,28 +720,28 @@ class DroneNode(Node):
         
         Returns:
             Lista [x, y, z] com posição local em metros (coordenadas NED)
-            None se não houver referência GPS disponível
+            None se não houver referência HOME disponível
         """
-        # Verifica se a referência GPS foi armazenada (quando armou)
-        if self.drone_state.px4.ref_global_lat is None:
+        # Verifica se a referência HOME foi armazenada (quando armou)
+        if self.drone_state.px4.home_global_lat is None:
             self.get_logger().warn(
-                "global_to_local_position: Referência GPS não disponível. "
+                "global_to_local_position: Referência HOME não disponível. "
                 "O drone precisa armar primeiro para definir a origem.",
                 throttle_duration_sec=5.0
             )
             return None
         
-        # Calcula offset da posição de REFERÊNCIA (origem do frame local) para a posição alvo
+        # Calcula offset da posição HOME (origem do frame local) para a posição alvo
         offset = self.global_to_local_offset(
-            self.drone_state.px4.ref_global_lat,
-            self.drone_state.px4.ref_global_lon,
-            self.drone_state.px4.ref_global_alt,
+            self.drone_state.px4.home_global_lat,
+            self.drone_state.px4.home_global_lon,
+            self.drone_state.px4.home_global_alt,
             target_lat,
             target_lon,
             target_alt
         )
         
-        # O offset É a posição local diretamente (pois a referência é onde local = 0,0,0)
+        # O offset É a posição local diretamente (pois o HOME é onde local = 0,0,0)
         # No frame NED: X=norte, Y=leste, Z=para baixo (negativo = para cima)
         local_x = offset[0]  # Norte
         local_y = offset[1]  # Leste
@@ -804,22 +844,49 @@ class DroneNode(Node):
         was_armed = self.drone_state.px4.is_armed
         is_now_armed = (msg.arming_state == VehicleStatus.ARMING_STATE_ARMED)
         
-        # Se acabou de armar, armazena a posição GPS de referência (onde local = 0,0,0)
+        # Se acabou de armar, armazena TODAS as referências HOME (ponto de origem do frame local)
         if is_now_armed and not was_armed:
-            if self.drone_state.px4.global_position is not None:
-                self.drone_state.px4.ref_global_lat = self.drone_state.px4.global_position.lat
-                self.drone_state.px4.ref_global_lon = self.drone_state.px4.global_position.lon
-                self.drone_state.px4.ref_global_alt = self.drone_state.px4.global_position.alt
+            # Verifica se temos todas as informações necessárias
+            has_global = self.drone_state.px4.global_position is not None
+            has_local = self.drone_state.px4.local_position is not None
+            has_attitude = self.drone_state.px4.vehicle_attitude is not None
+            
+            if has_global and has_local and has_attitude:
+                # Armazena posição global do HOME
+                self.drone_state.px4.home_global_lat = self.drone_state.px4.global_position.lat
+                self.drone_state.px4.home_global_lon = self.drone_state.px4.global_position.lon
+                self.drone_state.px4.home_global_alt = self.drone_state.px4.global_position.alt
+                
+                # Armazena posição local do HOME (deve ser próximo de [0, 0, 0])
+                self.drone_state.px4.home_local_position = [
+                    self.drone_state.px4.local_position.x,
+                    self.drone_state.px4.local_position.y,
+                    self.drone_state.px4.local_position.z
+                ]
+                
+                # Armazena atitude (quaternion) do HOME
+                self.drone_state.px4.home_attitude = self.drone_state.px4.vehicle_attitude
+                
+                # Armazena yaw do HOME (graus, -180 a 180)
+                self.drone_state.px4.home_yaw = self.drone_state.px4.current_yaw_deg_normalized
+                
                 self.get_logger().info(
-                    f"{self.PX4_RX_PREFIX}Referência GPS armazenada: "
-                    f"lat={self.drone_state.px4.ref_global_lat:.6f}, "
-                    f"lon={self.drone_state.px4.ref_global_lon:.6f}, "
-                    f"alt={self.drone_state.px4.ref_global_alt:.2f}m"
+                    f"{self.PX4_RX_PREFIX}Referências HOME armazenadas ao ARMAR: "
+                    f"GPS=[{self.drone_state.px4.home_global_lat:.6f}, {self.drone_state.px4.home_global_lon:.6f}, {self.drone_state.px4.home_global_alt:.2f}m], "
+                    f"Local=[{self.drone_state.px4.home_local_position[0]:.2f}, {self.drone_state.px4.home_local_position[1]:.2f}, {self.drone_state.px4.home_local_position[2]:.2f}], "
+                    f"Yaw={self.drone_state.px4.home_yaw:.1f}°"
                 )
             else:
+                missing = []
+                if not has_global:
+                    missing.append("GPS")
+                if not has_local:
+                    missing.append("Local")
+                if not has_attitude:
+                    missing.append("Attitude")
                 self.get_logger().warn(
-                    f"{self.PX4_RX_PREFIX}AVISO: Armou sem posição GPS disponível! "
-                    "Conversão GPS-local pode estar incorreta."
+                    f"{self.PX4_RX_PREFIX}AVISO: Armou sem dados completos! "
+                    f"Faltando: {', '.join(missing)}. Conversões podem estar incorretas."
                 )
         
         # Atualiza o estado de armamento
@@ -1236,10 +1303,9 @@ class DroneNode(Node):
             -altitude
         ]
         
-        # Mantém yaw atual durante decolagem e grava como home_yaw para RTL
+        # Mantém yaw atual durante decolagem (home_yaw já foi armazenado ao ARM em px4.home_yaw)
         self.drone_state.target_yaw = None
         self.drone_state.target_direction_yaw = self.drone_state.px4.current_yaw_deg_normalized
-        self.drone_state.home_yaw = self.drone_state.px4.current_yaw_deg_normalized  # Grava yaw para RTL
         
         # Define flag de comando (será processado por verifica_mudanca_de_estado())
         self.drone_state.command_takeoff_requested = True
@@ -1450,8 +1516,8 @@ class DroneNode(Node):
             # Já está no home, mantém yaw atual
             self.drone_state.target_direction_yaw = self.drone_state.px4.current_yaw_deg_normalized
         
-        # home_yaw já foi definido no takeoff() com o yaw de decolagem
-        # Sem yaw alvo final para GOTO (o RTL usa home_yaw em vez de target_yaw)
+        # home_yaw foi armazenado ao ARM em px4.home_yaw
+        # Sem yaw alvo final para GOTO (o RTL usa px4.home_yaw em vez de target_yaw)
         self.drone_state.target_yaw = None
         
         # Flags do RTL: após chegar ao destino, transiciona para POUSANDO e depois desarma
@@ -1464,7 +1530,7 @@ class DroneNode(Node):
         self.get_logger().info(
             f"RTL solicitado: origem=[{self.drone_state.origin_local_position[0]:.2f}, "
             f"{self.drone_state.origin_local_position[1]:.2f}, {-self.drone_state.origin_local_position[2]:.2f}m], "
-            f"alvo=home [0, 0, {self.drone_state.rtl_altitude}m], yaw_direção={self.drone_state.target_direction_yaw:.1f}°, home_yaw={self.drone_state.home_yaw:.1f}°"
+            f"alvo=home [0, 0, {self.drone_state.rtl_altitude}m], yaw_direção={self.drone_state.target_direction_yaw:.1f}°, home_yaw={self.drone_state.px4.home_yaw:.1f}°"
         )
 
 
@@ -1615,11 +1681,15 @@ class DroneStatePX4:
         self.last_command_ack = None      # Última confirmação de comando recebida do PX4
         self.battery_status = None        # Status da bateria
         
-        # --- Referência GPS do frame local (onde local = 0,0,0) ---
-        # Armazenado quando o drone arma para garantir conversão correta GPS <-> local
-        self.ref_global_lat = None        # Latitude onde local X=0
-        self.ref_global_lon = None        # Longitude onde local Y=0
-        self.ref_global_alt = None        # Altitude onde local Z=0
+        # --- Referência HOME (armazenada ao armar) ---
+        # Todas as referências são armazenadas no momento do ARM para garantir
+        # conversão correta GPS <-> local e cálculos de yaw consistentes
+        self.home_global_lat = None       # Latitude do HOME (onde local X=0)
+        self.home_global_lon = None       # Longitude do HOME (onde local Y=0)
+        self.home_global_alt = None       # Altitude do HOME (onde local Z=0)
+        self.home_local_position = None   # Posição local do HOME [x, y, z] (deve ser ~[0,0,0])
+        self.home_attitude = None         # Atitude (quaternion) do drone ao armar
+        self.home_yaw = None              # Yaw do drone ao armar (graus, -180 a 180)
 
 
 # ==================================================================================================
@@ -1699,9 +1769,14 @@ class DroneState:
         self.rtl_altitude = 30.0              # Altitude do RTL em metros (sobe antes de ir para home)
         self.rtl_auto_disarm = False          # Se True, desarma automaticamente após pousar (usado pelo RTL)
         self.rtl_pending_land = False         # Se True, após chegar ao destino transiciona para POUSANDO
-        self.home_yaw = None                  # Yaw final para o HOME (graus, -180 a 180) - usado na fase RETORNANDO_GIRANDO_FIM
+        # NOTA: home_yaw agora está em px4.home_yaw (armazenado ao ARM)
         self.yaw_aligned_time = None          # Timestamp de quando o yaw foi alinhado pela primeira vez (para delay de estabilização)
         self.yaw_stabilization_delay = 3.0    # Tempo em segundos para aguardar após alinhar o yaw antes de iniciar movimento
+        
+        # --- Última Posição Estática para Hover ---
+        # Armazena a última posição estática ao finalizar um movimento para evitar instabilidade
+        # durante o hover (nunca envia local_position diretamente ao trajectory)
+        self.last_static_position = None       # Última posição estática conhecida [x, y, z]
         
         # --- Flags de Comandos Recebidos da FSM ---
         # Estas flags são definidas pelos métodos de comando e processadas por verifica_mudanca_de_estado()
@@ -1723,7 +1798,19 @@ class DroneState:
     def reseta_variaveis_estado(self):
         """
         Para a trajetória e limpa todas as variáveis relacionadas.
+        Armazena a posição atual em last_static_position para manter estabilidade no hover.
         """
+        # Armazena a última posição estática antes de resetar, para usar no hover
+        if self.px4.local_position is not None:
+            self.last_static_position = [
+                self.px4.local_position.x,
+                self.px4.local_position.y,
+                self.px4.local_position.z
+            ]
+            self.node.get_logger().debug(
+                f"Posição estática armazenada para hover: "
+                f"[{self.last_static_position[0]:.2f}, {self.last_static_position[1]:.2f}, {self.last_static_position[2]:.2f}]"
+            )
         self.on_trajectory = False
         self.target_latitude = None
         self.target_longitude = None
@@ -1806,6 +1893,13 @@ class DroneState:
                         else:
                             self.command_goto_requested = False
                             self.on_trajectory = False
+                            # Armazena posição estática para hover
+                            if self.px4.local_position is not None:
+                                self.last_static_position = [
+                                    self.px4.local_position.x,
+                                    self.px4.local_position.y,
+                                    self.px4.local_position.z
+                                ]
                             # Permanece em VOANDO_PRONTO
                     elif self.px4.is_landed:
                         # Pousado, pula rotação inicial
@@ -1833,6 +1927,13 @@ class DroneState:
                 # Verificar flag de land
                 if self.command_land_requested:
                     self.on_trajectory = False  # Pouso é controlado pelo PX4
+                    # Armazena posição estática para referência
+                    if self.px4.local_position is not None:
+                        self.last_static_position = [
+                            self.px4.local_position.x,
+                            self.px4.local_position.y,
+                            self.px4.local_position.z
+                        ]
                     self.command_land_requested = False
                     self.mudar_estado(DroneStateDescription.POUSANDO)
                     return
@@ -1896,6 +1997,13 @@ class DroneState:
                     yaw_diff += 360
                 if yaw_diff > 180:
                     yaw_diff -= 360
+
+                self.node.get_logger().info(
+                    f"self.px4.current_yaw_deg_normalized = {self.px4.current_yaw_deg_normalized:.1f}°" +
+                    f"self.target_direction_yaw = {self.target_direction_yaw:.1f}°" +
+                    f"yaw_diff = {yaw_diff:.1f}°",
+                    throttle_duration_sec=1.0
+                )
                 
                 if abs(yaw_diff) <= self.yaw_tolerance_deg:
                     # Yaw alinhado - inicia período de estabilização
@@ -2107,14 +2215,14 @@ class DroneState:
                 if distance_to_target <= self.position_tolerance:
                     # Chegou ao HOME, transiciona para rotação final
                     self.node.get_logger().info(
-                        f"RTL: Posição HOME alcançada. Girando para yaw final ({self.home_yaw:.1f}°)..."
+                        f"RTL: Posição HOME alcançada. Girando para yaw final ({self.px4.home_yaw:.1f}°)..."
                     )
                     self.mudar_estado(DroneStateDescription.RETORNANDO_GIRANDO_FIM)
             
             case DroneStateDescription.RETORNANDO_GIRANDO_FIM:
                 
                 # Verificar se home_yaw foi alcançado
-                if self.home_yaw is None:
+                if self.px4.home_yaw is None:
                     # Sem yaw final específico, vai direto para pouso
                     self.reseta_variaveis_estado()
                     self.node.land()  # Envia comando de pouso nativo
@@ -2140,7 +2248,7 @@ class DroneState:
                         )
                     return
                 
-                yaw_diff = self.px4.current_yaw_deg_normalized - self.home_yaw
+                yaw_diff = self.px4.current_yaw_deg_normalized - self.px4.home_yaw
                 if yaw_diff < -180:
                     yaw_diff += 360
                 if yaw_diff > 180:
@@ -2149,7 +2257,7 @@ class DroneState:
                 if abs(yaw_diff) <= self.yaw_tolerance_deg:
                     # Yaw HOME alcançado - inicia período de estabilização
                     self.node.get_logger().info(
-                        f"RTL: Yaw HOME alcançado ({self.home_yaw:.1f}°). Aguardando estabilização..."
+                        f"RTL: Yaw HOME alcançado ({self.px4.home_yaw:.1f}°). Aguardando estabilização..."
                     )
                     self.yaw_aligned_time = time.time()
             
