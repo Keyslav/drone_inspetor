@@ -782,6 +782,7 @@ class DroneNode(Node):
         - command="GOTO", lat=..., lon=..., alt=..., yaw=...: Move o drone para posição
         - command="GOTO_FOCUS", lat=..., lon=..., alt=..., focus_lat=..., focus_lon=...: Move mantendo yaw no foco
         - command="RTL": Retorna para casa
+        - command="STOP": Para o drone no ar durante GOTO, GOTO_FOCUS ou RTL, retornando para VOANDO_PRONTO
         """
         command = msg.command
         
@@ -822,6 +823,8 @@ class DroneNode(Node):
                 self.land()
             case "RTL":
                 self.rtl()
+            case "STOP":
+                self.stop()
             case _:
                 self.get_logger().warn(f"Comando não reconhecido: {command}")
 
@@ -1309,7 +1312,6 @@ class DroneNode(Node):
         
         # Define flag de comando (será processado por verifica_mudanca_de_estado())
         self.drone_state.command_takeoff_requested = True
-        self.drone_state.command_takeoff_altitude = altitude
         
         self.get_logger().info(
             f"TAKEOFF solicitado: posição atual Z={-self.drone_state.px4.local_position.z:.2f}m, "
@@ -1369,12 +1371,8 @@ class DroneNode(Node):
             target_direction_yaw += 360
         self.drone_state.target_direction_yaw = target_direction_yaw
         
-        # Define flags de comando (será processado por verifica_mudanca_de_estado())
+        # Define flag de comando (será processado por verifica_mudanca_de_estado())
         self.drone_state.command_goto_requested = True
-        self.drone_state.command_goto_lat = lat
-        self.drone_state.command_goto_lon = lon
-        self.drone_state.command_goto_alt = alt
-        self.drone_state.command_goto_yaw = yaw
         
         yaw_info = f", yaw_alvo={yaw:.1f}°" if yaw is not None else ", yaw_alvo=None (mantém atual)"
         self.get_logger().info(f"GOTO solicitado: origem global=[{self.drone_state.origin_latitude:.6f}, {self.drone_state.origin_longitude:.6f}, {self.drone_state.origin_altitude:.2f}], alvo global=[{lat:.6f}, {lon:.6f}, {alt:.2f}]{yaw_info}")
@@ -1485,10 +1483,11 @@ class DroneNode(Node):
         2. RETORNANDO_A_CAMINHO: Sobe até a altitude RTL enquanto vai para o home (X=0, Y=0)
         3. RETORNANDO_GIRANDO_FIM: Gira para o yaw final do home (home_yaw)
         4. POUSANDO: Pousa usando comando nativo do PX4
-        5. Desarma automaticamente após pousar
+        
+        Nota: O PX4 desarma automaticamente após pousar (parâmetro COM_DISARM_LAND).
         """
         self.get_logger().info(
-            f"Iniciando RTL via Offboard: girar → subir {self.drone_state.rtl_altitude}m → ir para home → girar para yaw home → pousar → desarmar..."
+            f"Iniciando RTL via Offboard: girar → subir {self.drone_state.rtl_altitude}m → ir para home → girar para yaw home → pousar..."
         )
         
         # Configura origem da trajetória
@@ -1516,13 +1515,8 @@ class DroneNode(Node):
             # Já está no home, mantém yaw atual
             self.drone_state.target_direction_yaw = self.drone_state.px4.current_yaw_deg_normalized
         
-        # home_yaw foi armazenado ao ARM em px4.home_yaw
         # Sem yaw alvo final para GOTO (o RTL usa px4.home_yaw em vez de target_yaw)
         self.drone_state.target_yaw = None
-        
-        # Flags do RTL: após chegar ao destino, transiciona para POUSANDO e depois desarma
-        self.drone_state.rtl_pending_land = True
-        self.drone_state.rtl_auto_disarm = True
         
         # Define flag de comando (será processado por verifica_mudanca_de_estado())
         self.drone_state.command_rtl_requested = True
@@ -1533,6 +1527,35 @@ class DroneNode(Node):
             f"alvo=home [0, 0, {self.drone_state.rtl_altitude}m], yaw_direção={self.drone_state.target_direction_yaw:.1f}°, home_yaw={self.drone_state.px4.home_yaw:.1f}°"
         )
 
+
+    def stop(self):
+        """
+        Para o drone no ar durante uma missão de GOTO, GOTO_FOCUS ou RTL.
+        
+        Ação:
+        1. Reseta todas as variáveis de trajetória (via reseta_variaveis_estado)
+        2. Armazena a posição atual como última posição estática para hover estável
+        3. Muda o estado para VOANDO_PRONTO para aguardar novo comando
+        
+        Este comando só pode ser recebido durante estados de movimento:
+        - GOTO: VOANDO_GIRANDO_INICIO, VOANDO_A_CAMINHO, VOANDO_GIRANDO_FIM
+        - GOTO_FOCUS: VOANDO_GIRANDO_COM_FOCO, VOANDO_A_CAMINHO_COM_FOCO
+        - RTL: RETORNANDO_GIRANDO_INICIO, RETORNANDO_A_CAMINHO, RETORNANDO_GIRANDO_FIM
+        """
+        current_state = self.drone_state.state.name
+        self.get_logger().info(f"STOP recebido durante estado {current_state} - parando drone...")
+        
+        # Reseta todas as variáveis de trajetória e armazena posição para hover
+        self.drone_state.reseta_variaveis_estado()
+        
+        # Muda para estado VOANDO_PRONTO para aguardar novo comando
+        self.drone_state.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
+        
+        self.get_logger().info(
+            f"STOP executado: drone parado em hover, aguardando novo comando. "
+            f"Posição estática: [{self.drone_state.last_static_position[0]:.2f}, "
+            f"{self.drone_state.last_static_position[1]:.2f}, {-self.drone_state.last_static_position[2]:.2f}m]"
+        )
 
 
     # ==================================================================
@@ -1627,9 +1650,7 @@ class DroneStateDescription(IntEnum):
     """
     # Estados em solo (0-9)
     POUSADO_DESARMADO = 0     # No chão, desarmado
-    POUSADO_ARMANDO = 1       # Processo de arm em andamento no chão
-    POUSADO_ARMADO = 2        # No chão, armado
-    POUSADO_DESARMANDO = 3    # Processo de desarm em andamento no chão
+    POUSADO_ARMADO = 1        # No chão, armado
     
     # Estados de voo estável (10-19)
     VOANDO_PRONTO = 10        # Voando estável, aguardando comando (hover)
@@ -1716,6 +1737,17 @@ class DroneState:
         "GOTO_FOCUS": [DroneStateDescription.VOANDO_PRONTO],
         "LAND": [DroneStateDescription.VOANDO_PRONTO],
         "RTL": [DroneStateDescription.VOANDO_PRONTO],
+        # STOP pode ser recebido durante qualquer fase de GOTO, GOTO_FOCUS ou RTL
+        "STOP": [
+            DroneStateDescription.VOANDO_GIRANDO_INICIO,
+            DroneStateDescription.VOANDO_A_CAMINHO,
+            DroneStateDescription.VOANDO_GIRANDO_FIM,
+            DroneStateDescription.VOANDO_GIRANDO_COM_FOCO,
+            DroneStateDescription.VOANDO_A_CAMINHO_COM_FOCO,
+            DroneStateDescription.RETORNANDO_GIRANDO_INICIO,
+            DroneStateDescription.RETORNANDO_A_CAMINHO,
+            DroneStateDescription.RETORNANDO_GIRANDO_FIM,
+        ],
     }
     
     def __init__(self, node: 'DroneNode'):
@@ -1767,9 +1799,6 @@ class DroneState:
         self.target_direction_yaw = None             # Yaw necessário para apontar na direção do destino (graus)
         self.takeoff_altitude = 2.5           # Altitude padrão de decolagem (metros)
         self.rtl_altitude = 30.0              # Altitude do RTL em metros (sobe antes de ir para home)
-        self.rtl_auto_disarm = False          # Se True, desarma automaticamente após pousar (usado pelo RTL)
-        self.rtl_pending_land = False         # Se True, após chegar ao destino transiciona para POUSANDO
-        # NOTA: home_yaw agora está em px4.home_yaw (armazenado ao ARM)
         self.yaw_aligned_time = None          # Timestamp de quando o yaw foi alinhado pela primeira vez (para delay de estabilização)
         self.yaw_stabilization_delay = 3.0    # Tempo em segundos para aguardar após alinhar o yaw antes de iniciar movimento
         
@@ -1780,13 +1809,9 @@ class DroneState:
         
         # --- Flags de Comandos Recebidos da FSM ---
         # Estas flags são definidas pelos métodos de comando e processadas por verifica_mudanca_de_estado()
+        # Nota: Os valores dos comandos (lat, lon, alt, yaw) são armazenados em target_* e origin_*
         self.command_takeoff_requested = False
-        self.command_takeoff_altitude = None
         self.command_goto_requested = False
-        self.command_goto_lat = None
-        self.command_goto_lon = None
-        self.command_goto_alt = None
-        self.command_goto_yaw = None
         self.command_goto_focus_requested = False
         self.focus_latitude = None
         self.focus_longitude = None
@@ -1823,7 +1848,6 @@ class DroneState:
         self.target_yaw = None
         self.target_direction_yaw = None
         self.trajectory_start_time = None
-        self.rtl_pending_land = False
         self.focus_latitude = None
         self.focus_longitude = None
         self.focus_local_position = None
@@ -1869,7 +1893,6 @@ class DroneState:
                     self.on_trajectory = True
                     self.trajectory_start_time = time.time()
                     self.command_takeoff_requested = False
-                    self.command_takeoff_altitude = None
                     self.mudar_estado(DroneStateDescription.VOANDO_DECOLANDO)
                     return
                 
@@ -2261,21 +2284,16 @@ class DroneState:
                     )
                     self.yaw_aligned_time = time.time()
             
-            # ============== ESTADO POUSANDO ==============
-            
             case DroneStateDescription.POUSANDO:
                 
                 # Verificar se pousou
+                # Nota: O PX4 desarma automaticamente após pouso (COM_DISARM_LAND).
+                # A verificação global em verifica_mudanca_de_estado() detecta px4.is_armed=False
+                # e transiciona para POUSADO_DESARMADO automaticamente.
                 if self.px4.is_landed:
                     self.reseta_variaveis_estado()
-                    if self.rtl_auto_disarm:
-                        self.rtl_auto_disarm = False
-                        self.node.disarm()
-                        self.mudar_estado(DroneStateDescription.POUSADO_DESARMANDO)
-                        self.node.get_logger().info("Pouso completo. Desarmando automaticamente (RTL)...")
-                    else:
-                        self.mudar_estado(DroneStateDescription.POUSADO_ARMADO)
-                        self.node.get_logger().info("Pouso completo. Drone armado no chão.")
+                    self.mudar_estado(DroneStateDescription.POUSADO_ARMADO)
+                    self.node.get_logger().info("Pouso completo. Aguardando desarme automático do PX4...")
             
             case DroneStateDescription.EMERGENCIA:
                 # Estado de emergência - não processa outros comandos

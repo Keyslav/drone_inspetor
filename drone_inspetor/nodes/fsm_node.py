@@ -28,6 +28,30 @@ from drone_inspetor_msgs.msg import (
 
 
 # ==================================================================================================
+# CONSTANTES DE AGRUPAMENTO DE ESTADOS DO DRONE
+# ==================================================================================================
+# Grupos de estados do drone_node para facilitar verificações no FSM
+
+# Estados de movimento GOTO (destino simples)
+DRONE_STATES_GOTO = ["VOANDO_GIRANDO_INICIO", "VOANDO_A_CAMINHO", "VOANDO_GIRANDO_FIM"]
+
+# Estados de movimento GOTO_FOCUS (destino com foco em ponto)
+DRONE_STATES_GOTO_FOCUS = ["VOANDO_GIRANDO_COM_FOCO", "VOANDO_A_CAMINHO_COM_FOCO"]
+
+# Estados de retorno RTL
+DRONE_STATES_RTL = ["RETORNANDO_GIRANDO_INICIO", "RETORNANDO_A_CAMINHO", "RETORNANDO_GIRANDO_FIM"]
+
+# Estados de pouso
+DRONE_STATES_POUSANDO = ["POUSANDO"]
+
+# Estados pousado
+DRONE_STATES_POUSADO = ["POUSADO_DESARMADO", "POUSADO_ARMADO"]
+
+# Todos os estados de movimento ativo (para verificar se drone está em trânsito)
+DRONE_STATES_EM_MOVIMENTO = DRONE_STATES_GOTO + DRONE_STATES_GOTO_FOCUS + DRONE_STATES_RTL
+
+
+# ==================================================================================================
 # ENUM DE ESTADOS DA FSM - UNIFICADO
 # ==================================================================================================
 
@@ -196,15 +220,12 @@ class FSMStateData:
         self.is_stable = False
         self.stability_check_start_time = 0.0
         self.inspection_completed = False
-        self.inspection_start_angle = 0.0
-        self.current_inspection_angle = 0.0
+        self.inspection_start_time = 0.0
+        self.current_inspection_angle = 0.0  # Ângulo atual na órbita de inspeção (graus)
         self.last_anomaly_angle = 0.0
         self.failure_pause_start_time = 0.0
         self.inspection_pause_start_time = 0.0
         self.anomaly_focus_start_time = 0.0
-
-        # Controle de habilitação de envio OffboardControlMode/TrajectorySetpoint no drone_node
-        self.OffboardControlMode_enabled = False
     
     def reset(self):
         """
@@ -240,7 +261,7 @@ class FSMStateData:
         self.is_stable = False
         self.stability_check_start_time = 0.0
         self.inspection_completed = False
-        self.inspection_start_angle = 0.0
+        self.inspection_start_time = 0.0
         self.current_inspection_angle = 0.0
         self.last_anomaly_angle = 0.0
         self.failure_pause_start_time = 0.0
@@ -536,9 +557,19 @@ class FSMNode(Node):
                     )
                     return
                 
-                # Estados de trajetória (novos estados unificados)
-                if self.drone.state in ["VOANDO_GIRANDO_INICIO", "VOANDO_A_CAMINHO", "VOANDO_GIRANDO_FIM"]:
-                    self.get_logger().info(f"Em trajetória... Estado: {self.drone.state}", throttle_duration_sec=2)
+                # Estados de trajetória GOTO (destino simples)
+                if self.drone.state in DRONE_STATES_GOTO:
+                    self.get_logger().info(f"Em trajetória GOTO... Estado: {self.drone.state}", throttle_duration_sec=2)
+                    return
+                
+                # Estados de trajetória GOTO_FOCUS (destino com foco)
+                if self.drone.state in DRONE_STATES_GOTO_FOCUS:
+                    self.get_logger().info(f"Em trajetória GOTO_FOCUS... Estado: {self.drone.state}", throttle_duration_sec=2)
+                    return
+                
+                # Estado de decolagem ainda em progresso
+                if self.drone.state == "VOANDO_DECOLANDO":
+                    self.get_logger().info("Ainda decolando...", throttle_duration_sec=2)
                     return
                 
                 self.get_logger().warn(f"Estado inesperado durante VOANDO: {self.drone.state}", throttle_duration_sec=2)
@@ -623,11 +654,11 @@ class FSMNode(Node):
             # =================================================
             case FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO_SEM_ANOMALIA:
                 if not self.fsm_state.inspection_completed:
-                    if self.fsm_state.inspection_start_angle == 0.0:
-                        self.fsm_state.inspection_start_angle = time.time()
+                    if self.fsm_state.inspection_start_time == 0.0:
+                        self.fsm_state.inspection_start_time = time.time()
                         self.get_logger().warn("Voo orbital não implementado. Simulando escaneamento por 5 segundos...")
                     
-                    elapsed = time.time() - self.fsm_state.inspection_start_angle
+                    elapsed = time.time() - self.fsm_state.inspection_start_time
                     if elapsed >= 5.0:
                         self.get_logger().info("Escaneamento simulado concluído. Finalizando inspeção.")
                         self.fsm_state.inspection_completed = True
@@ -686,22 +717,47 @@ class FSMNode(Node):
             # ESTADO: RETORNO_RETORNANDO
             # =================================================
             case FSMStateDescription.RETORNO_RETORNANDO:
-                if not self.drone.state.startswith("POUSADO"):
-                    self.get_logger().info("Enviando comando RTL...", throttle_duration_sec=2)
-                    self.publish_drone_command({"command": "RTL"})
-                else:
+                # Verifica se drone já pousou
+                if self.drone.state in DRONE_STATES_POUSADO:
                     self.get_logger().info("Drone pousou. Transicionando para DESARMANDO...")
                     self.set_state(FSMStateDescription.RETORNO_DESARMANDO)
+                    return
+                
+                # Verifica se está pousando
+                if self.drone.state in DRONE_STATES_POUSANDO:
+                    self.get_logger().info("Drone pousando...", throttle_duration_sec=2)
+                    return
+                
+                # Verifica se está em trânsito RTL
+                if self.drone.state in DRONE_STATES_RTL:
+                    self.get_logger().info(f"RTL em progresso... Estado: {self.drone.state}", throttle_duration_sec=2)
+                    return
+                
+                # Verifica se está pronto para voar (precisa enviar RTL)
+                if self.drone.state == "VOANDO_PRONTO":
+                    self.get_logger().info("Enviando comando RTL...")
+                    self.publish_drone_command({"command": "RTL"})
+                    return
+                
+                # Ainda em algum movimento anterior (GOTO por exemplo)
+                if self.drone.state in DRONE_STATES_GOTO + DRONE_STATES_GOTO_FOCUS:
+                    self.get_logger().info(f"Aguardando fim do movimento atual ({self.drone.state}) antes de RTL...", throttle_duration_sec=2)
+                    return
+                
+                self.get_logger().warn(f"Estado inesperado durante RETORNO_RETORNANDO: {self.drone.state}", throttle_duration_sec=2)
 
             # =================================================
             # ESTADO: RETORNO_DESARMANDO
             # =================================================
             case FSMStateDescription.RETORNO_DESARMANDO:
-                if self.drone.state.startswith("POUSADO"):
-                    self.get_logger().info("Enviando comando DISARM...")
-                    self.publish_drone_command({"command": "DISARM"})
-                    self.get_logger().info("Missão concluída com sucesso. Reiniciando FSM para próxima missão.")
+                # PX4 desarma automaticamente após pouso (COM_DISARM_LAND)
+                # Verifica se já desarmou para finalizar missão
+                if self.drone.state == "POUSADO_DESARMADO":
+                    self.get_logger().info("Drone desarmado pelo PX4. Missão concluída com sucesso!")
                     self.reset_FSM()
+                    self.set_state(FSMStateDescription.PRONTO)
+                else:
+                    self.get_logger().info("Aguardando desarme automático do PX4...", throttle_duration_sec=2)
 
             # =================================================
             # ESTADO NÃO RECONHECIDO
@@ -867,22 +923,36 @@ class FSMNode(Node):
             
             elif command == "stop_inspection":
                 self.get_logger().warn("COMANDO 'STOP_INSPECTION' RECEBIDO. PAUSANDO MISSÃO.")
+                # Se drone está em movimento, envia STOP para parar no ar
+                if self.drone.state in DRONE_STATES_EM_MOVIMENTO:
+                    self.get_logger().info("Drone em movimento. Enviando STOP para parar no ar...")
+                    self.publish_drone_command({"command": "STOP"})
             
             elif command == "cancel_inspection":
                 self.get_logger().warn("COMANDO 'CANCEL_INSPECTION' RECEBIDO. CANCELANDO MISSÃO.")
+                # Se drone está em movimento, envia STOP primeiro para parar no ar
+                if self.drone.state in DRONE_STATES_EM_MOVIMENTO:
+                    self.get_logger().info("Drone em movimento. Enviando STOP antes de RTL...")
+                    self.publish_drone_command({"command": "STOP"})
                 self.set_state(FSMStateDescription.RETORNO_RETORNANDO)
             
             elif command == "return_to_base":
                 self.get_logger().warn("COMANDO 'RETURN_TO_BASE' RECEBIDO. RETORNANDO À BASE.")
+                # Se drone está em movimento, envia STOP primeiro
+                if self.drone.state in DRONE_STATES_EM_MOVIMENTO:
+                    self.publish_drone_command({"command": "STOP"})
                 self.set_state(FSMStateDescription.RETORNO_RETORNANDO)
             
             elif command == "enable_offboard_control_mode":
-                self.get_logger().info("COMANDO 'ENABLE_OFFBOARD_CONTROL_MODE' RECEBIDO. Habilitando envio interno no drone_node via drone_commands.")
-                self.fsm_state.OffboardControlMode_enabled = True
-                self.publish_drone_command({"command": "ENABLE_OFFBOARD"})
+                # Nota: O modo offboard é habilitado automaticamente pelo drone_node
+                # quando comandos são enviados. Este comando é apenas para compatibilidade.
+                self.get_logger().info("COMANDO 'ENABLE_OFFBOARD_CONTROL_MODE' RECEBIDO. (Offboard é gerenciado pelo drone_node)")
 
             elif command == "abort_mission":
                 self.get_logger().warn("COMANDO 'ABORT_MISSION' RECEBIDO. ABORTANDO MISSÃO.")
+                # Se drone está em movimento, envia STOP primeiro
+                if self.drone.state in DRONE_STATES_EM_MOVIMENTO:
+                    self.publish_drone_command({"command": "STOP"})
                 self.set_state(FSMStateDescription.RETORNO_RETORNANDO)
             
             elif command == "emergency_land":
@@ -904,10 +974,10 @@ class FSMNode(Node):
                     self.fsm_state.inspection_type = inspection_type
                     self.get_logger().info(f"COMANDO 'START_INSPECTION' ACEITO (formato antigo). Tipo: {inspection_type}.")
             elif command_str == "enable_offboard_control_mode":
-                self.get_logger().info("COMANDO 'ENABLE_OFFBOARD_CONTROL_MODE' RECEBIDO (formato antigo).")
-                self.fsm_state.OffboardControlMode_enabled = True
-                self.publish_drone_command({"command": "ENABLE_OFFBOARD"})
+                self.get_logger().info("COMANDO 'ENABLE_OFFBOARD_CONTROL_MODE' RECEBIDO (formato antigo). (Offboard é gerenciado pelo drone_node)")
             elif command_str == "abort_mission":
+                if self.drone.state in DRONE_STATES_EM_MOVIMENTO:
+                    self.publish_drone_command({"command": "STOP"})
                 self.set_state(FSMStateDescription.RETORNO_RETORNANDO)
             elif command_str == "emergency_land":
                 self.publish_drone_command({"command": "LAND"})
