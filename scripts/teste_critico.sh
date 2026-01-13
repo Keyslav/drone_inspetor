@@ -17,19 +17,40 @@ ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
   "{command: 'TAKEOFF', altitude: 10.0}"
 sleep 10
 
-echo "3. GOTO para ponto com yaw específico..."
+echo "3. GOTO para ponto com yaw 0..."
 ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
-  "{command: 'GOTO', lat: -22.634035, lon: -40.093549, alt: 66.0, yaw: 38.0}"
-sleep 30
+  "{command: 'GOTO', lat: -22.633978952478266, lon: -40.09243355817096, alt: 99.0, yaw: 0.0}"
+sleep 60
 
 echo "4. GOTO_FOCUS para ponto mantendo foco..."
 ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
-  "{command: 'GOTO_FOCUS', lat: -22.635035, lon: -40.092549, alt: 66.0, focus_lat: -22.636035, focus_lon: -40.092549}"
+  "{command: 'GOTO_FOCUS', lat: -22.633889863041816, lon: -40.09232671979307, alt: 99.0, focus_lat: -22.63388829505115, focus_lon: -40.09243555158753}"
 sleep 30
 
-echo "5. Retornando para base (RTL)..."
+echo "5. GOTO para altitude 102..."
 ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
-  "{command: 'RTL'}"
+  "{command: 'GOTO', lat: nan, lon: nan, alt: 102.0, yaw: nan}"
+sleep 30
+
+echo "6. GOTO com apenas rotação yaw 0..."
+ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
+  "{command: 'GOTO', lat: nan, lon: nan, alt: nan, yaw: 0.0}"
 sleep 20
 
+echo "7. GOTO_FOCUS para ponto mantendo foco..."
+ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
+  "{command: 'GOTO_FOCUS', lat: -22.633800774, lon: -40.09243355817096, alt: 99.0, focus_lat: -22.63388829505115, focus_lon: -40.09243555158753}"
+sleep 20
+
+echo "8. GOTO_FOCUS para ponto mantendo foco..."
+ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
+  "{command: 'GOTO_FOCUS', lat: -22.633800774, lon: -40.09143355817096, alt: 102.0, focus_lat: -22.63388829505115, focus_lon: -40.09243555158753}"
+sleep 20
+
+echo "9. Retornando para base (RTL)..."
+ros2 topic pub --once -w 2 $QOS_OPTS $TOPIC $MSG_TYPE \
+  "{command: 'RTL'}"
+sleep 60
+
 echo "=== Teste concluído ==="
+
