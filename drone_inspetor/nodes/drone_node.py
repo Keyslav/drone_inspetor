@@ -100,6 +100,10 @@ class DroneNode(Node):
     PX4_RX_PREFIX = "\033[36m\033[1mMENSAGEM PX4 - "
     PX4_TX_PREFIX = "\033[35m\033[1mCOMANDO PX4 - "
 
+    # Prefixo para destacar no terminal logs relacionados ao FSM
+    # - Comandos vindos do FSM: amarelo + negrito
+    FSM_RX_PREFIX = "\033[33m\033[1mMENSAGEM FSM - "
+
     # Tópicos PX4 (TX)
     PX4_TOPIC_VEHICLE_COMMAND = "/fmu/in/vehicle_command"
     
@@ -342,6 +346,7 @@ class DroneNode(Node):
         msg = DroneStateMSG()
         
         # --- Estado e Flags ---
+        msg.state = self.drone_state.state
         msg.state_name = self.drone_state.state.name
         msg.state_duration_sec = round(time.time() - self.drone_state.state_entry_time, 2)
         msg.is_armed = self.drone_state.px4.is_armed
@@ -984,7 +989,7 @@ class DroneNode(Node):
         """
         command = msg.command
         
-        self.get_logger().info(f"--> Comando da FSM recebido (MissionCommandMSG): {command}")
+        self.get_logger().info(f"{self.FSM_RX_PREFIX} Comando recebido (MissionCommandMSG): {command}")
 
         # Valida se o comando é permitido no estado atual
         can_execute, error_msg = self.drone_state.verifica_validade_do_comando(command)
@@ -1539,11 +1544,6 @@ class DroneNode(Node):
         """
         if altitude is None:
             altitude = self.drone_state.takeoff_altitude
-        
-        self.get_logger().info(
-            f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
-            f"Iniciando TAKEOFF para altitude de {altitude}m..."
-        )
         
         # Configura trajetória de decolagem (vertical)
         # Armazena posição atual como origem

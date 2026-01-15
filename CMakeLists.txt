@@ -26,7 +26,7 @@ install(DIRECTORY
   drone_inspetor/models/
   drone_inspetor/gui/
   drone_inspetor/nodes/
-  drone_inspetor/scripts/
+  drone_inspetor/missions/
   DESTINATION share/${PROJECT_NAME}
 )
 

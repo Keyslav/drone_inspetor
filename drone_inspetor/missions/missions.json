@@ -1,0 +1,44 @@
+{
+  "flare": {
+    "nome": "Inspeção de Flare",
+    "descricao": "Missão de inspeção visual de flare industrial",
+    "objeto_detectavel": "flare",
+    "pontos_de_inspecao": [
+      {
+        "command": "GOTO",
+        "lat": -22.633978,
+        "lon": -40.092433,
+        "alt": 99.0,
+        "yaw": 0.0,
+        "ponto_de_deteccao": false
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633889,
+        "lon": -40.092326,
+        "alt": 99.0,
+        "focus_lat": -22.633888,
+        "focus_lon": -40.092435,
+        "ponto_de_deteccao": true
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633800,
+        "lon": -40.092433,
+        "alt": 99.0,
+        "focus_lat": -22.633888,
+        "focus_lon": -40.092435,
+        "ponto_de_deteccao": true
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633889,
+        "lon": -40.092504,
+        "alt": 99.0,
+        "focus_lat": -22.633888,
+        "focus_lon": -40.092435,
+        "ponto_de_deteccao": true
+      }
+    ]
+  }
+}

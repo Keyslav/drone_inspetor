@@ -21,7 +21,7 @@ setup(
         (os.path.join('share', package_name, 'gui'), glob(os.path.join('drone_inspetor', 'gui', '*.py'))),
         (os.path.join('share', package_name, 'gui'), glob(os.path.join('drone_inspetor', 'gui', '*.html'))),
         (os.path.join('share', package_name, 'nodes'), glob(os.path.join('drone_inspetor', 'nodes', '*.py'))),
-        (os.path.join('share', package_name, 'scripts'), glob(os.path.join('drone_inspetor', 'scripts', '*.py'))),
+        (os.path.join('share', package_name, 'missions'), glob(os.path.join('drone_inspetor', 'missions', '*.json'))),
         # Copiar modelo YOLO best.pt para o diretório de instalação
         (os.path.join('share', package_name), ['best.pt']),
     ],
@@ -49,8 +49,6 @@ setup(
             'lidar_node = drone_inspetor.nodes.lidar_node:main',
             'drone_node = drone_inspetor.nodes.drone_node:main',
             'fsm_node = drone_inspetor.nodes.fsm_node:main',
-            'offboard_control = drone_inspetor.scripts.offboard_control:main',
-            # 'mission_control = drone_inspetor.scripts.mission_control:main',
         ],
     },
 )
