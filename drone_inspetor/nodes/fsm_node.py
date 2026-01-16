@@ -12,6 +12,8 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.action import ActionClient
+from rclpy.action.client import ClientGoalHandle
 import time
 import math # Para cálculos de ângulos e distâncias
 from enum import IntEnum
@@ -22,9 +24,9 @@ from drone_inspetor_msgs.msg import (
     FSMStateMSG,
     CVDetectionMSG,
     CVDetectionItemMSG,
-    MissionCommandMSG,
     DashboardFsmCommandMSG,
 )
+from drone_inspetor_msgs.action import DroneCommand
 
 
 # ==================================================================================================
@@ -158,7 +160,7 @@ class DroneStateData:
     def __init__(self):
         """Inicializa todas as variáveis do drone com valores padrão."""
         # --- Estado e Flags ---
-        self.state = DroneStateDescription.POUSADO_DESARMADO
+        self.state = DroneStateDescription.OFFBOARD_DESATIVADO
         self.state_duration_sec = 0.0
         self.is_armed = False
         self.is_landed = False
@@ -320,23 +322,7 @@ class FSMState:
     Encapsula todas as variáveis de estado da FSM.
     Contém o estado atual e todas as variáveis de controle da missão.
     """
-    
-    # Mapeamento de comandos do dashboard para estados permitidos
-    VALID_DASHBOARD_COMMANDS = {
-        DashboardFsmCommandDescription.INICIAR_MISSAO: [
-            FSMStateDescription.PRONTO,
-        ],
-        DashboardFsmCommandDescription.CANCELAR_MISSAO: [
-            FSMStateDescription.EXECUTANDO_ARMANDO,
-            FSMStateDescription.EXECUTANDO_DECOLANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA,
-            FSMStateDescription.INSPECAO_FINALIZADA,
-        ],
-    }
+
     
     def __init__(self, node: 'FSMNode'):
         """
@@ -353,11 +339,6 @@ class FSMState:
         # Estado atual
         self.state = FSMStateDescription.DESATIVADO
         
-        # Controle de aguardo de comando
-        self.waiting_for_state = None
-        self.command_timeout = 10.0
-        self.command_sent_time = 0.0
-        
         # Flags de missão (controladas pelos comandos do dashboard)
         self.on_mission = False           # Setada por INICIAR_MISSAO
         self.cancel_mission = False       # Setada por CANCELAR_MISSAO
@@ -369,12 +350,11 @@ class FSMState:
         
         # Parâmetros de configuração
         self.takeoff_altitude = 20.0
-        self.waypoint_tolerance = 0.5
         self.tempo_de_permanencia = 5.0   # Tempo de permanência em cada ponto (segundos)
         
         # Controle de waypoints da missão
-        self.current_waypoint_index = 0
-        self.waypoint_arrival_time = 0.0
+        self.ponto_de_inspecao_indice_atual = 0
+        self.ponto_de_inspecao_tempo_de_chegada = 0.0
     
     def _load_missions(self):
         """Carrega missões do arquivo missions.json."""
@@ -416,7 +396,7 @@ class FSMState:
         
         # Carrega a missão
         self.mission = self.missions[mission_name]
-        self.current_waypoint_index = 0
+        self.ponto_de_inspecao_indice_atual = 0
         
         self._node.get_logger().info(f"Missão '{mission_name}' carregada com sucesso")
         return True, ""
@@ -425,12 +405,12 @@ class FSMState:
         """
         Reseta variáveis para nova missão.
         Mantém valores de configuração (altitudes, tolerâncias, etc.).
+        Cancela qualquer action em andamento.
         """
-        self.state = FSMStateDescription.DESATIVADO
+        # Cancela action em andamento, se houver
+        self._node.cancel_current_action()
         
-        self.waiting_for_state = None
-        self.command_sent_time = 0.0
-        self.command_timeout = 10.0
+        self.state = FSMStateDescription.DESATIVADO
         
         # Flags de missão
         self.on_mission = False
@@ -438,8 +418,8 @@ class FSMState:
         
         # Missão atual
         self.mission = None
-        self.current_waypoint_index = 0
-        self.waypoint_arrival_time = 0.0
+        self.ponto_de_inspecao_indice_atual = 0
+        self.ponto_de_inspecao_tempo_de_chegada = 0.0
         
         # Loga
         self._node.get_logger().info("\033[1m\033[93mMáquina de Estados (FSM) resetada!\033[0m")
@@ -453,9 +433,9 @@ class FSMState:
         msg.state = int(self.state)
         msg.state_name = self.state.name
         
-        msg.waiting_for_state = self.waiting_for_state.name if self.waiting_for_state else ""
-        msg.command_timeout = self.command_timeout
-        msg.command_sent_time = self.command_sent_time
+        msg.waiting_for_state = ""
+        msg.command_timeout = 0.0
+        msg.command_sent_time = 0.0
         
         # Flags de missão
         msg.on_mission = self.on_mission
@@ -467,11 +447,10 @@ class FSMState:
         
         # Parâmetros de configuração
         msg.takeoff_altitude = self.takeoff_altitude
-        msg.waypoint_tolerance = self.waypoint_tolerance
         
         # Controle de waypoints
-        msg.current_waypoint_index = self.current_waypoint_index
-        msg.waypoint_arrival_time = self.waypoint_arrival_time
+        msg.ponto_de_inspecao_indice_atual = self.ponto_de_inspecao_indice_atual
+        msg.ponto_de_inspecao_tempo_de_chegada = self.ponto_de_inspecao_tempo_de_chegada
         
         self._node.fsm_state_pub.publish(msg)
     
@@ -492,33 +471,7 @@ class FSMState:
             
             self._node.get_logger().info(f"MUDANÇA DE ESTADO FSM: {old_state.name} -> {self.state.name}")
     
-    def verifica_validade_do_comando(self, command_enum: DashboardFsmCommandDescription) -> tuple[bool, str]:
-        """
-        Valida se um comando do dashboard é permitido no estado atual.
-        Similar ao verifica_validade_do_comando do DroneState no drone_node.
-        
-        Args:
-            command_enum: Enum do comando já convertido
-            
-        Returns:
-            tuple: (can_execute, error_message)
-                - can_execute: True se comando é permitido, False se não
-                - error_message: Mensagem de erro se não permitido, string vazia se permitido
-        """
-        # Verifica se o comando é permitido no estado atual
-        allowed_states = self.VALID_DASHBOARD_COMMANDS.get(command_enum, [])
-        
-        if not allowed_states:
-            return False, f"Comando '{command_enum.name}' não está configurado em VALID_DASHBOARD_COMMANDS"
-        
-        if self.state in allowed_states:
-            return True, ""
-        else:
-            allowed_names = [s.name for s in allowed_states]
-            return False, (
-                f"Comando '{command_enum.name}' não permitido no estado {self.state.name}. "
-                f"Estados permitidos: {allowed_names}"
-            )
+
     
     def verifica_mudanca_de_estado(self):
         """
@@ -548,6 +501,7 @@ class FSMState:
             self._node.get_logger().warn("Flag cancel_mission detectada. Resetando on_mission e transicionando para RETORNANDO...")
             self.on_mission = False
             self.cancel_mission = False
+            self._node.cancel_current_action()
             self.muda_estado(FSMStateDescription.RETORNANDO)
             return
 
@@ -561,7 +515,7 @@ class FSMState:
             # =================================================
             case FSMStateDescription.DESATIVADO:
                 if drone_state == DroneStateDescription.OFFBOARD_DESATIVADO:
-                    self._node.get_logger().info(f"Estado da FSM: DESATIVADO >>> Aguardando mudança do Drone para Modo OFFBOARD!", throttle_duration_sec=5)
+                    self._node.get_logger().info(f"Estado da FSM: DESATIVADO >>> Aguardando mudança do Drone para Modo OFFBOARD!", throttle_duration_sec=20)
                     return
 
                 if drone_state == DroneStateDescription.POUSADO_DESARMADO:
@@ -569,7 +523,7 @@ class FSMState:
                     self.muda_estado(FSMStateDescription.PRONTO)
                     return
 
-                self._node.get_logger().info("Estado da FSM: DESATIVADO >>> Drone no modo OFFBOARD. Aguardando mudança do Drone para Modo POUSADO e DESARMADO!", throttle_duration_sec=5)
+                self._node.get_logger().info("Estado da FSM: DESATIVADO >>> Drone no modo OFFBOARD. Aguardando mudança do Drone para Modo POUSADO e DESARMADO!", throttle_duration_sec=20)
                 return
 
 
@@ -597,13 +551,13 @@ class FSMState:
             # ESTADO: EXECUTANDO_ARMANDO
             # =================================================
             case FSMStateDescription.EXECUTANDO_ARMANDO:
-                wait_status = self._node.check_waiting_state()
-                if wait_status == "waiting":
+                if self._node._action_in_progress:
+                    # Verifica timeout da action
+                    if self._node.check_action_timeout():
+                        self._node.get_logger().error("Timeout ao armar! Abortando missão.")
+                        self.muda_estado(FSMStateDescription.DESATIVADO)
+                        return
                     self._node.get_logger().info(f"Aguardando drone armar... Estado atual: {drone_state.name}", throttle_duration_sec=2)
-                    return
-                elif wait_status == "timeout":
-                    self._node.get_logger().error("Timeout ao armar! Abortando missão.")
-                    self.muda_estado(FSMStateDescription.DESATIVADO)
                     return
 
                 if drone_state == DroneStateDescription.POUSADO_ARMADO:
@@ -613,7 +567,7 @@ class FSMState:
 
                 if drone_state == DroneStateDescription.POUSADO_DESARMADO:
                     self._node.get_logger().info("Enviando comando ARM e aguardando confirmação...")
-                    self._node.send_command_and_wait({"command": "ARM"}, DroneStateDescription.POUSADO_ARMADO, timeout=10.0)
+                    self._node.send_drone_action({"command": "ARM"})
                     return
                 
                 self._node.get_logger().warn(f"Estado inesperado do drone durante ARMANDO: {drone_state.name}", throttle_duration_sec=2)
@@ -625,13 +579,13 @@ class FSMState:
             # ESTADO: EXECUTANDO_DECOLANDO
             # =================================================
             case FSMStateDescription.EXECUTANDO_DECOLANDO:
-                wait_status = self._node.check_waiting_state()
-                if wait_status == "waiting":
+                if self._node._action_in_progress:
+                    # Verifica timeout da action
+                    if self._node.check_action_timeout():
+                        self._node.get_logger().error("Timeout na decolagem! Abortando missão.")
+                        self.muda_estado(FSMStateDescription.DESATIVADO)
+                        return
                     self._node.get_logger().info(f"Aguardando decolagem... Estado: {drone_state.name}", throttle_duration_sec=2)
-                    return
-                elif wait_status == "timeout":
-                    self._node.get_logger().error("Timeout na decolagem! Abortando missão.")
-                    self.muda_estado(FSMStateDescription.DESATIVADO)
                     return
 
                 if drone_state == DroneStateDescription.VOANDO_PRONTO:
@@ -641,10 +595,8 @@ class FSMState:
 
                 if drone_state == DroneStateDescription.POUSADO_ARMADO:
                     self._node.get_logger().info(f"Enviando comando TAKEOFF para {self.takeoff_altitude}m...")
-                    self._node.send_command_and_wait(
-                        {"command": "TAKEOFF", "alt": self.takeoff_altitude},
-                        DroneStateDescription.VOANDO_PRONTO,
-                        timeout=30.0
+                    self._node.send_drone_action(
+                        {"command": "TAKEOFF", "alt": self.takeoff_altitude}
                     )
                     return
                 
@@ -658,8 +610,13 @@ class FSMState:
             # ESTADO: EXECUTANDO_INSPECIONANDO
             # =================================================
             case FSMStateDescription.EXECUTANDO_INSPECIONANDO:
-                wait_status = self._node.check_waiting_state()
-                if wait_status == "waiting":
+                
+                # Se já existe uma ação em andamento, verifica timeout e aguarda
+                if self._node._action_in_progress:
+                    if self._node.check_action_timeout():
+                        self._node.get_logger().error("Timeout no GOTO! Abortando missão.")
+                        self.muda_estado(FSMStateDescription.RETORNANDO)
+                        return
                     self._node.get_logger().info(f"Aguardando chegada ao ponto... Estado: {drone_state.name}", throttle_duration_sec=2)
                     return
 
@@ -672,71 +629,54 @@ class FSMState:
                 pontos = self.mission['pontos_de_inspecao']
                 
                 # Verifica se todos os pontos foram percorridos
-                if self.current_waypoint_index >= len(pontos):
+                if self.ponto_de_inspecao_indice_atual >= len(pontos):
                     self._node.get_logger().info("Todos os pontos de inspeção percorridos!")
                     self.muda_estado(FSMStateDescription.INSPECAO_FINALIZADA)
                     return
 
-                ponto_atual = pontos[self.current_waypoint_index]
+                ponto_atual = pontos[self.ponto_de_inspecao_indice_atual]
 
-                # Se drone está VOANDO_PRONTO
-                if drone_state == DroneStateDescription.VOANDO_PRONTO:
-                    # Se waypoint_arrival_time > 0, significa que chegamos ao ponto
-                    if self.waypoint_arrival_time > 0.0:
-                        # Verifica se é ponto de detecção (precisa aguardar tempo_de_permanencia)
-                        if ponto_atual.get('ponto_de_deteccao', False):
-                            elapsed = time.time() - self.waypoint_arrival_time
-                            if elapsed < self.tempo_de_permanencia:
-                                remaining = self.tempo_de_permanencia - elapsed
-                                self._node.get_logger().info(f"Aguardando no ponto de detecção... {remaining:.1f}s restantes", throttle_duration_sec=1)
-                                return
-                        
-                        # Próximo ponto
-                        self._node.get_logger().info(f"Ponto {self.current_waypoint_index + 1}/{len(pontos)} concluído!")
-                        self.current_waypoint_index += 1
-                        self.waypoint_arrival_time = 0.0
-                        return
+                # Se chegamos aqui, não há action em progresso.
+                # Verificamos se chegamos ao ponto (ponto_de_inspecao_tempo_de_chegada > 0)
+                # O ponto_de_inspecao_tempo_de_chegada é setado no _action_result_callback quando obtém sucesso.
+                
+                if self.ponto_de_inspecao_tempo_de_chegada > 0.0:
+                    # Chegamos e a action terminou com sucesso. Processa tempo de espera.
                     
-                    # Enviar comando para o ponto atual
+                    # Verifica se é ponto de detecção (precisa aguardar tempo_de_permanencia)
+                    if ponto_atual.get('ponto_de_deteccao', False):
+                        elapsed = time.time() - self.ponto_de_inspecao_tempo_de_chegada
+                        if elapsed < self.tempo_de_permanencia:
+                            remaining = self.tempo_de_permanencia - elapsed
+                            self._node.get_logger().info(f"Aguardando no ponto de detecção... {remaining:.1f}s restantes", throttle_duration_sec=1)
+                            return
+                    
+                    # Tempo de espera concluído (ou não era ponto de espera)
+                    # Avança para o próximo ponto
+                    self._node.get_logger().info(f"Ponto {self.ponto_de_inspecao_indice_atual + 1}/{len(pontos)} concluído!")
+                    self.ponto_de_inspecao_indice_atual += 1
+                    self.ponto_de_inspecao_tempo_de_chegada = 0.0
+                    return
+                
+                else:
+                    # Se não estamos esperando action E arrival_time é 0, precisamos ir para o ponto.
+                    # (Ou falhou anteriormente, e vamos tentar de novo)
+                    
                     cmd = ponto_atual.get('command', 'GOTO')
-                    self._node.get_logger().info(f"Navegando para ponto {self.current_waypoint_index + 1}/{len(pontos)} ({cmd})...")
+                    self._node.get_logger().info(f"Navegando para ponto {self.ponto_de_inspecao_indice_atual + 1}/{len(pontos)} ({cmd})...")
                     
                     if cmd == 'GOTO':
-                        self._node.send_command_and_wait(
+                        self._node.send_drone_action(
                             {"command": "GOTO", "lat": ponto_atual['lat'], "lon": ponto_atual['lon'], 
-                             "alt": ponto_atual['alt'], "yaw": ponto_atual.get('yaw', 0.0)},
-                            DroneStateDescription.VOANDO_PRONTO,
-                            timeout=60.0
+                             "alt": ponto_atual['alt'], "yaw": ponto_atual.get('yaw', 0.0)}
                         )
                     elif cmd == 'GOTO_FOCUS':
-                        self._node.send_command_and_wait(
+                        self._node.send_drone_action(
                             {"command": "GOTO_FOCUS", "lat": ponto_atual['lat'], "lon": ponto_atual['lon'], 
                              "alt": ponto_atual['alt'], "focus_lat": ponto_atual['focus_lat'], 
-                             "focus_lon": ponto_atual['focus_lon']},
-                            DroneStateDescription.VOANDO_PRONTO,
-                            timeout=60.0
+                             "focus_lon": ponto_atual['focus_lon']}
                         )
-                    
-                    # Marca tempo de chegada (será validado quando voltar para VOANDO_PRONTO)
-                    self.waypoint_arrival_time = time.time()
                     return
-                
-                # Estados de trajetória GOTO (destino simples)
-                if drone_state in DRONE_STATES_GOTO:
-                    self._node.get_logger().info(f"Em trajetória GOTO... Estado: {drone_state.name}", throttle_duration_sec=2)
-                    return
-                
-                # Estados de trajetória GOTO_FOCUS (destino com foco)
-                if drone_state in DRONE_STATES_GOTO_FOCUS:
-                    self._node.get_logger().info(f"Em trajetória GOTO_FOCUS... Estado: {drone_state.name}", throttle_duration_sec=2)
-                    return
-                
-                # Estado de decolagem ainda em progresso
-                if drone_state == DroneStateDescription.VOANDO_DECOLANDO:
-                    self._node.get_logger().info("Ainda decolando...", throttle_duration_sec=2)
-                    return
-                
-                self._node.get_logger().warn(f"Estado inesperado durante INSPECIONANDO: {drone_state.name}", throttle_duration_sec=2)
 
             # =================================================
             # ESTADO: EXECUTANDO_INSPECIONANDO_DETECTANDO
@@ -777,6 +717,12 @@ class FSMState:
             # ESTADO: RETORNANDO
             # =================================================
             case FSMStateDescription.RETORNANDO:
+
+                # Verifica se está em trânsito RTL
+                if self._node._action_in_progress or drone_state in DRONE_STATES_RTL:
+                    self._node.get_logger().info(f"RTL em progresso... Estado: {drone_state.name}", throttle_duration_sec=2)
+                    return
+                
                 # Verifica se drone já pousou e desarmou
                 if drone_state == DroneStateDescription.POUSADO_DESARMADO:
                     self._node.get_logger().info("Drone pousou e desarmou. Missão concluída com sucesso!")
@@ -794,20 +740,10 @@ class FSMState:
                     self._node.get_logger().info("Drone pousando...", throttle_duration_sec=2)
                     return
                 
-                # Verifica se está em trânsito RTL
-                if drone_state in DRONE_STATES_RTL:
-                    self._node.get_logger().info(f"RTL em progresso... Estado: {drone_state.name}", throttle_duration_sec=2)
-                    return
-                
                 # Verifica se está pronto para voar (precisa enviar RTL)
                 if drone_state == DroneStateDescription.VOANDO_PRONTO:
                     self._node.get_logger().info("Enviando comando RTL...")
-                    self._node.publish_drone_command({"command": "RTL"})
-                    return
-                
-                # Ainda em algum movimento anterior (GOTO por exemplo)
-                if drone_state in DRONE_STATES_GOTO + DRONE_STATES_GOTO_FOCUS:
-                    self._node.get_logger().info(f"Aguardando fim do movimento atual ({drone_state.name}) antes de RTL...", throttle_duration_sec=2)
+                    self._node.send_drone_action({"command": "RTL"})
                     return
                 
                 self._node.get_logger().warn(f"Estado inesperado durante RETORNANDO: {drone_state.name}", throttle_duration_sec=2)
@@ -836,6 +772,27 @@ class FSMNode(Node):
     6. INSPECAO_FINALIZADA: Transição para retorno
     7. RETORNANDO: RTL, pousa e desarma
     """
+
+    # Prefixo para destacar no terminal logs relacionados ao Drone Node
+    # - Comandos enviados para Drone Node: azul + negrito
+    DRONE_TX_PREFIX = "\033[34m\033[1mCOMANDO PARA DRONE NODE ENVIADO"
+
+    # Mapeamento de comandos do dashboard para estados permitidos
+    VALID_DASHBOARD_COMMANDS = {
+        DashboardFsmCommandDescription.INICIAR_MISSAO: [
+            FSMStateDescription.PRONTO,
+        ],
+        DashboardFsmCommandDescription.CANCELAR_MISSAO: [
+            FSMStateDescription.EXECUTANDO_ARMANDO,
+            FSMStateDescription.EXECUTANDO_DECOLANDO,
+            FSMStateDescription.EXECUTANDO_INSPECIONANDO,
+            FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO,
+            FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO,
+            FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
+            FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA,
+            FSMStateDescription.INSPECAO_FINALIZADA,
+        ],
+    }
     
     def __init__(self):
         # --- Inicialização do Nó ROS2 ---
@@ -883,8 +840,26 @@ class FSMNode(Node):
         # Publica o estado atual da FSM para o dashboard
         self.fsm_state_pub = self.create_publisher(FSMStateMSG, "/drone_inspetor/interno/fsm_node/fsm_state", qos_status)
         
-        # Envia comandos para o drone_node (usando MissionCommandMSG)
-        self.fsm_command_pub = self.create_publisher(MissionCommandMSG, "/drone_inspetor/interno/fsm_node/drone_commands", qos_commands)
+        # ==================================================================
+        # ACTION CLIENT (comunicação com drone_node)
+        # ==================================================================
+        # Substitui o publisher de tópico por ActionClient para:
+        # - Feedback durante execução de comandos
+        # - Resultado final da ação
+        # - Capacidade de cancelar ações em andamento
+        self._action_client = ActionClient(
+            self,
+            DroneCommand,
+            '/drone_inspetor/action/drone_command'
+        )
+        
+        # Variáveis para controle de action em andamento
+        self._current_goal_handle: ClientGoalHandle = None
+        self._last_action_feedback = None
+        self._last_action_result = None
+        self._action_in_progress = False
+        self._action_start_time = 0.0
+        self._action_timeout = 60.0  # Timeout padrão de 60 segundos
 
         # ==================================================================
         # SUBSCRIBERS
@@ -904,11 +879,8 @@ class FSMNode(Node):
         # ==================================================================
         # TIMERS
         # ==================================================================
-        # Timer principal da FSM - executa a lógica de estados a cada 100ms
-        self.fsm_timer = self.create_timer(0.1, lambda: self.fsm_state.verifica_mudanca_de_estado())
-        
-        # Timer para publicação periódica do estado FSM
-        self.fsm_state_pub_timer = self.create_timer(0.5, lambda: self.fsm_state.publish())
+        # Timer principal da FSM - executa a atualização e publicação do estado da FSM a cada 600ms
+        self.fsm_timer = self.create_timer(0.6, self.update_and_publish_fsm_state)
         
         # Timer para verificação de saúde dos tópicos essenciais - executa a cada 2 segundos
         self.topic_health_timer = self.create_timer(2.0, self.check_essential_topics)
@@ -916,8 +888,17 @@ class FSMNode(Node):
         self.get_logger().info("================ FSM NODE PRONTO ================")
 
     # ==================================================================
-    # CHECAGEM ESSENCIAIS DE TÓPICOS
+    # TIMERS - Funções Principais (executadas periodicamente)
     # ==================================================================
+
+    def update_and_publish_fsm_state(self):
+        """
+        Atualiza e publica o estado da FSM a cada 0.6s.
+        
+        """
+        self.fsm_state.verifica_mudanca_de_estado()
+        self.fsm_state.publish()
+
 
     def check_essential_topics(self) -> bool:
         """
@@ -955,7 +936,7 @@ class FSMNode(Node):
             )
             
             # Envia STOP para parar o drone imediatamente
-            self.publish_drone_command({"command": "STOP"})
+            self.send_drone_action({"command": "STOP"})
             
             # Reseta a FSM
             self.fsm_state.reset()
@@ -964,96 +945,212 @@ class FSMNode(Node):
         
         return True
 
-    def publish_drone_command(self, command_dict):
+    def send_drone_action(self, command_dict):
         """
-        Publica um comando para o drone_node usando MissionCommandMSG.
+        Envia um comando para o drone_node usando DroneCommand Action.
         
         Args:
             command_dict: Dicionário com o comando a ser enviado.
+            
+        Returns:
+            bool: True se o goal foi enviado com sucesso, False caso contrário.
         """
-        msg = MissionCommandMSG()
-        msg.command = command_dict.get("command", "")
+        # Verifica se já existe uma ação em progresso
+        if self._action_in_progress:
+            cmd = command_dict.get("command", "")
+            if cmd == "STOP":
+                self.get_logger().warn("Enviando comando STOP mesmo com ação em progresso (Prioridade de Emergência)")
+                self.cancel_current_action()
+            else:
+                self.get_logger().warn(f"Ignorando comando {cmd}: Já existe uma ação em progresso!")
+                return False
+        
+        # Marca a ação como em progresso
+        self._action_in_progress = True
+        self._action_start_time = time.time()
+        
+        # Verifica se o action server está disponível
+        if not self._action_client.wait_for_server(timeout_sec=1.0):
+            self.get_logger().error("Action server /drone_inspetor/action/drone_command não disponível!")
+            self._action_in_progress = False
+            self._action_start_time = 0.0
+            return False
+            
+        # Cria o goal
+        goal_msg = DroneCommand.Goal()
+        goal_msg.command = command_dict.get("command", "")
         
         # Parâmetros para GOTO - define NaN se não fornecido (indica "não especificado")
-        msg.lat = command_dict.get("lat", float('nan'))
-        msg.lon = command_dict.get("lon", float('nan'))
-        msg.alt = command_dict.get("alt", float('nan'))
-        msg.yaw = command_dict.get("yaw", float('nan'))
+        goal_msg.lat = command_dict.get("lat", float('nan'))
+        goal_msg.lon = command_dict.get("lon", float('nan'))
+        goal_msg.alt = command_dict.get("alt", float('nan'))
+        goal_msg.yaw = command_dict.get("yaw", float('nan'))
+        
+        # Parâmetros para GOTO_FOCUS
+        goal_msg.focus_lat = command_dict.get("focus_lat", float('nan'))
+        goal_msg.focus_lon = command_dict.get("focus_lon", float('nan'))
         
         # Parâmetros para TAKEOFF
         if "altitude" in command_dict:
-            msg.altitude = command_dict["altitude"]
+            goal_msg.altitude = command_dict["altitude"]
         elif "alt" in command_dict:
-            msg.altitude = command_dict["alt"]
+            goal_msg.altitude = command_dict["alt"]
         else:
-            msg.altitude = float('nan')
+            goal_msg.altitude = float('nan')
 
-        self.get_logger().info(f"---> Comando para DroneNode (MissionCommandMSG): {msg.command}")
-        self.fsm_command_pub.publish(msg)
-
-
-    def send_command_and_wait(self, command_dict, expected_state, timeout=10.0):
-        """
-        Envia comando para o drone_node e configura aguardo de estado.
+        self.get_logger().info(f"{self.DRONE_TX_PREFIX} - {goal_msg.command}")
         
-        Args:
-            command_dict: Dicionário do comando
-            expected_state: Estado esperado do drone após o comando (DroneStateDescription)
-            timeout: Timeout em segundos
-        """
-        if self.fsm_state.waiting_for_state is not None:
-            self.get_logger().warn(f"Já está aguardando estado {self.fsm_state.waiting_for_state}. Comando ignorado.")
-            return False
+        # Envia o goal de forma assíncrona
+        send_goal_future = self._action_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self._action_feedback_callback
+        )
+        send_goal_future.add_done_callback(self._goal_response_callback)
         
-        self.publish_drone_command(command_dict)
-        self.fsm_state.waiting_for_state = expected_state
-        self.fsm_state.command_sent_time = time.time()
-        self.fsm_state.command_timeout = timeout
-        self.get_logger().info(f"Comando enviado. Aguardando estado: {expected_state} (timeout: {timeout}s)")
         return True
 
-    def check_waiting_state(self):
+    def _goal_response_callback(self, future):
         """
-        Verifica se o estado esperado foi alcançado após enviar um comando.
+        Callback chamado quando o goal é aceito ou rejeitado.
+        
+        Args:
+            future: Future com o resultado da requisição de goal
+        """
+        goal_handle = future.result()
+        
+        if not goal_handle.accepted:
+            self.get_logger().warn("Goal rejeitado pelo drone_node!")
+            self._action_in_progress = False
+            self._action_start_time = 0.0
+            return
+        
+        self.get_logger().info("Goal aceito pelo drone_node, aguardando execução...")
+        self._current_goal_handle = goal_handle
+        
+        # Configura callback para quando o resultado estiver disponível
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(self._action_result_callback)
+
+    def _action_feedback_callback(self, feedback_msg):
+        """
+        Callback chamado quando feedback é recebido durante execução da action.
+        
+        Args:
+            feedback_msg: Mensagem de feedback com progresso
+        """
+        feedback = feedback_msg.feedback
+        self._last_action_feedback = feedback
+        
+        self.get_logger().info(
+            f"Feedback Action: estado = {feedback.state_name}, "
+            f"distância = {feedback.distance_to_target:.2f}m, "
+            f"progresso = {feedback.progress_percent:.1f}%",
+            throttle_duration_sec=1.0
+        )
+
+    def _action_result_callback(self, future):
+        """
+        Callback chamado quando a action é completada.
+        
+        Args:
+            future: Future com o resultado da action
+        """
+        result = future.result().result
+        self._last_action_result = result
+        self._action_in_progress = False
+        self._action_start_time = 0.0
+        self._current_goal_handle = None
+        
+        if result.success:
+            self.get_logger().info(f"Action completada com sucesso: {result.message}")
+            
+            # Se o comando foi bem sucedido e estamos inspecionando, assumimos chegada ao waypoint
+            if self.fsm_state.state == FSMStateDescription.EXECUTANDO_INSPECIONANDO:
+                self.get_logger().info("Waypoint alcançado (Action Success)! Iniciando contagem de tempo.")
+                self.fsm_state.ponto_de_inspecao_tempo_de_chegada = time.time()
+                
+        else:
+            self.get_logger().warn(f"Action falhou: {result.message}")
+
+    def cancel_current_action(self):
+        """
+        Cancela a action em andamento, se houver.
         
         Returns:
-            str: "waiting", "success" ou "timeout"
+            bool: True se havia uma action para cancelar, False caso contrário.
         """
-        if self.fsm_state.waiting_for_state is None:
-            return "success"
-        
-        if self.drone.state == self.fsm_state.waiting_for_state:
-            self.get_logger().info(f"Estado {self.fsm_state.waiting_for_state.name} alcançado!")
-            self.fsm_state.waiting_for_state = None
-            return "success"
-        
-        elapsed = time.time() - self.fsm_state.command_sent_time
-        if elapsed > self.fsm_state.command_timeout:
-            self.get_logger().error(f"Timeout ({self.fsm_state.command_timeout}s) aguardando estado {self.fsm_state.waiting_for_state.name}. Estado atual: {self.drone.state.name}")
-            self.fsm_state.waiting_for_state = None
-            return "timeout"
-        
-        return "waiting"
+        if self._current_goal_handle is not None:
+            self.get_logger().info("Cancelando action em andamento...")
+            cancel_future = self._current_goal_handle.cancel_goal_async()
+            cancel_future.add_done_callback(self._cancel_done_callback)
+            return True
+        return False
 
-    def send_yaw_command(self, target_yaw):
+    def _cancel_done_callback(self, future):
         """
-        Simula comando SET_YAW usando GOTO na posição atual com yaw específico.
+        Callback chamado quando o cancelamento é processado.
         
         Args:
-            target_yaw: Yaw alvo em graus (0-360)
+            future: Future com o resultado do cancelamento
         """
-        if self.drone.state != DroneStateDescription.VOANDO_PRONTO:
-            self.get_logger().warn(f"Não é possível girar: drone não está VOANDO_PRONTO (estado: {self.drone.state.name})")
+        cancel_response = future.result()
+        if len(cancel_response.goals_canceling) > 0:
+            self.get_logger().info("Action cancelada com sucesso")
+        else:
+            self.get_logger().warn("Falha ao cancelar action")
+        
+        self._action_in_progress = False
+        self._action_start_time = 0.0
+        self._current_goal_handle = None
+
+    def check_action_timeout(self) -> bool:
+        """
+        Verifica se a action em andamento excedeu o timeout.
+        Se excedeu, cancela a action e retorna True.
+        
+        Returns:
+            bool: True se houve timeout e a action foi cancelada, False caso contrário.
+        """
+        if not self._action_in_progress:
             return False
         
-        self.publish_drone_command({
-            "command": "GOTO",
-            "lat": self.drone.current_latitude,
-            "lon": self.drone.current_longitude,
-            "alt": self.drone.current_altitude,
-            "yaw": target_yaw
-        })
-        return True
+        elapsed = time.time() - self._action_start_time
+        if elapsed > self._action_timeout:
+            self.get_logger().error(
+                f"TIMEOUT na action! ({elapsed:.1f}s > {self._action_timeout:.1f}s). Cancelando..."
+            )
+            self.cancel_current_action()
+            return True
+        
+        return False
+
+    def verifica_validade_do_comando(self, command_enum: DashboardFsmCommandDescription) -> tuple[bool, str]:
+        """
+        Valida se um comando do dashboard é permitido no estado atual.
+        
+        Args:
+            command_enum: Enum do comando já convertido
+            
+        Returns:
+            tuple: (can_execute, error_message)
+                - can_execute: True se comando é permitido, False se não
+                - error_message: Mensagem de erro se não permitido, string vazia se permitido
+        """
+        allowed_states = self.VALID_DASHBOARD_COMMANDS.get(command_enum, [])
+        
+        if not allowed_states:
+            return False, f"Comando '{command_enum.name}' não está configurado em VALID_DASHBOARD_COMMANDS"
+        
+        current_state = self.fsm_state.state
+        if current_state in allowed_states:
+            return True, ""
+        else:
+            allowed_names = [s.name for s in allowed_states]
+            return False, (
+                f"Comando '{command_enum.name}' não permitido no estado {current_state.name}. "
+                f"Estados permitidos: {allowed_names}"
+            )
+
 
     # ==================================================================
     # CALLBACKS DE EVENTOS
@@ -1083,7 +1180,7 @@ class FSMNode(Node):
         self.get_logger().info(f"<-- Comando do Dashboard recebido (DashboardFsmCommandMSG): {command_enum.name}")
         
         # Valida se o comando é permitido no estado atual
-        can_execute, error_msg = self.fsm_state.verifica_validade_do_comando(command_enum)
+        can_execute, error_msg = self.verifica_validade_do_comando(command_enum)
         
         if not can_execute:
             self.get_logger().warn(f"Comando rejeitado: {error_msg}")
@@ -1133,102 +1230,9 @@ class FSMNode(Node):
         Args:
             msg: Mensagem CVDetectionMSG do cv_node
         """
-        # Só processa detecções durante estados relevantes de inspeção
-        current_state = self.fsm_state.state
-        if current_state not in [
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO
-        ]:
-            return
-        
-        flare_detected_in_frame = False
-        
-        for detection_item in msg.detections:
-            object_type = detection_item.object_type
-            confidence = detection_item.confidence
-            bbox_center = detection_item.bbox_center if len(detection_item.bbox_center) >= 2 else None
-            
-            # Processa detecção de flare durante busca
-            if object_type == "flare" and current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO:
-                flare_detected_in_frame = True
-                self.fsm_state.flare_detected = True
-                self.get_logger().info(f"!!! FLARE DETECTADO !!! (confiança: {confidence:.2f})")
-                
-                if bbox_center:
-                    self.fsm_state.target_bbox_center = bbox_center
-                    image_center_x = 320.0
-                    pixel_offset = bbox_center[0] - image_center_x
-                    fov_horizontal = 60.0
-                    image_width = 640.0
-                    degrees_per_pixel = fov_horizontal / image_width
-                    self.fsm_state.target_yaw_offset = pixel_offset * degrees_per_pixel
-                    
-                    self.get_logger().info(f"Centro do bounding box: {bbox_center}, Offset de yaw: {self.fsm_state.target_yaw_offset:.1f}°")
-                
-                self.fsm_state.target_centralized = False
-                self.fsm_state.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO)
-                break
-            
-            # Atualiza centralização durante estado CENTRALIZANDO
-            if object_type == "flare" and current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO and bbox_center:
-                image_center_x = 320.0
-                pixel_offset = bbox_center[0] - image_center_x
-                fov_horizontal = 60.0
-                image_width = 640.0
-                degrees_per_pixel = fov_horizontal / image_width
-                self.fsm_state.target_yaw_offset = pixel_offset * degrees_per_pixel
-                self.fsm_state.target_bbox_center = bbox_center
-                
-                if abs(self.fsm_state.target_yaw_offset) <= self.fsm_state.centralization_tolerance:
-                    self.fsm_state.target_centralized = True
-                    self.get_logger().info(f"Target centralizado! Offset: {self.fsm_state.target_yaw_offset:.1f}°")
-            
-            # Processa detecção de anomalia durante escaneamento
-            if object_type == "anomalia" and current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO:
-                angle_diff = abs(self.fsm_state.current_inspection_angle - self.fsm_state.last_anomaly_angle)
-                if angle_diff > 30 or self.fsm_state.last_anomaly_angle == 0.0:
-                    self.fsm_state.anomaly_detected = True
-                    self.fsm_state.last_anomaly_angle = self.fsm_state.current_inspection_angle
-                    self.get_logger().info(f"!!! ANOMALIA DETECTADA !!! Ângulo: {self.fsm_state.current_inspection_angle:.1f}° (confiança: {confidence:.2f})")
-                    self.fsm_state.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO)
-                    break
-        
-        # Verifica se completou giro de 360° sem detectar flare
-        if (current_state == FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO and 
-            not flare_detected_in_frame and 
-            self.fsm_state.flare_detection_yaw_covered >= 360.0):
-            self.get_logger().warn("Flare não detectado após giro completo de 360°.")
-            self.fsm_state.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA)
+        # TODO: Implementar lógica de detecção de CV para inspeção
+        pass
 
-
-
-    def is_at_waypoint(self, waypoint_lat, waypoint_lon, waypoint_alt):
-        """
-        Verifica se o drone chegou ao waypoint especificado.
-        
-        Args:
-            waypoint_lat: Latitude do waypoint (graus)
-            waypoint_lon: Longitude do waypoint (graus)
-            waypoint_alt: Altitude do waypoint (metros)
-        
-        Returns:
-            bool: True se o drone está dentro da tolerância do waypoint
-        """
-        if (self.drone.current_latitude == 0.0 or self.drone.current_longitude == 0.0 or 
-            waypoint_lat == 0.0 or waypoint_lon == 0.0):
-            return False
-        
-        lat_diff = abs(self.drone.current_latitude - waypoint_lat) * 111000
-        lon_diff = abs(self.drone.current_longitude - waypoint_lon) * 111000 * math.cos(math.radians(self.drone.current_latitude))
-        
-        distance_2d = math.sqrt(lat_diff**2 + lon_diff**2)
-        alt_diff = abs(self.drone.current_altitude - waypoint_alt)
-        distance_3d = math.sqrt(distance_2d**2 + alt_diff**2)
-        
-        return distance_3d <= self.fsm_state.waypoint_tolerance and not self.drone.is_on_trajectory
 
 
 def main(args=None):
@@ -1242,7 +1246,7 @@ def main(args=None):
         pass
     finally:
         fsm_node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()
