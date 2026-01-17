@@ -19,6 +19,7 @@ import subprocess
 import yaml
 import json
 from .utils import gui_log_info, gui_log_error, gui_log_warn
+from ament_index_python.packages import get_package_share_directory
 
 class ControlesManager:
     """
@@ -27,26 +28,41 @@ class ControlesManager:
     Esta classe é um componente da interface gráfica (GUI) e interage com
     o sistema ROS2 através dos sinais PyQt6, que contêm métodos de publicação de comandos.
     """
-    def __init__(self, signals):
+    def __init__(self, signals, mapa_signals=None):
         """
         Inicializa o gerenciador de controles.
 
         Args:
             signals (DashboardSignals.DroneSignals): Objeto de sinais de controle do drone.
                                                      Contém métodos de publicação de comandos incorporados.
+            mapa_signals (DashboardSignals.MapaSignals): Sinais do mapa para emitir seleção de missão.
         """
         self.signals = signals  # Armazena a referência aos sinais de controle
+        self.mapa_signals = mapa_signals  # Sinais do mapa para missão selecionada
         
         # Inicializa os atributos que armazenarão os widgets e janelas relacionadas aos controles.
         self.inspection_selector = None
         self.start_button = None
-        self.stop_button = None
         self.cancel_button = None
-        self.return_button = None
         self.log_button = None
-        self.gazebo_button = None
-        self.enable_offboard_button = None
-        self.gazebo_window = None
+        
+        # Missões serão recebidas do dashboard_gui via set_missions()
+        self.missions = {}
+
+    def set_missions(self, missions: dict):
+        """
+        Recebe as missões carregadas pelo dashboard_gui.
+        
+        Args:
+            missions (dict): Dicionário com todas as missões disponíveis.
+        """
+        self.missions = missions
+        gui_log_info("ControlesManager", f"Missões recebidas: {list(missions.keys())}")
+        
+        # Atualiza o dropdown de seleção de missão
+        if self.inspection_selector:
+            self.inspection_selector.clear()
+            self.inspection_selector.addItems(list(missions.keys()))
 
     def setup_b3_controls(self):
         """
@@ -83,13 +99,13 @@ class ControlesManager:
         """)
         b3_layout.addWidget(control_title, 0, Qt.AlignmentFlag.AlignTop)
         
-        # Cria um layout horizontal para o seletor de tipo de inspeção.
+        # Cria um layout horizontal para o seletor de missão.
         selector_layout = QHBoxLayout()
         selector_layout.setContentsMargins(0, 0, 0, 0)
         selector_layout.setSpacing(2)
         
         # Cria o QLabel para o rótulo do seletor.
-        selector_label = QLabel("Tipo de Inspeção:")
+        selector_label = QLabel("Selecione a Missão:")
         selector_label.setStyleSheet("""
             font-size: 12px;
             font-weight: bold;
@@ -100,13 +116,9 @@ class ControlesManager:
         selector_label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Preferred)
         selector_layout.addWidget(selector_label)
         
-        # Cria o QComboBox para o seletor de inspeção e adiciona os itens.
+        # Cria o QComboBox para o seletor de missão e adiciona os nomes das missões carregadas.
         self.inspection_selector = QComboBox()
-        self.inspection_selector.addItems([
-            "Flare",
-            "Tanques de GLP",
-            "Pessoas em Áreas de Risco"
-        ])
+        self.inspection_selector.addItems(list(self.missions.keys()))
         self.inspection_selector.setMaximumHeight(33)
         self.inspection_selector.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.inspection_selector.setStyleSheet("""
@@ -122,6 +134,13 @@ class ControlesManager:
         """)
         selector_layout.addWidget(self.inspection_selector)
         
+        # Conecta o dropdown para emitir sinal quando missão for selecionada
+        self.inspection_selector.currentTextChanged.connect(self._on_mission_selected)
+        
+        # Emite sinal para a seleção inicial (para carregar pontos no mapa ao iniciar)
+        if self.inspection_selector.count() > 0:
+            self._on_mission_selected(self.inspection_selector.currentText())
+        
         # Adiciona o layout do seletor ao layout principal do painel B3.
         b3_layout.addLayout(selector_layout)
         
@@ -131,10 +150,27 @@ class ControlesManager:
         # Define o layout para o widget principal do painel B3 e o retorna.
         b3_widget.setLayout(b3_layout)
         return b3_widget
+    
+    def _on_mission_selected(self, mission_name: str):
+        """
+        Callback chamado quando uma missão é selecionada no dropdown.
+        Emite o sinal mission_selected para que o mapa exiba os pontos.
+        
+        Args:
+            mission_name (str): Nome da missão selecionada.
+        """
+        if mission_name and self.mapa_signals:
+            gui_log_info("ControlesManager", f"Missão selecionada: {mission_name}")
+            self.mapa_signals.mission_selected.emit(mission_name)
 
     def setup_control_buttons(self, layout):
         """
         Configura os botões de controle da missão e os adiciona ao layout fornecido.
+        
+        Botões disponíveis:
+        - Iniciar Missão: Envia INICIAR_MISSAO com nome da missão selecionada
+        - Cancelar Missão: Envia CANCELAR_MISSAO (drone retorna automaticamente)
+        - Log de Análise: Abre janela de análise de logs
 
         Args:
             layout (QLayout): O layout onde os botões serão adicionados.
@@ -146,41 +182,20 @@ class ControlesManager:
         buttons_layout = QGridLayout()
         buttons_layout.setSpacing(5)
         
-        # Cria e configura o botão 'Iniciar Inspeção'.
-        self.start_button = CleanButton("▶ Iniciar", "#27ae60")
-        self.start_button.clicked.connect(self.start_inspection)
+        # Cria e configura o botão 'Iniciar Missão'.
+        self.start_button = CleanButton("▶ Iniciar Missão", "#27ae60")
+        self.start_button.clicked.connect(self.iniciar_missao)
         buttons_layout.addWidget(self.start_button, 0, 0)
 
-        # Cria e configura o botão 'Pausar Inspeção'.
-        self.stop_button = CleanButton("⏸ Pausar", "#f39c12")
-        self.stop_button.clicked.connect(self.stop_inspection)
-        buttons_layout.addWidget(self.stop_button, 0, 1)
-
-        # Cria e configura o botão 'Cancelar Inspeção'.
-        self.cancel_button = CleanButton("⏹ Cancelar", "#e74c3c")
-        self.cancel_button.clicked.connect(self.cancel_inspection)
-        buttons_layout.addWidget(self.cancel_button, 1, 0)
-
-        # Cria e configura o botão 'Retornar à Base'.
-        self.return_button = CleanButton("🏠 Retornar", "#8e44ad")
-        self.return_button.clicked.connect(self.return_to_base)
-        buttons_layout.addWidget(self.return_button, 1, 1)
+        # Cria e configura o botão 'Cancelar Missão'.
+        self.cancel_button = CleanButton("⏹ Cancelar Missão", "#e74c3c")
+        self.cancel_button.clicked.connect(self.cancelar_missao)
+        buttons_layout.addWidget(self.cancel_button, 0, 1)
 
         # Cria e configura o botão 'Log de Análise'.
         self.log_button = CleanButton("📊 Log de Análise", "#17a2b8")
         self.log_button.clicked.connect(self.open_log_analysis)
-        buttons_layout.addWidget(self.log_button, 2, 0, 1, 2)
-        
-        # Cria e configura o botão 'Ações de Simulação Gazebo'.
-        self.gazebo_button = CleanButton("⚙️ Ações de Simulação Gazebo", "#9b59b6")
-        self.gazebo_button.clicked.connect(self.open_gazebo_simulation)
-        self.gazebo_button.setEnabled(True)  # Mantém o botão sempre habilitado.
-        buttons_layout.addWidget(self.gazebo_button, 3, 0, 1, 2)
-
-        # Cria e configura o botão 'Habilitar Offboard Mode'
-        self.enable_offboard_button = CleanButton("⚡ Habilitar Offboard Mode", "#3498db")
-        self.enable_offboard_button.clicked.connect(self.enable_offboard_mode)
-        buttons_layout.addWidget(self.enable_offboard_button, 4, 0, 1, 2)
+        buttons_layout.addWidget(self.log_button, 1, 0, 1, 2)
         
         # Adiciona o layout dos botões ao layout fornecido.
         layout.addLayout(buttons_layout)
@@ -221,85 +236,49 @@ class ControlesManager:
         self.log_window.raise_()
         self.log_window.activateWindow()
 
+    def iniciar_missao(self):
+        """
+        Publica um comando ROS2 para iniciar uma nova missão.
+        O nome da missão é obtido do seletor de missão e deve corresponder
+        a uma missão definida em missions.json.
+        """
+        gui_log_info("ControlesManager", "Botão Iniciar Missão clicado")
+        
+        # Obtém o nome da missão selecionada no QComboBox
+        selected_mission = self.inspection_selector.currentText()
+        gui_log_info("ControlesManager", f"Missão selecionada: {selected_mission}")
+        
+        # Usa o método de compatibilidade para publicar o comando
+        # O publisher converte internamente para o novo formato
+        command_dict = {
+            "command": "iniciar_missao",
+            "mission": selected_mission
+        }
+        command_json = json.dumps(command_dict)
+        self.signals.send_mission_command(command_json)
+
+    def cancelar_missao(self):
+        """
+        Publica um comando ROS2 para cancelar a missão atual.
+        O drone irá executar RTL (Return To Launch) automaticamente.
+        """
+        gui_log_info("ControlesManager", "Botão Cancelar Missão clicado")
+        
+        # Usa o método de compatibilidade para publicar o comando
+        command_dict = {
+            "command": "cancelar_missao"
+        }
+        command_json = json.dumps(command_dict)
+        self.signals.send_mission_command(command_json)
+
+    # Métodos legados mantidos para compatibilidade
     def start_inspection(self):
-        """
-        Publica um comando ROS2 para iniciar uma nova missão de inspeção.
-        O tipo de inspeção é obtido do seletor de inspeção.
-        """
-        gui_log_info("ControlesManager", "Botão Iniciar Inspeção clicado")
-        
-        # Obtém o tipo de inspeção selecionado no QComboBox
-        selected_inspection = self.inspection_selector.currentText()
-        gui_log_info("ControlesManager", f"Tipo de inspeção selecionado: {selected_inspection}")
-        
-        # Cria o comando em formato JSON
-        command_dict = {
-            "command": "start_inspection",
-            "inspection_type": selected_inspection
-        }
-        command_json = json.dumps(command_dict)
-        
-        # Usa o método de publicação incorporado nos signals para publicar o comando
-        self.signals.send_mission_command(command_json)
-        
-    def stop_inspection(self):
-        """
-        Publica um comando ROS2 para pausar a missão de inspeção atual.
-        """
-        gui_log_info("ControlesManager", "Botão Pausar Inspeção clicado")
-        
-        # Cria o comando em formato JSON
-        command_dict = {
-            "command": "stop_inspection"
-        }
-        command_json = json.dumps(command_dict)
-        
-        # Usa o método de publicação incorporado nos signals para publicar o comando
-        self.signals.send_mission_command(command_json)
+        """DEPRECATED: Use iniciar_missao() ao invés."""
+        self.iniciar_missao()
 
     def cancel_inspection(self):
-        """
-        Publica um comando ROS2 para cancelar completamente a missão de inspeção.
-        """
-        gui_log_info("ControlesManager", "Botão Cancelar Inspeção clicado")
-        
-        # Cria o comando em formato JSON
-        command_dict = {
-            "command": "cancel_inspection"
-        }
-        command_json = json.dumps(command_dict)
-        
-        # Usa o método de publicação incorporado nos signals para publicar o comando
-        self.signals.send_mission_command(command_json)
-
-    def return_to_base(self):
-        """
-        Publica um comando ROS2 para que o drone retorne à base.
-        """
-        gui_log_info("ControlesManager", "Botão Retornar à Base clicado")
-        
-        # Cria o comando em formato JSON
-        command_dict = {
-            "command": "return_to_base"
-        }
-        command_json = json.dumps(command_dict)
-        
-        # Usa o método de publicação incorporado nos signals para publicar o comando
-        self.signals.send_mission_command(command_json)
-
-    def enable_offboard_mode(self):
-        """
-        Publica um comando ROS2 para habilitar o envio de OffboardControlMode/TrajectorySetpoint no drone_node.
-        """
-        gui_log_info("ControlesManager", "Botão Habilitar Offboard Mode clicado")
-
-        command_dict = {
-            "command": "enable_offboard_control_mode"
-        }
-        command_json = json.dumps(command_dict)
-
-        # Usa o método de publicação incorporado nos signals para publicar o comando
-        self.signals.send_mission_command(command_json)
+        """DEPRECATED: Use cancelar_missao() ao invés."""
+        self.cancelar_missao()
 
 class CleanButton(QPushButton):
     """

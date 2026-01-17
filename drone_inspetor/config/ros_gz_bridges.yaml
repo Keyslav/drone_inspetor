@@ -1,17 +1,19 @@
 
 # Bridge for camera data
-- ros_topic_name: "/drone_inspetor/externo/camera/image_raw"
-  gz_topic_name: "/drone_inspetor/gz/gimbal/camera"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
+#- ros_topic_name: "/drone_inspetor/externo/camera/image_raw"
+#  gz_topic_name: "/drone_inspetor/gz/gimbal/camera"
+#  ros_type_name: "sensor_msgs/msg/Image"
+#  gz_type_name: "gz.msgs.Image"
+#  direction: GZ_TO_ROS
+#  qos_profile: SENSOR_DATA
 
 # Bridge for depth camera data
-- ros_topic_name: "/drone_inspetor/externo/depth_camera/image_raw"
-  gz_topic_name: "/drone_inspetor/gz/depth_camera"
-  ros_type_name: "sensor_msgs/msg/Image"
-  gz_type_name: "gz.msgs.Image"
-  direction: GZ_TO_ROS
+#- ros_topic_name: "/drone_inspetor/externo/depth_camera/image_raw"
+#  gz_topic_name: "/drone_inspetor/gz/depth_camera"
+#  ros_type_name: "sensor_msgs/msg/Image"
+#  gz_type_name: "gz.msgs.Image"
+#  direction: GZ_TO_ROS
+#  qos_profile: SENSOR_DATA
 
 # Bridge for LIDAR data
 - ros_topic_name: "/drone_inspetor/externo/lidar/scan"

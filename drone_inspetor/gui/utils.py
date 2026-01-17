@@ -67,6 +67,8 @@ def gui_log_debug(module_name, message):
     """
     timestamp = datetime.now().strftime("%H:%M:%S")
     # print(f"[{timestamp}] [DEBUG] [{module_name}] {message}", file=sys.stdout)
+
+    
 # ==================== CLASSES DE JANELAS AUXILIARES ====================
 
 class ExpandedWindow(QMainWindow):

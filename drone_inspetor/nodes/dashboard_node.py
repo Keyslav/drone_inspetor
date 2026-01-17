@@ -205,7 +205,7 @@ def main(args=None):
     dashboard_node.destroy_node()
     
     # Finaliza o ROS2
-    rclpy.shutdown()
+    rclpy.try_shutdown()
     
     # Encerra a aplicação com o código de saída apropriado
     sys.exit(exit_code)

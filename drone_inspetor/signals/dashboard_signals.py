@@ -40,19 +40,19 @@ class FSMSignals(QObject):
     Sinais relacionados à Máquina de Estados Finita (FSM).
     
     Emite sinais quando o estado da FSM muda.
+    O sinal emite um dict com todos os campos de FSMStateMSG.
     """
-    state_received = pyqtSignal(str)     # Estado atual da FSM
+    fsm_state_updated = pyqtSignal(dict)    # Estado completo da FSM (dict)
 
 class DroneSignals(QObject):
     """
-    Sinais relacionados ao controle do drone (posição/atitude e comandos).
+    Sinais relacionados ao controle do drone.
     
-    Emite sinais quando novos dados de posição ou atitude são recebidos.
-    Também contém métodos para publicação de comandos de missão.
+    Emite sinais quando novos dados de estado do drone são recebidos.
+    O sinal drone_state_updated emite um dict com todos os campos de DroneStateMSG.
     """
-    global_position_received = pyqtSignal(dict) # Posição global (lat, lon, alt)
-    attitude_received = pyqtSignal(dict)        # Atitude (roll, pitch, yaw)
-    mission_command_sent = pyqtSignal(str)      # Comando de missão enviado
+    drone_state_updated = pyqtSignal(dict)  # Estado completo do drone (dict)
+    mission_command_sent = pyqtSignal(str)  # Comando de missão enviado
     
     def __init__(self):
         """
@@ -125,8 +125,11 @@ class MapaSignals(QObject):
     
     Emite sinais quando a posição ou atitude do drone são atualizadas no mapa.
     """
-    position_updated = pyqtSignal(dict) # Posição atualizada no mapa
-    attitude_updated = pyqtSignal(dict) # Atitude atualizada no mapa
+    drone_state_updated = pyqtSignal(dict)    # Estado completo do drone
+    home_position_updated = pyqtSignal(dict)  # Posição home atualizada (home_lat, home_lon)
+    mission_selected = pyqtSignal(str)        # Nome da missão selecionada no dropdown
+    mission_started = pyqtSignal(str)         # Nome da missão iniciada (para exibir pontos)
+    mission_ended = pyqtSignal()              # Missão finalizada (limpar marcadores)
 
 class DashboardSignals(QObject):
     """

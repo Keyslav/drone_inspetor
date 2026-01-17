@@ -60,10 +60,34 @@ class LidarScreen(QWidget):
         self.original_label.setText("")
     
     def load_lidar_dashboard(self):
-        # (Método sem alterações)
-        possible_paths = [os.path.join(os.path.dirname(__file__), 'lidar_dashboard.html'), os.path.join(os.path.dirname(__file__), '..', 'lidar_dashboard.html')]
-        html_path = next((path for path in possible_paths if os.path.exists(path)), None)
+        """
+        Carrega o arquivo HTML do dashboard LiDAR.
+        
+        Ordem de busca:
+        1. Diretório share do pacote ROS2 (instalação via colcon)
+        2. Diretório do arquivo fonte (desenvolvimento)
+        3. Diretório pai do arquivo fonte
+        """
+        html_path = None
+        
+        # Tenta o diretório share do pacote ROS2 primeiro
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            package_share_dir = get_package_share_directory('drone_inspetor')
+            share_path = os.path.join(package_share_dir, 'gui', 'lidar_dashboard.html')
+            if os.path.exists(share_path):
+                html_path = share_path
+        except Exception:
+            pass
+        
+        # Fallback para diretório do arquivo fonte (desenvolvimento)
+        if html_path is None:
+            source_path = os.path.join(os.path.dirname(__file__), 'lidar_dashboard.html')
+            if os.path.exists(source_path):
+                html_path = source_path
+        
         if html_path:
+            gui_log_info("LidarScreen", f"Carregando lidar_dashboard de: {html_path}")
             self.web_view.loadFinished.connect(self.on_load_finished)
             self.web_view.load(QUrl.fromLocalFile(os.path.abspath(html_path)))
         else:

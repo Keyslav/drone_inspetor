@@ -127,13 +127,19 @@ class FSMManager:
     def create_fsm_tree_structure(self):
         """
         Cria a estrutura hierárquica dos estados na árvore visual (QTreeWidget).
-        Define todos os estados possíveis do sistema de inspeção do drone, organizados em categorias.
         
-        Estrutura compatível com os IntEnums do fsm_node.py:
-        - FSMState: DESATIVADO, PRONTO, EXECUTANDO_MISSAO, INSPECAO_FINALIZADA, RETORNO_HELIDECK
-        - FSMSubState: ARMANDO, DECOLANDO, VOANDO, INSPECIONANDO, RETORNANDO, DESARMANDO
-        - FSMInspectionState: DETECTANDO, CENTRALIZANDO, ESCANEANDO, FALHA_DE_DETECCAO
-        - FSMScanState: SEM_ANOMALIA, ANOMALIA_DETECTADA, FOCANDO_ANOMALIA
+        Os estados compostos (ex: EXECUTANDO_INSPECIONANDO_DETECTANDO) são exibidos
+        como uma hierarquia:
+        - EXECUTANDO
+            - ARMANDO
+            - DECOLANDO
+            - INSPECIONANDO
+                - DETECTANDO
+                - CENTRALIZANDO
+                - ESCANEANDO
+                - FALHA
+        
+        Quando um estado composto está ativo, todos os níveis ancestrais são destacados.
         """
         # Limpa a árvore existente antes de recriar a estrutura.
         self.fsm_tree.clear()
@@ -143,112 +149,92 @@ class FSMManager:
         root.setText(0, "🤖 Sistema de Inspeção")
         root.setExpanded(True)
         
-        # Inicializa o dicionário para armazenar referências aos itens da árvore por nome de estado.
+        # Dicionário principal: mapeia state_name completo para item
         self.fsm_states = {}
         
-        # ==================== ESTADOS PRINCIPAIS (FSMState) ====================
+        # Dicionário auxiliar: mapeia state_name para lista de itens a destacar
+        # (o próprio + todos os ancestrais)
+        self.fsm_highlight_items = {}
         
-        # Estado: DESATIVADO
+        # ==================== ESTADOS DE NÍVEL 0 - SISTEMA ====================
+        
+        # Estado: DESATIVADO (0)
         desativado_item = QTreeWidgetItem(root)
-        desativado_item.setText(0, "⛔ Desativado")
+        desativado_item.setText(0, "⛔ DESATIVADO")
         self.fsm_states["DESATIVADO"] = desativado_item
+        self.fsm_highlight_items["DESATIVADO"] = [desativado_item]
         
-        # Estado: PRONTO
-        ready_item = QTreeWidgetItem(root)
-        ready_item.setText(0, "✅ Pronto")
-        self.fsm_states["PRONTO"] = ready_item
+        # Estado: PRONTO (1)
+        pronto_item = QTreeWidgetItem(root)
+        pronto_item.setText(0, "✅ PRONTO")
+        self.fsm_states["PRONTO"] = pronto_item
+        self.fsm_highlight_items["PRONTO"] = [pronto_item]
         
-        # Estado: EXECUTANDO_MISSAO (com sub-estados)
-        executing_mission_item = QTreeWidgetItem(root)
-        executing_mission_item.setText(0, "🚀 Executando Missão")
-        executing_mission_item.setExpanded(True)
-        self.fsm_states["EXECUTANDO_MISSAO"] = executing_mission_item
-
-        # ==================== SUB-ESTADOS DE EXECUTANDO_MISSAO (FSMSubState) ====================
-
+        # ==================== EXECUTANDO (NÍVEL 1) ====================
+        
+        # Nó pai: EXECUTANDO
+        executando_item = QTreeWidgetItem(root)
+        executando_item.setText(0, "🚀 EXECUTANDO")
+        executando_item.setExpanded(True)
+        
         # Sub-estado: ARMANDO
-        arming_item = QTreeWidgetItem(executing_mission_item)
-        arming_item.setText(0, "⚙️ Armando")
-        self.fsm_states["EXECUTANDO_MISSAO -> ARMANDO"] = arming_item
-
+        armando_item = QTreeWidgetItem(executando_item)
+        armando_item.setText(0, "⚙️ ARMANDO")
+        self.fsm_states["EXECUTANDO_ARMANDO"] = armando_item
+        self.fsm_highlight_items["EXECUTANDO_ARMANDO"] = [executando_item, armando_item]
+        
         # Sub-estado: DECOLANDO
-        takeoff_item = QTreeWidgetItem(executing_mission_item)
-        takeoff_item.setText(0, "⬆️ Decolando")
-        self.fsm_states["EXECUTANDO_MISSAO -> DECOLANDO"] = takeoff_item
-
-        # Sub-estado: VOANDO
-        flying_item = QTreeWidgetItem(executing_mission_item)
-        flying_item.setText(0, "✈️ Voando")
-        self.fsm_states["EXECUTANDO_MISSAO -> VOANDO"] = flying_item
-
-        # Sub-estado: INSPECIONANDO (com sub-sub-estados)
-        inspecting_item = QTreeWidgetItem(executing_mission_item)
-        inspecting_item.setText(0, "🔍 Inspecionando")
-        inspecting_item.setExpanded(True)
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO"] = inspecting_item
-
-        # ==================== SUB-ESTADOS DE INSPECIONANDO (FSMInspectionState) ====================
-
+        decolando_item = QTreeWidgetItem(executando_item)
+        decolando_item.setText(0, "⬆️ DECOLANDO")
+        self.fsm_states["EXECUTANDO_DECOLANDO"] = decolando_item
+        self.fsm_highlight_items["EXECUTANDO_DECOLANDO"] = [executando_item, decolando_item]
+        
+        # ==================== INSPECIONANDO (NÍVEL 2) ====================
+        
+        # Nó pai: INSPECIONANDO (filho de EXECUTANDO)
+        inspecionando_item = QTreeWidgetItem(executando_item)
+        inspecionando_item.setText(0, "🔍 INSPECIONANDO")
+        inspecionando_item.setExpanded(True)
+        self.fsm_states["EXECUTANDO_INSPECIONANDO"] = inspecionando_item
+        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO"] = [executando_item, inspecionando_item]
+        
         # Sub-sub-estado: DETECTANDO
-        detecting_item = QTreeWidgetItem(inspecting_item)
-        detecting_item.setText(0, "🔄 Detectando")
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> DETECTANDO"] = detecting_item
-
+        detectando_item = QTreeWidgetItem(inspecionando_item)
+        detectando_item.setText(0, "🔄 DETECTANDO")
+        self.fsm_states["EXECUTANDO_INSPECIONANDO_DETECTANDO"] = detectando_item
+        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_DETECTANDO"] = [executando_item, inspecionando_item, detectando_item]
+        
         # Sub-sub-estado: CENTRALIZANDO
-        centralizing_item = QTreeWidgetItem(inspecting_item)
-        centralizing_item.setText(0, "🎯 Centralizando")
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> CENTRALIZANDO"] = centralizing_item
-
-        # Sub-sub-estado: ESCANEANDO (com sub-sub-sub-estados)
-        scanning_item = QTreeWidgetItem(inspecting_item)
-        scanning_item.setText(0, "🔭 Escaneando")
-        scanning_item.setExpanded(True)
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> ESCANEANDO"] = scanning_item
-
-        # ==================== SUB-ESTADOS DE ESCANEANDO (FSMScanState) ====================
-
-        # Sub-sub-sub-estado: SEM_ANOMALIA
-        no_anomaly_item = QTreeWidgetItem(scanning_item)
-        no_anomaly_item.setText(0, "✅ Sem Anomalia")
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> ESCANEANDO -> SEM_ANOMALIA"] = no_anomaly_item
-
-        # Sub-sub-sub-estado: ANOMALIA_DETECTADA
-        anomaly_detected_item = QTreeWidgetItem(scanning_item)
-        anomaly_detected_item.setText(0, "🚨 Anomalia Detectada")
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> ESCANEANDO -> ANOMALIA_DETECTADA"] = anomaly_detected_item
-
-        # Sub-sub-sub-estado: FOCANDO_ANOMALIA
-        focusing_anomaly_item = QTreeWidgetItem(scanning_item)
-        focusing_anomaly_item.setText(0, "🔎 Focando Anomalia")
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> ESCANEANDO -> FOCANDO_ANOMALIA"] = focusing_anomaly_item
-
-        # Sub-sub-estado: FALHA_DE_DETECCAO
-        failure_detection_item = QTreeWidgetItem(inspecting_item)
-        failure_detection_item.setText(0, "⚠️ Falha de Detecção")
-        self.fsm_states["EXECUTANDO_MISSAO -> INSPECIONANDO -> FALHA_DE_DETECCAO"] = failure_detection_item
-
-        # ==================== OUTROS ESTADOS PRINCIPAIS ====================
+        centralizando_item = QTreeWidgetItem(inspecionando_item)
+        centralizando_item.setText(0, "🎯 CENTRALIZANDO")
+        self.fsm_states["EXECUTANDO_INSPECIONANDO_CENTRALIZANDO"] = centralizando_item
+        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_CENTRALIZANDO"] = [executando_item, inspecionando_item, centralizando_item]
         
-        # Estado: INSPECAO_FINALIZADA
-        inspection_finished_item = QTreeWidgetItem(root)
-        inspection_finished_item.setText(0, "✅ Inspeção Finalizada")
-        self.fsm_states["INSPECAO_FINALIZADA"] = inspection_finished_item
+        # Sub-sub-estado: ESCANEANDO
+        escaneando_item = QTreeWidgetItem(inspecionando_item)
+        escaneando_item.setText(0, "🔭 ESCANEANDO")
+        self.fsm_states["EXECUTANDO_INSPECIONANDO_ESCANEANDO"] = escaneando_item
+        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_ESCANEANDO"] = [executando_item, inspecionando_item, escaneando_item]
         
-        # Estado: RETORNO_HELIDECK (com sub-estados)
-        return_helideck_item = QTreeWidgetItem(root)
-        return_helideck_item.setText(0, "🏠 Retorno Helideck")
-        return_helideck_item.setExpanded(True)
-        self.fsm_states["RETORNO_HELIDECK"] = return_helideck_item
-
-        # Sub-estado: RETORNANDO
-        returning_item = QTreeWidgetItem(return_helideck_item)
-        returning_item.setText(0, "🔙 Retornando")
-        self.fsm_states["RETORNO_HELIDECK -> RETORNANDO"] = returning_item
-
-        # Sub-estado: DESARMANDO
-        disarming_item = QTreeWidgetItem(return_helideck_item)
-        disarming_item.setText(0, "⚙️ Desarmando")
-        self.fsm_states["RETORNO_HELIDECK -> DESARMANDO"] = disarming_item
+        # Sub-sub-estado: FALHA
+        falha_item = QTreeWidgetItem(inspecionando_item)
+        falha_item.setText(0, "⚠️ FALHA")
+        self.fsm_states["EXECUTANDO_INSPECIONANDO_FALHA"] = falha_item
+        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_FALHA"] = [executando_item, inspecionando_item, falha_item]
+        
+        # ==================== ESTADOS DE FINALIZAÇÃO ====================
+        
+        # Estado: INSPECAO_FINALIZADA (30)
+        finalizada_item = QTreeWidgetItem(root)
+        finalizada_item.setText(0, "✅ INSPECAO_FINALIZADA")
+        self.fsm_states["INSPECAO_FINALIZADA"] = finalizada_item
+        self.fsm_highlight_items["INSPECAO_FINALIZADA"] = [finalizada_item]
+        
+        # Estado: RETORNANDO (40)
+        retornando_item = QTreeWidgetItem(root)
+        retornando_item.setText(0, "🏠 RETORNANDO")
+        self.fsm_states["RETORNANDO"] = retornando_item
+        self.fsm_highlight_items["RETORNANDO"] = [retornando_item]
         
         # Expande todos os itens da árvore para que todos os estados sejam visíveis.
         self.fsm_tree.expandAll()
@@ -256,56 +242,78 @@ class FSMManager:
     def highlight_current_state_in_tree(self, state):
         """
         Destaca visualmente o estado atual na árvore de estados (QTreeWidget).
-        Remove qualquer destaque anterior e aplica o novo destaque, formatando a fonte em negrito.
+        Para estados compostos, destaca todos os níveis hierárquicos (ancestrais).
+        
+        Por exemplo, para EXECUTANDO_INSPECIONANDO_DETECTANDO, destaca:
+        - EXECUTANDO (nível 1)
+        - INSPECIONANDO (nível 2)
+        - DETECTANDO (nível 3)
 
         Args:
             state (str): O nome do estado a ser destacado na árvore.
         """
-        # O estado pode vir como "PRINCIPAL -> SUB -> SUBSUB", então precisamos encontrar a chave correta
-        # no dicionário self.fsm_states. A chave é exatamente a string completa do estado.
-        if state in self.fsm_states:
-            item = self.fsm_states[state]
-            
+        # Primeiro, remove o destaque de todos os itens
+        for state_name, state_item in self.fsm_states.items():
+            font = state_item.font(0)
+            font.setBold(False)
+            state_item.setFont(0, font)
+            state_item.setSelected(False)
+        
+        # Obtém a lista de itens a destacar para este estado
+        items_to_highlight = self.fsm_highlight_items.get(state, [])
+        
+        if items_to_highlight:
             # Limpa qualquer seleção anterior na árvore.
             self.fsm_tree.clearSelection()
             
-            # Seleciona o item correspondente ao estado atual e o define como item atual.
-            item.setSelected(True)
-            self.fsm_tree.setCurrentItem(item)
+            # Destaca todos os itens da hierarquia
+            for item in items_to_highlight:
+                font = item.font(0)
+                font.setBold(True)
+                item.setFont(0, font)
+                item.setSelected(True)
             
-            # Itera sobre todos os estados para definir a fonte (negrito ou normal).
-            for state_name, state_item in self.fsm_states.items():
-                font = state_item.font(0)
-                if state_name == state:
-                    font.setBold(True) # Define negrito para o estado atual.
-                else:
-                    font.setBold(False) # Remove negrito dos outros estados.
-                state_item.setFont(0, font)
+            # Define o último item (mais específico) como o item atual
+            self.fsm_tree.setCurrentItem(items_to_highlight[-1])
 
-    def update_state(self, state):
-        """
-        Atualiza a interface visual da FSM com um novo estado.
-        Este método é chamado sempre que o estado do sistema muda, atualizando o destaque na árvore.
-
-        Args:
-            state (str): O novo estado do sistema (pode ser hierárquico, ex: "EXECUTANDO_MISSAO -> VOANDO").
-        """
-        # Registra a atualização do estado
-        gui_log_info("FSMManager", f"Atualizando estado para: {state}")
-        
-        # Destaca o estado atual na árvore de estados.
-        self.highlight_current_state_in_tree(state)
-        
     def fsm_state_callback(self, msg):
         """
         Callback ROS2 para receber mensagens de mudança de estado da FSM.
         Esta função é automaticamente invocada quando uma nova mensagem é recebida no tópico ROS2.
 
         Args:
-            msg (std_msgs.msg.String): A mensagem ROS2 contendo o novo estado da FSM.
+            msg: Mensagem ROS2 contendo o novo estado da FSM (dict via sinal PyQt).
         """
         # Registra a mensagem de estado recebida
-        gui_log_info("FSMManager", f"Estado FSM recebido: {msg.data}")
+        if isinstance(msg, dict):
+            state_name = msg.get("state_name", "")
+        else:
+            state_name = str(msg)
+        gui_log_info("FSMManager", f"Estado FSM recebido: {state_name}")
         
         # Atualiza o estado da interface com o novo estado recebido.
-        self.update_state(msg.data)
+        self.update_state(msg)
+
+
+    def update_state(self, state_data):
+        """
+        Atualiza a interface visual da FSM com dados do novo estado.
+        Este método é chamado sempre que o estado do sistema muda.
+        
+        Aceita tanto dict (novo formato de FSMStateMSG) quanto str (legado).
+
+        Args:
+            state_data: Dados do estado - pode ser dict com campos de FSMStateMSG ou str com state_name
+        """
+        # Extrai state_name do dict ou usa string diretamente
+        if isinstance(state_data, dict):
+            state = state_data.get("state_name", "")
+        else:
+            state = str(state_data)
+        
+        # Registra a atualização do estado
+        # gui_log_info("FSMManager", f"Atualizando estado para: {state}")
+        
+        # Destaca o estado atual na árvore de estados.
+        self.highlight_current_state_in_tree(state)
+        

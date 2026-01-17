@@ -23,7 +23,7 @@ ALGORITMO:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 from std_msgs.msg import String
 import cv2
@@ -77,6 +77,12 @@ class CVNode(Node):
             # (flares, anomalias, etc.) no contexto da inspeção de drones
             self.yolo_model = YOLO(model_path)
             self.get_logger().info(f"Modelo YOLO carregado com sucesso de: {model_path}")
+
+            import torch
+            self.get_logger().info(f"torch.cuda.is_available()={torch.cuda.is_available()}")
+            if torch.cuda.is_available():
+                self.get_logger().info(f"GPU: {torch.cuda.get_device_name(0)}")
+
         except Exception as e:
             # Se o modelo não puder ser carregado, o nó continua funcionando
             # mas não realizará detecções (retornará imagens sem anotações)
@@ -85,31 +91,34 @@ class CVNode(Node):
             self.yolo_model = None
         
         # ==================== CONFIGURAÇÃO DE QoS ========================
-        # QoS para dados de sensores (imagens): VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
+        # QoS para dados de sensores (imagens) - equivalente ao "sensor_data":
+        # - BEST_EFFORT: menor latência, evita retransmissões; adequado para vídeo/imagem
+        # - VOLATILE: não mantém amostras antigas
+        # - KEEP_LAST: mantém somente as últimas N amostras
+        # - DEPTH=1: evita fila e reduz lag no dashboard/YOLO (processa sempre o frame mais recente)
         qos_sensor_data = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10
+            depth=1
         )
         
-        # ==================== SUBSCRIBERS INTERNOS (ENTRADA DE DADOS DA CÂMERA) ========================
-        # Assina o tópico interno de imagens da câmera
-        # As imagens já foram processadas pelo camera_node e estão no formato padronizado
-        self.raw_image_subscription = self.create_subscription(
-            Image,
-            "/drone_inspetor/interno/camera_node/image_raw",
+        # ==================== SUBSCRIBERS EXTERNOS (ENTRADA DE DADOS DO SIMULADOR/DRONE) ========================
+        # Assina o tópico externo de imagens comprimidas da câmera do Gazebo/drone
+        self.compressed_image_subscription = self.create_subscription(
+            CompressedImage,
+            "/drone_inspetor/externo/camera/compressed",
             self.image_callback,
             qos_sensor_data
         )
-        self.get_logger().info(f"Assinado tópico interno: {self.raw_image_subscription.topic_name}")
+        self.get_logger().info(f"Assinado tópico externo: {self.compressed_image_subscription.topic_name}")
         
         # ==================== PUBLISHERS INTERNOS (SAÍDA DE DADOS PARA O DASHBOARD) ====================
         # Publica imagens processadas com anotações (bounding boxes e labels)
         # Estas imagens são consumidas pelo dashboard para visualização
         self.processed_image_publisher = self.create_publisher(
-            Image,
-            "/drone_inspetor/interno/cv_node/image_processed",
+            CompressedImage,
+            "/drone_inspetor/interno/cv_node/compressed",
             qos_sensor_data
         )
         self.get_logger().info(f"Publicando no tópico: {self.processed_image_publisher.topic_name}")
@@ -127,32 +136,31 @@ class CVNode(Node):
 
     # ==================== CALLBACKS INTERNOS (PROCESSAMENTO DE IMAGENS DA CÂMERA) ====================
 
-    def image_callback(self, msg):
+    def image_callback(self, msg: CompressedImage):
         """
-        Callback para processar imagens recebidas da câmera.
+        Callback para processar imagens comprimidas recebidas da câmera.
         
-        Este método é chamado sempre que uma nova imagem é recebida. Ele:
-        1. Converte a mensagem ROS para formato OpenCV
+        Este método é chamado sempre que uma nova imagem comprimida é recebida. Ele:
+        1. Converte a mensagem CompressedImage ROS para formato OpenCV
         2. Aplica detecção de objetos usando YOLO
-        3. Publica a imagem anotada
+        3. Publica a imagem anotada como CompressedImage
         4. Publica dados estruturados de detecção como mensagem ROS
         
         Args:
-            msg (sensor_msgs.msg.Image): Mensagem de imagem recebida da câmera.
+            msg (sensor_msgs.msg.CompressedImage): Mensagem de imagem comprimida recebida.
         """
         try:
-            # Converte mensagem ROS para imagem OpenCV no formato BGR8
-            # BGR8 é o formato padrão do OpenCV (Blue-Green-Red, 8 bits por canal)
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            # Converte mensagem CompressedImage ROS para imagem OpenCV no formato BGR8
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
             
             # Aplica detecção de objetos usando YOLO
             # Retorna imagem anotada e lista de detecções
             annotated_image, detections = self.detect_objects(cv_image)
             
-            # Publica imagem processada com anotações
+            # Publica imagem processada com anotações como CompressedImage
             try:
-                # Converte imagem OpenCV de volta para mensagem ROS
-                processed_msg = self.bridge.cv2_to_imgmsg(annotated_image, "bgr8")
+                # Converte imagem OpenCV para mensagem CompressedImage ROS
+                processed_msg = self.bridge.cv2_to_compressed_imgmsg(annotated_image, dst_format="jpeg")
                 # Preserva o header original (timestamp, frame_id, etc.)
                 processed_msg.header = msg.header
                 self.processed_image_publisher.publish(processed_msg)
@@ -190,11 +198,8 @@ class CVNode(Node):
         """
         Detecta objetos na imagem usando YOLO e retorna a imagem com bounding boxes.
         
-        Este método aplica o modelo YOLO à imagem fornecida e processa os resultados:
-        - Filtra detecções com confiança abaixo do threshold (0.5)
-        - Desenha bounding boxes verdes ao redor dos objetos detectados
-        - Adiciona labels com nome da classe e nível de confiança
-        - Retorna lista estruturada de detecções
+        Versão otimizada que faz conversão GPU->CPU uma única vez por frame,
+        reduzindo transferências de memória e melhorando performance.
         
         Args:
             image (numpy.ndarray): Imagem OpenCV no formato BGR (numpy array)
@@ -202,97 +207,83 @@ class CVNode(Node):
         Returns:
             tuple: (imagem_anotada, lista_deteccoes)
                 - imagem_anotada: Imagem com bounding boxes e labels desenhados
-                - lista_deteccoes: Lista de dicionários, cada um contendo:
-                    - "class": Nome da classe detectada
-                    - "confidence": Nível de confiança (0.0 a 1.0)
-                    - "bbox": [x1, y1, x2, y2] coordenadas do bounding box
+                - lista_deteccoes: Lista de dicionários com informações das detecções
         """
-        # Se o modelo YOLO não foi carregado, retorna imagem original sem detecções
         if self.yolo_model is None:
             return image, []
-        
+
         try:
-            # Executa detecção com YOLO
-            # O modelo processa a imagem e retorna resultados contendo:
-            # - Coordenadas dos bounding boxes
-            # - Classes detectadas
-            # - Níveis de confiança
-            # verbose=False suprime as mensagens de debug do YOLO no terminal
-            results = self.yolo_model(image, verbose=False)
-            
-            # Processa resultados da detecção
+            # Inferência (forçando GPU)
+            results = self.yolo_model.predict(image, verbose=False, device=0)
+            if not results:
+                return image, []
+
+            result = results[0]
+            boxes = result.boxes
+            if boxes is None or len(boxes) == 0:
+                return image, []
+
+            annotated_image = image.copy()
+
+            # Converte UMA vez por frame (GPU -> CPU) - muito mais eficiente
+            xyxy = boxes.xyxy.cpu().numpy()              # (N, 4)
+            conf = boxes.conf.cpu().numpy()              # (N,)
+            cls  = boxes.cls.cpu().numpy().astype(int)   # (N,)
+
             detections = []
-            annotated_image = image.copy()  # Cria cópia para não modificar a imagem original
-            
-            # Itera sobre os resultados (geralmente há apenas um resultado por imagem)
-            for result in results:
-                boxes = result.boxes
-                if boxes is not None:
-                    # Itera sobre cada bounding box detectado
-                    for box in boxes:
-                        # Extrai coordenadas do bounding box (canto superior esquerdo e inferior direito)
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                        # Extrai nível de confiança da detecção
-                        confidence = box.conf[0].cpu().numpy()
-                        # Extrai ID da classe detectada
-                        class_id = int(box.cls[0].cpu().numpy())
-                        # Obtém nome da classe a partir do ID
-                        class_name = self.yolo_model.names[class_id]
-                        
-                        # Filtra detecções com confiança mínima de 0.5 (50%)
-                        # Isso elimina falsos positivos e detecções incertas
-                        if confidence > 0.5:
-                            # Desenha bounding box verde (BGR: 0, 255, 0) com espessura 2
-                            cv2.rectangle(annotated_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                            
-                            # Cria label com nome da classe e confiança formatada
-                            label = f"{class_name}: {confidence:.2f}"
-                            # Desenha label acima do bounding box
-                            cv2.putText(annotated_image, label, (int(x1), int(y1) - 10), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                            
-                            # Calcula o centro do bounding box
-                            bbox_center_x = (x1 + x2) / 2.0
-                            bbox_center_y = (y1 + y2) / 2.0
-                            
-                            # Determina o tipo de objeto baseado no nome da classe
-                            # Mapeia classes para tipos de objeto (flare, anomalia, etc.)
-                            object_type = "flare" if "flare" in class_name.lower() else "anomalia" if "anomalia" in class_name.lower() else class_name.lower()
-                            
-                            # Armazena detecção em formato estruturado
-                            detection = {
-                                "object_type": object_type,
-                                "class": class_name,
-                                "confidence": float(confidence),
-                                "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                                "bbox_center": [float(bbox_center_x), float(bbox_center_y)]
-                            }
-                            detections.append(detection)
-            
+            for (x1, y1, x2, y2), confidence, class_id in zip(xyxy, conf, cls):
+                # Filtra detecções com confiança mínima de 0.5 (50%)
+                if confidence <= 0.5:
+                    continue
+
+                class_name = self.yolo_model.names[class_id]
+
+                # Desenho (CPU/OpenCV)
+                x1i, y1i, x2i, y2i = int(x1), int(y1), int(x2), int(y2)
+                cv2.rectangle(annotated_image, (x1i, y1i), (x2i, y2i), (0, 255, 0), 2)
+
+                label = f"{class_name}: {float(confidence):.2f}"
+                cv2.putText(annotated_image, label, (x1i, y1i - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                # Calcula centro do bounding box
+                bbox_center_x = (x1 + x2) / 2.0
+                bbox_center_y = (y1 + y2) / 2.0
+
+                # Determina tipo de objeto baseado no nome da classe
+                object_type = (
+                    "flare" if "flare" in class_name.lower()
+                    else "anomalia" if "anomalia" in class_name.lower()
+                    else class_name.lower()
+                )
+
+                detections.append({
+                    "object_type": object_type,
+                    "class": class_name,
+                    "confidence": float(confidence),
+                    "bbox": [x1i, y1i, x2i, y2i],
+                    "bbox_center": [float(bbox_center_x), float(bbox_center_y)]
+                })
+
             return annotated_image, detections
-            
+
         except Exception as e:
             self.get_logger().error(f"Erro na detecção de objetos: {e}")
-            # Em caso de erro, retorna imagem original sem detecções
             return image, []
 
 def main(args=None):
-    """
-    Função principal para iniciar o nó de visão computacional.
-    
-    Args:
-        args: Argumentos de linha de comando (opcional)
-    """
-    # Inicializa o ROS2
+    """Função principal do nó."""
     rclpy.init(args=args)
-    
-    # Cria e executa o nó de visão computacional
     cv_node = CVNode()
-    rclpy.spin(cv_node)
     
-    # Limpeza ao encerrar
-    cv_node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(cv_node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        cv_node.destroy_node()
+        rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()
+

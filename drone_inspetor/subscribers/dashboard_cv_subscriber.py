@@ -1,9 +1,10 @@
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 import json
 from drone_inspetor.signals.dashboard_signals import CVSignals
+from cv_bridge import CvBridge
 
 class DashboardCVSubscriber:
     """
@@ -12,19 +13,25 @@ class DashboardCVSubscriber:
     def __init__(self, DashboardNode: Node, signals: CVSignals):
         self.DashboardNode = DashboardNode
         self.signals = signals
+        self.bridge = CvBridge()  # Para conversão de imagens comprimidas para OpenCV
 
-        # QoS para dados de sensores (imagens): VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
+        # ==================== CONFIGURAÇÃO DE QoS ========================
+        # QoS para dados de sensores (imagens) - equivalente ao "sensor_data":
+        # - BEST_EFFORT: menor latência, evita retransmissões; adequado para vídeo/imagem
+        # - VOLATILE: não mantém amostras antigas
+        # - KEEP_LAST: mantém somente as últimas N amostras
+        # - DEPTH=1: evita fila e reduz lag no dashboard/YOLO (processa sempre o frame mais recente)
         qos_sensor_data = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10
+            depth=1
         )
 
-        # Subscriber para imagem processada por CV
+        # Subscriber para imagem processada por CV (comprimida)
         self.cv_image_sub = self.DashboardNode.create_subscription(
-            Image,
-            "/drone_inspetor/interno/cv_node/image_processed",
+            CompressedImage,
+            "/drone_inspetor/interno/cv_node/compressed",
             self.cv_image_callback,
             qos_sensor_data
         )
@@ -48,12 +55,16 @@ class DashboardCVSubscriber:
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.cv_analysis_sub.topic_name}")
 
-    def cv_image_callback(self, msg):
+    def cv_image_callback(self, msg: CompressedImage):
         """
         Callback para mensagens de imagem processada por Visão Computacional.
-        Emite o sinal image_received da subclasse CV.
+        Converte CompressedImage para OpenCV e emite o sinal image_received.
         """
-        self.signals.image_received.emit(msg)
+        try:
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            self.signals.image_received.emit(cv_image)
+        except Exception as e:
+            self.DashboardNode.get_logger().error(f"Erro ao converter imagem CV comprimida: {e}")
 
     def cv_detections_callback(self, msg):
         """

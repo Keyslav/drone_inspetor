@@ -110,7 +110,15 @@ class DashboardGUI(QWidget):
         
         # Gerenciador de controles de missão e simulação
         # Os sinais já contêm métodos de publicação de comandos incorporados
-        self.controles_manager = ControlesManager(signals=self.signals.control)
+        self.controles_manager = ControlesManager(
+            signals=self.signals.control,
+            mapa_signals=self.signals.mapa
+        )
+        
+        # ==================== CARREGAMENTO CENTRALIZADO DE MISSÕES =====================================
+        # Carrega missões do arquivo missions.json e distribui para os gerenciadores
+        self.loaded_missions = {}
+        self._load_missions()
         
         # ==================== INICIALIZAÇÃO DAS TELAS DE SENSORES =====================================
         # As telas de sensores são inicializadas como None aqui e serão criadas após
@@ -143,6 +151,41 @@ class DashboardGUI(QWidget):
         # Conecta sinais PyQt6 aos slots da GUI
         # Isso permite que a GUI seja atualizada automaticamente quando novos dados chegam
         self.connect_signals()
+
+    def _load_missions(self):
+        """
+        Carrega missões do arquivo missions.json e distribui para os gerenciadores.
+        Este é o ponto centralizado de carregamento de missões.
+        """
+        import json
+        import os
+        
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            package_share_dir = get_package_share_directory('drone_inspetor')
+            missions_file = os.path.join(package_share_dir, 'missions', 'missions.json')
+            
+            with open(missions_file, 'r') as f:
+                self.loaded_missions = json.load(f)
+            
+            from .utils import gui_log_info
+            gui_log_info("DashboardGUI", f"Missões carregadas: {list(self.loaded_missions.keys())}")
+            
+            # Distribui as missões para os gerenciadores
+            if hasattr(self.mapa_manager, 'set_missions'):
+                self.mapa_manager.set_missions(self.loaded_missions)
+            
+            if hasattr(self.controles_manager, 'set_missions'):
+                self.controles_manager.set_missions(self.loaded_missions)
+            
+        except FileNotFoundError:
+            from .utils import gui_log_error
+            gui_log_error("DashboardGUI", f"Arquivo de missões não encontrado: {missions_file}")
+            self.loaded_missions = {}
+        except Exception as e:
+            from .utils import gui_log_error
+            gui_log_error("DashboardGUI", f"Erro ao carregar missões: {e}")
+            self.loaded_missions = {}
     
     def apply_dark_theme(self):
         """
@@ -251,7 +294,7 @@ class DashboardGUI(QWidget):
             {"name": "Câmera Principal", "pos": (0, 0), "color": COMMON_STYLES["accent_color"]},
             {"name": "Câmera Processada (CV)", "pos": (0, 1), "color": COMMON_STYLES["accent_color"]},
             {"name": "Câmera de Profundidade", "pos": (1, 0), "color": "#9b59b6"},
-            {"name": "LiDAR", "pos": (1, 1), "color": "#e67e22"}
+            {"name": "Mapa GPS", "pos": (1, 1), "color": "#1e5631"}
         ]
         
         self.video_labels = [] # Lista para armazenar os QLabels que exibem os vídeos/imagens.
@@ -332,8 +375,9 @@ class DashboardGUI(QWidget):
         self.depth_screen = DepthScreen(self.signals.depth, self.video_labels[2])
         self.screen_instances["depth"] = self.depth_screen
         
-        self.lidar_screen = LidarScreen(self.signals.lidar, self.video_labels[3])
-        self.screen_instances["lidar"] = self.lidar_screen
+        # O mapa agora está na posição do grid onde antes estava o LiDAR
+        # A inicialização do mapa será feita no setup_mapa_in_grid()
+        self.setup_mapa_in_grid()
 
     def connect_signals(self):
         """
@@ -359,16 +403,17 @@ class DashboardGUI(QWidget):
         self.signals.lidar.obstacle_detections_received.connect(self.lidar_obstacle_detections_update)
 
         # Conexões para FSM: Atualiza o estado da Máquina de Estados Finitos.
-        self.signals.fsm.state_received.connect(self.fsm_manager.update_state)
+        self.signals.fsm.fsm_state_updated.connect(self.fsm_manager.update_state)
+        self.signals.fsm.fsm_state_updated.connect(self.handle_fsm_state_for_map)
 
-        # Conexões para Controle (posição/atitude): Atualiza a posição e atitude do drone no mapa.
-        self.signals.control.global_position_received.connect(self.mapa_manager.update_position_from_node)
-        self.signals.control.attitude_received.connect(self.mapa_manager.update_attitude_from_node)
-
-        # Conexões para Mapa (se houver sinais específicos do mapa para a GUI):
-        # Estes sinais garantem que o mapa seja atualizado quando a posição ou atitude do drone muda.
-        self.signals.mapa.position_updated.connect(self.mapa_manager.update_position_from_node)
-        self.signals.mapa.attitude_updated.connect(self.mapa_manager.update_attitude_from_node)
+        # Conexão única para estado do drone no mapa
+        # O sinal drone_state_updated contém todos os campos de DroneStateMSG
+        self.signals.mapa.drone_state_updated.connect(self.mapa_manager.update_drone_state)
+        
+        # Conexões para missão no mapa
+        self.signals.mapa.mission_selected.connect(self.mapa_manager.display_mission_on_map)
+        self.signals.mapa.mission_started.connect(self.handle_mission_started)
+        self.signals.mapa.mission_ended.connect(self.handle_mission_ended)
 
     # Métodos de atualização da GUI (slots) que serão conectados aos sinais.
     def camera_image_update(self, cv_image):
@@ -381,12 +426,12 @@ class DashboardGUI(QWidget):
             from .utils import gui_log_error
             gui_log_error("DashboardGUI", f"Erro ao processar imagem da câmera: {e}")
 
-    def cv_image_update(self, msg):
+    def cv_image_update(self, cv_image):
         """
         Atualiza a imagem processada por Visão Computacional na GUI.
+        Recebe diretamente uma imagem OpenCV (numpy array) do subscriber.
         """
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             self.cv_screen.update_processed_image(cv_image)
         except Exception as e:
             from .utils import gui_log_error
@@ -445,6 +490,55 @@ class DashboardGUI(QWidget):
         """
         self.lidar_screen.update_obstacle_detections(detections)
 
+    # ==================== HANDLERS PARA MAPA E MISSÃO ====================
+    
+    def handle_fsm_state_for_map(self, state_data: dict):
+        """
+        Processa o estado da FSM para exibir/limpar pontos de inspeção no mapa.
+        
+        Args:
+            state_data (dict): Dados do estado FSM contendo 'on_mission' e 'mission_name'.
+        """
+        on_mission = state_data.get("on_mission", False)
+        mission_name = state_data.get("mission_name", "")
+        
+        # Armazena o estado anterior para detectar mudança
+        if not hasattr(self, '_last_on_mission_state'):
+            self._last_on_mission_state = False
+        
+        # Se entrou em missão, exibe os pontos
+        if on_mission and not self._last_on_mission_state:
+            if mission_name and mission_name in self.loaded_missions:
+                self.mapa_manager.display_mission_on_map(mission_name)
+                from .utils import gui_log_info
+                gui_log_info("DashboardGUI", f"Exibindo pontos da missão '{mission_name}' no mapa")
+        
+        # Se saiu da missão, limpa os marcadores
+        elif not on_mission and self._last_on_mission_state:
+            self.mapa_manager.clear_mission_display()
+            from .utils import gui_log_info
+            gui_log_info("DashboardGUI", "Marcadores de missão limpos do mapa")
+        
+        self._last_on_mission_state = on_mission
+    
+    def handle_mission_started(self, mission_name: str):
+        """
+        Handler para quando uma missão é iniciada.
+        Exibe os pontos de inspeção no mapa.
+        
+        Args:
+            mission_name (str): Nome da missão iniciada.
+        """
+        if mission_name and mission_name in self.loaded_missions:
+            self.mapa_manager.display_mission_on_map(mission_name)
+    
+    def handle_mission_ended(self):
+        """
+        Handler para quando uma missão é finalizada.
+        Limpa os marcadores de missão do mapa.
+        """
+        self.mapa_manager.clear_mission_display()
+
     def setup_control_area(self):
         """
         Configura a área de controles, FSM e mapa com proporções definidas e separadores.
@@ -455,12 +549,12 @@ class DashboardGUI(QWidget):
         control_layout.setSpacing(5) # Espaço entre os widgets
 
         # --- Cria os painéis ---
-        map_panel = self.mapa_manager.setup_b1_map()
+        lidar_panel = self.setup_lidar_panel()
         fsm_panel = self.fsm_manager.setup_b2_fsm()
         controls_panel = self.controles_manager.setup_b3_controls()
 
         # --- Adiciona os painéis ao layout ---
-        control_layout.addWidget(map_panel)
+        control_layout.addWidget(lidar_panel)
         
         # --- Adiciona a primeira linha separadora ---
         separator1 = QFrame()
@@ -479,12 +573,12 @@ class DashboardGUI(QWidget):
         control_layout.addWidget(controls_panel)
 
         # --- Define as proporções de espaço (Stretch Factors) ---
-        # Esta é a parte mais importante. A soma total é 10 (6+2+2).
-        # O mapa receberá 6/10 (60%) do espaço vertical.
-        # O FSM e os Controles receberão 2/10 (20%) cada.
+        # Esta é a parte mais importante. A soma total é 10 (4+3+3).
+        # O LiDAR receberá 4/10 (40%) do espaço vertical.
+        # O FSM e os Controles receberão 3/10 (30%) cada.
         # Os separadores e o stretch final terão um fator de 0, ou seja, não crescerão.
         
-        control_layout.setStretch(0, 4)  # Índice 0 (map_panel) recebe 40% do espaço
+        control_layout.setStretch(0, 4)  # Índice 0 (lidar_panel) recebe 40% do espaço
         # O índice 1 é o separator1, não precisa de stretch
         control_layout.setStretch(2, 3)  # Índice 2 (fsm_panel) recebe 30% do espaço
         # O índice 3 é o separator2, não precisa de stretch
@@ -497,5 +591,93 @@ class DashboardGUI(QWidget):
 
         control_area_widget.setLayout(control_layout)
         return control_area_widget
+
+    def setup_mapa_in_grid(self):
+        """
+        Configura o mapa interativo dentro do grid de sensores (posição 1,1).
+        O mapa é renderizado no QLabel que antes era usado pelo LiDAR.
+        """
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+        from PyQt6.QtCore import QUrl
+        import os
+        
+        # Obtém o QLabel onde o mapa será exibido (posição 3 = index do grid 1,1)
+        map_label = self.video_labels[3]
+        
+        # Cria um layout no QLabel para conter o widget do mapa
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Cria o widget do mapa usando a classe InteractiveMapWidget do mapa_manager
+        from .mapa import InteractiveMapWidget
+        self.grid_map_widget = InteractiveMapWidget(parent=map_label, mapa_manager=self.mapa_manager)
+        self.grid_map_widget.setStyleSheet("""
+            QWebEngineView {
+                border: 2px solid #1e5631;
+                border-radius: 5px;
+            }
+        """)
+        
+        # Adiciona o widget do mapa ao layout
+        layout.addWidget(self.grid_map_widget)
+        map_label.setLayout(layout)
+        map_label.setText("")
+        
+        # Atualiza a referência do mapa_manager para usar este widget
+        self.mapa_manager.map_widget = self.grid_map_widget
+        self.screen_instances["mapa"] = self.grid_map_widget
+
+    def setup_lidar_panel(self):
+        """
+        Configura o painel do LiDAR para a área de controles.
+        Retorna um widget contendo a visualização do LiDAR.
+        """
+        from PyQt6.QtWebEngineWidgets import QWebEngineView
+        from PyQt6.QtCore import QUrl
+        import os
+        
+        # Cria o widget principal para o painel do LiDAR
+        lidar_widget = QWidget()
+        lidar_layout = QVBoxLayout()
+        lidar_layout.setContentsMargins(2, 2, 2, 2)
+        lidar_layout.setSpacing(0)
+        
+        # Cria o título do LiDAR
+        lidar_title = QLabel("LiDAR")
+        lidar_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lidar_title.setMaximumHeight(33)
+        lidar_title.setStyleSheet("""
+            font-weight: bold; 
+            color: #ecf0f1;
+            background-color: #e67e22;
+            padding: 4px; 
+            border-radius: 3px;
+            font-size: 14px;
+            border: 1px solid #d35400;
+            margin-bottom: 6px;
+        """)
+        lidar_layout.addWidget(lidar_title, 0, Qt.AlignmentFlag.AlignTop)
+        
+        # Cria o QLabel que conterá a visualização do LiDAR
+        lidar_label = QLabel()
+        lidar_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lidar_label.setStyleSheet(f"""
+            background-color: {COMMON_STYLES["dark_background"]};
+            color: {COMMON_STYLES["text_color"]};
+            border: 2px solid #e67e22;
+            border-radius: 5px;
+            font-size: 16px;
+        """)
+        lidar_label.setText("Aguardando LiDAR...")
+        
+        # Inicializa a tela do LiDAR
+        self.lidar_screen = LidarScreen(self.signals.lidar, lidar_label)
+        self.screen_instances["lidar"] = self.lidar_screen
+        
+        lidar_layout.addWidget(lidar_label, 1)
+        lidar_widget.setLayout(lidar_layout)
+        
+        return lidar_widget
 
 

@@ -13,30 +13,32 @@ class DashboardFsmCommandDescription(IntEnum):
     """
     Enum que representa os comandos enviados do Dashboard para o FSM Node.
     Os valores inteiros correspondem ao campo 'command' de DashboardFsmCommandMSG.
+    
+    IMPORTANTE: Este enum deve estar sincronizado com o enum em fsm_node.py.
     """
-    START_INSPECTION = 1           # Iniciar missão de inspeção
-    STOP_INSPECTION = 2            # Pausar missão (drone para no ar)
-    CANCEL_INSPECTION = 3          # Cancelar missão e retornar à base
-    RETURN_TO_BASE = 4             # Retornar à base (RTL)
-    ENABLE_OFFBOARD_CONTROL_MODE = 5  # Habilitar modo offboard (compatibilidade)
-    ABORT_MISSION = 6              # Abortar missão e retornar à base
-    EMERGENCY_LAND = 7             # Pouso de emergência imediato
+    INICIAR_MISSAO = 1      # Iniciar missão (aceito apenas em PRONTO)
+    CANCELAR_MISSAO = 2     # Cancelar missão e retornar (aceito em EXECUTANDO_*)
 
 
 class DashboardFSMPublisher:
     """
     Gerencia a publicação de comandos de missão para o FSMNode.
     Usa DashboardFsmCommandMSG com código inteiro para type-safety.
+    
+    Comandos suportados:
+    - INICIAR_MISSAO: Inicia uma missão (requer nome da missão de missions.json)
+    - CANCELAR_MISSAO: Cancela a missão atual e inicia RTL
     """
     def __init__(self, DashboardNode: Node):
         self.DashboardNode = DashboardNode
 
-        # QoS para comandos críticos: TRANSIENT_LOCAL + BEST_EFFORT (baixa latência, disponível para novos subscribers)
+        # QoS para comandos críticos: RELIABLE + TRANSIENT_LOCAL (garante entrega)
+        # IMPORTANTE: Deve corresponder ao QoS do subscriber em fsm_node.py
         qos_commands = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
             history=HistoryPolicy.KEEP_LAST,
-            depth=1
+            depth=5
         )
 
         # Publisher para enviar comandos de missão para o fsm_node
@@ -48,44 +50,57 @@ class DashboardFSMPublisher:
         
         self.DashboardNode.get_logger().info(f"Publicador para {self.fsm_command_pub.topic_name} criado.")
 
-    def _send_command(self, command: DashboardFsmCommandDescription, inspection_type: str = ""):
+    def _send_command(self, command: DashboardFsmCommandDescription, mission: str = ""):
         """
         Método interno para enviar comandos para o FSM.
         
         Args:
             command: Código do comando (DashboardFsmCommandDescription)
-            inspection_type: Tipo de inspeção (apenas para START_INSPECTION)
+            mission: Nome da missão (apenas para INICIAR_MISSAO, deve existir em missions.json)
         """
         msg = DashboardFsmCommandMSG()
         msg.command = int(command)
-        msg.inspection_type = inspection_type
+        msg.mission = mission
         self.fsm_command_pub.publish(msg)
-        self.DashboardNode.get_logger().info(f"Comando enviado para FSM: {command.name}")
+        self.DashboardNode.get_logger().info(f"Comando enviado para FSM: {command.name}" + (f" (missão: {mission})" if mission else ""))
 
-    def send_start_inspection(self, inspection_type: str = "Flare"):
-        """Envia comando para iniciar missão de inspeção."""
-        self._send_command(DashboardFsmCommandDescription.START_INSPECTION, inspection_type)
+    def send_iniciar_missao(self, mission: str = "Flare"):
+        """
+        Envia comando para iniciar uma missão de inspeção.
+        
+        Args:
+            mission: Nome da missão conforme definido em missions.json
+        """
+        self._send_command(DashboardFsmCommandDescription.INICIAR_MISSAO, mission)
 
-    def send_stop_inspection(self):
-        """Envia comando para pausar missão (drone para no ar)."""
-        self._send_command(DashboardFsmCommandDescription.STOP_INSPECTION)
+    def send_cancelar_missao(self):
+        """
+        Envia comando para cancelar a missão atual.
+        O drone irá executar RTL (Return To Launch) automaticamente.
+        """
+        self._send_command(DashboardFsmCommandDescription.CANCELAR_MISSAO)
 
-    def send_cancel_inspection(self):
-        """Envia comando para cancelar missão e retornar à base."""
-        self._send_command(DashboardFsmCommandDescription.CANCEL_INSPECTION)
-
-    def send_return_to_base(self):
-        """Envia comando para retornar à base (RTL)."""
-        self._send_command(DashboardFsmCommandDescription.RETURN_TO_BASE)
-
-    def send_enable_offboard_control_mode(self):
-        """Envia comando para habilitar modo offboard (compatibilidade)."""
-        self._send_command(DashboardFsmCommandDescription.ENABLE_OFFBOARD_CONTROL_MODE)
-
-    def send_abort_mission(self):
-        """Envia comando para abortar missão e retornar à base."""
-        self._send_command(DashboardFsmCommandDescription.ABORT_MISSION)
-
-    def send_emergency_land(self):
-        """Envia comando para pouso de emergência imediato."""
-        self._send_command(DashboardFsmCommandDescription.EMERGENCY_LAND)
+    # Métodos de compatibilidade (deprecated - mantidos para transição)
+    def send_mission_command(self, command_json: str):
+        """
+        DEPRECATED: Método de compatibilidade para comandos em formato JSON.
+        Use send_iniciar_missao() ou send_cancelar_missao() diretamente.
+        
+        Args:
+            command_json: String JSON com comando (formato legado)
+        """
+        import json
+        try:
+            cmd_dict = json.loads(command_json)
+            cmd_name = cmd_dict.get("command", "").lower()
+            
+            if cmd_name in ["start_inspection", "iniciar_missao"]:
+                mission = cmd_dict.get("inspection_type", cmd_dict.get("mission", "Flare"))
+                self.send_iniciar_missao(mission)
+            elif cmd_name in ["cancel_inspection", "cancelar_missao", "stop_inspection", 
+                              "return_to_base", "abort_mission"]:
+                self.send_cancelar_missao()
+            else:
+                self.DashboardNode.get_logger().warn(f"Comando não reconhecido: {cmd_name}")
+        except json.JSONDecodeError as e:
+            self.DashboardNode.get_logger().error(f"Erro ao parsear comando JSON: {e}")

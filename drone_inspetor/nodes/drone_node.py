@@ -581,7 +581,7 @@ class DroneNode(Node):
         trajectory_msg.position[0] = next_x
         trajectory_msg.position[1] = next_y
         trajectory_msg.position[2] = next_z
-        
+
         # Define o yaw alvo (já em radianos)
         if target_yaw_rad is not None:
             trajectory_msg.yaw = target_yaw_rad
@@ -716,7 +716,7 @@ class DroneNode(Node):
             case DroneStateDescription.VOANDO_GIRANDO_INICIO:
                 # Calcula yaw incremental (passo máximo de yaw_step_deg)
                 next_yaw_rad = self._calculate_incremental_yaw(
-                    self.drone_state.px4.current_yaw_rad,
+                    self.drone_state.px4.current_yaw_rad,  
                     self.drone_state.target_direction_yaw_rad,
                     self.drone_state.yaw_step_deg
                 )
@@ -957,8 +957,10 @@ class DroneNode(Node):
             Lista [dx, dy, dz] com offset em metros (coordenadas locais NED)
         """
         # Conversão simplificada de coordenadas globais para offset local
-        lat_diff = (lat2 - lat1) * 111000  # metros por grau de latitude
-        lon_diff = (lon2 - lon1) * 111000 * math.cos(math.radians(lat1))  # metros por grau de longitude
+        # Latitude: 1 grau ~= 111.132 metros
+        METERS_PER_DEGREE = 111132.0
+        lat_diff = (lat2 - lat1) * METERS_PER_DEGREE
+        lon_diff = (lon2 - lon1) * METERS_PER_DEGREE * math.cos(math.radians(lat1))
         alt_diff = alt2 - alt1  # diferença de altitude em metros
         
         return [lat_diff, lon_diff, alt_diff]

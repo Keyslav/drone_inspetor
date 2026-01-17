@@ -20,6 +20,11 @@ setup(
         # Adicionando os novos diretórios gui e nodes
         (os.path.join('share', package_name, 'gui'), glob(os.path.join('drone_inspetor', 'gui', '*.py'))),
         (os.path.join('share', package_name, 'gui'), glob(os.path.join('drone_inspetor', 'gui', '*.html'))),
+        # Adiciona pasta leaflet_local para o mapa funcionar
+        (os.path.join('share', package_name, 'gui', 'leaflet_local'), 
+            glob(os.path.join('drone_inspetor', 'gui', 'leaflet_local', '*.js')) + 
+            glob(os.path.join('drone_inspetor', 'gui', 'leaflet_local', '*.css')) +
+            glob(os.path.join('drone_inspetor', 'gui', 'leaflet_local', '*.png'))),
         (os.path.join('share', package_name, 'nodes'), glob(os.path.join('drone_inspetor', 'nodes', '*.py'))),
         (os.path.join('share', package_name, 'missions'), glob(os.path.join('drone_inspetor', 'missions', '*.json'))),
         # Copiar modelo YOLO best.pt para o diretório de instalação

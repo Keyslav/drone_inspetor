@@ -373,11 +373,17 @@ class LidarNode(Node):
             self.get_logger().warn("Threshold deve ser positivo")
 
 def main(args=None):
+    """Função principal do nó."""
     rclpy.init(args=args)
     lidar_node = LidarNode()
-    rclpy.spin(lidar_node)
-    lidar_node.destroy_node()
-    rclpy.shutdown()
+    
+    try:
+        rclpy.spin(lidar_node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        lidar_node.destroy_node()
+        rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()

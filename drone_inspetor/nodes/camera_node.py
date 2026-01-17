@@ -18,7 +18,7 @@ ARQUITETURA:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from cv_bridge import CvBridge
 
 class CameraNode(Node):
@@ -49,20 +49,24 @@ class CameraNode(Node):
         self.bridge = CvBridge()
         
         # ==================== CONFIGURAÇÃO DE QoS ========================
-        # QoS para dados de sensores (imagens): VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
+        # QoS para dados de sensores (imagens) - equivalente ao "sensor_data":
+        # - BEST_EFFORT: menor latência, evita retransmissões; adequado para vídeo/imagem
+        # - VOLATILE: não mantém amostras antigas
+        # - KEEP_LAST: mantém somente as últimas N amostras
+        # - DEPTH=1: evita fila e reduz lag no dashboard/YOLO (processa sempre o frame mais recente)
         qos_sensor_data = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10
+            depth=1
         )
         
         # ==================== SUBSCRIBERS EXTERNOS (ENTRADA DE DADOS DO DRONE) =========================
         # Assina o tópico da câmera raw externa
         # Este tópico pode vir de diferentes fontes: simulador Gazebo, driver de câmera física, etc.
         self.camera_raw_sub = self.create_subscription(
-            Image,
-            "/drone_inspetor/externo/camera/image_raw",
+            CompressedImage,
+            "/drone_inspetor/externo/camera/compressed",
             self.camera_raw_callback,
             qos_sensor_data
         )
@@ -72,8 +76,8 @@ class CameraNode(Node):
         # Publica a imagem raw no tópico padronizado interno do sistema
         # Este tópico é consumido pelo dashboard e pelo nó de visão computacional
         self.dashboard_camera_image_pub = self.create_publisher(
-            Image,
-            "/drone_inspetor/interno/camera_node/image_raw",
+            CompressedImage,
+            "/drone_inspetor/interno/camera_node/compressed",
             qos_sensor_data
         )
         self.get_logger().info(f"Publicando no tópico: {self.dashboard_camera_image_pub.topic_name}")
@@ -97,22 +101,17 @@ class CameraNode(Node):
         self.dashboard_camera_image_pub.publish(msg)
 
 def main(args=None):
-    """
-    Função principal para iniciar o nó da câmera.
-    
-    Args:
-        args: Argumentos de linha de comando (opcional)
-    """
-    # Inicializa o ROS2
+    """Função principal do nó."""
     rclpy.init(args=args)
-    
-    # Cria e executa o nó da câmera
     camera_node = CameraNode()
-    rclpy.spin(camera_node)
     
-    # Limpeza ao encerrar
-    camera_node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(camera_node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        camera_node.destroy_node()
+        rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()

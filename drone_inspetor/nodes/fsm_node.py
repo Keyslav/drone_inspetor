@@ -433,10 +433,6 @@ class FSMState:
         msg.state = int(self.state)
         msg.state_name = self.state.name
         
-        msg.waiting_for_state = ""
-        msg.command_timeout = 0.0
-        msg.command_sent_time = 0.0
-        
         # Flags de missão
         msg.on_mission = self.on_mission
         msg.cancel_mission = self.cancel_mission
@@ -859,7 +855,8 @@ class FSMNode(Node):
         self._last_action_result = None
         self._action_in_progress = False
         self._action_start_time = 0.0
-        self._action_timeout = 60.0  # Timeout padrão de 60 segundos
+        self._last_action_feedback_time = 0.0  # Tempo do último feedback recebido
+        self._action_timeout = 60.0  # Timeout padrão de 60 segundos desde último feedback
 
         # ==================================================================
         # SUBSCRIBERS
@@ -1034,12 +1031,16 @@ class FSMNode(Node):
     def _action_feedback_callback(self, feedback_msg):
         """
         Callback chamado quando feedback é recebido durante execução da action.
+        Atualiza o timer de feedback para manter a action ativa enquanto houver progresso.
         
         Args:
             feedback_msg: Mensagem de feedback com progresso
         """
         feedback = feedback_msg.feedback
         self._last_action_feedback = feedback
+        
+        # Atualiza o tempo do último feedback (usado para timeout)
+        self._last_action_feedback_time = time.time()
         
         self.get_logger().info(
             f"Feedback Action: estado = {feedback.state_name}, "
@@ -1059,6 +1060,7 @@ class FSMNode(Node):
         self._last_action_result = result
         self._action_in_progress = False
         self._action_start_time = 0.0
+        self._last_action_feedback_time = 0.0
         self._current_goal_handle = None
         
         if result.success:
@@ -1101,11 +1103,12 @@ class FSMNode(Node):
         
         self._action_in_progress = False
         self._action_start_time = 0.0
+        self._last_action_feedback_time = 0.0
         self._current_goal_handle = None
 
     def check_action_timeout(self) -> bool:
         """
-        Verifica se a action em andamento excedeu o timeout.
+        Verifica se a action em andamento excedeu o timeout desde o último feedback.
         Se excedeu, cancela a action e retorna True.
         
         Returns:
@@ -1114,10 +1117,14 @@ class FSMNode(Node):
         if not self._action_in_progress:
             return False
         
-        elapsed = time.time() - self._action_start_time
+        # Usa o tempo do último feedback para calcular o timeout
+        # Se ainda não recebeu feedback, usa o tempo de início da action
+        reference_time = self._last_action_feedback_time if self._last_action_feedback_time > 0 else self._action_start_time
+        elapsed = time.time() - reference_time
+        
         if elapsed > self._action_timeout:
             self.get_logger().error(
-                f"TIMEOUT na action! ({elapsed:.1f}s > {self._action_timeout:.1f}s). Cancelando..."
+                f"TIMEOUT na action! ({elapsed:.1f}s desde último feedback > {self._action_timeout:.1f}s). Cancelando..."
             )
             self.cancel_current_action()
             return True

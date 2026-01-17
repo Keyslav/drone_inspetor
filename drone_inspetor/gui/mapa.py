@@ -164,36 +164,115 @@ class MapaManager:
                 self.drone_speed
             )
 
-    def update_position_from_node(self, data):
+    def update_drone_state(self, data: dict):
         """
-        Atualiza a latitude, longitude e altitude do drone com dados recebidos de um nó ROS2.
-        Após a atualização, chama o método para refletir a nova posição no mapa.
-
-        Args:
-            data (dict): Dicionário contendo 'lat', 'lon' e 'alt'.
-        """
-        # Atualiza a latitude, longitude e altitude do drone com os dados recebidos.
-        self.drone_lat = data.get("lat", self.drone_lat)
-        self.drone_lon = data.get("lon", self.drone_lon)
-        self.drone_alt = data.get("alt", self.drone_alt)
+        Atualiza todos os dados do drone no mapa com dict completo do DroneStateMSG.
+        Este é o método centralizado para receber estado do drone.
         
-        # Chama o método para atualizar a posição do drone no mapa.
-        self.update_map_drone_position()
-
-    def update_attitude_from_node(self, data):
-        """
-        Atualiza a direção (heading) e velocidade do drone com dados recebidos de um nó ROS2.
-        Após a atualização, chama o método para refletir a nova atitude no mapa.
-
         Args:
-            data (dict): Dicionário contendo 'heading' e 'speed'.
+            data (dict): Dicionário contendo todos os campos de DroneStateMSG.
         """
-        # Atualiza a direção e velocidade do drone com os dados recebidos.
-        self.drone_heading = data.get("heading", self.drone_heading)
-        self.drone_speed = data.get("speed", self.drone_speed)
+        import math
         
-        # Chama o método para atualizar a posição do drone no mapa.
+        # Extrai coordenadas
+        new_lat = data.get("current_latitude", 0.0)
+        new_lon = data.get("current_longitude", 0.0)
+        new_alt = data.get("current_altitude", 0.0)
+        new_heading = data.get("current_yaw_deg", 0.0)
+        
+        # Valida coordenadas (ignora se NaN ou zero)
+        if (math.isnan(new_lat) or math.isnan(new_lon) or 
+            (new_lat == 0.0 and new_lon == 0.0)):
+            # Apenas atualiza status, não posição
+            is_armed = data.get("is_armed", False)
+            is_landed = data.get("is_landed", True)
+            self.update_drone_status(is_armed, is_landed)
+            return
+        
+        # Atualiza posição GPS apenas com coordenadas válidas
+        self.drone_lat = new_lat
+        self.drone_lon = new_lon
+        self.drone_alt = new_alt
+        self.drone_heading = new_heading
+        
+        # Extrai status do drone
+        is_armed = data.get("is_armed", False)
+        is_landed = data.get("is_landed", True)
+        
+        # Extrai posição home
+        home_lat = data.get("home_global_lat", 0.0)
+        home_lon = data.get("home_global_lon", 0.0)
+        
+        # Atualiza posição do drone no mapa
         self.update_map_drone_position()
+        
+        # Atualiza status Armed/Landed no mapa
+        self.update_drone_status(is_armed, is_landed)
+        
+        # Atualiza marcador home (só se válido)
+        self.update_home_position(home_lat, home_lon)
+    
+    def update_drone_status(self, is_armed: bool, is_landed: bool):
+        """
+        Atualiza o status Armed/Landed do drone no mapa.
+        
+        Args:
+            is_armed (bool): True se o drone está armado.
+            is_landed (bool): True se o drone está em solo.
+        """
+        if self.map_widget and self.map_widget.map_ready:
+            is_armed_js = "true" if is_armed else "false"
+            is_landed_js = "true" if is_landed else "false"
+            script = f"updateDroneStatus({is_armed_js}, {is_landed_js});"
+            self.map_widget.page().runJavaScript(script)
+
+    # ==================== MÉTODOS DE MISSÃO ====================
+    
+    def set_missions(self, missions: dict):
+        """
+        Recebe o dicionário de missões carregado pelo dashboard_gui.
+        
+        Args:
+            missions (dict): Dicionário com todas as missões disponíveis.
+        """
+        self.loaded_missions = missions
+        gui_log_info("MapaManager", f"Missões recebidas: {list(missions.keys())}")
+    
+    def display_mission_on_map(self, mission_name: str):
+        """
+        Exibe os pontos de inspeção de uma missão específica no mapa.
+        
+        Args:
+            mission_name (str): Nome da missão a ser exibida.
+        """
+        if not hasattr(self, 'loaded_missions') or not self.loaded_missions:
+            gui_log_error("MapaManager", "Nenhuma missão carregada")
+            return
+        
+        mission_data = self.loaded_missions.get(mission_name)
+        if not mission_data:
+            gui_log_error("MapaManager", f"Missão '{mission_name}' não encontrada")
+            return
+        
+        # Exibe pontos no mapa principal
+        if self.map_widget and hasattr(self.map_widget, 'display_mission_points'):
+            self.map_widget.display_mission_points(mission_data)
+    
+    def update_home_position(self, home_lat: float, home_lon: float):
+        """
+        Atualiza o marcador de home position no mapa.
+        
+        Args:
+            home_lat (float): Latitude do home.
+            home_lon (float): Longitude do home.
+        """
+        if self.map_widget and hasattr(self.map_widget, 'add_home_marker'):
+            self.map_widget.add_home_marker(home_lat, home_lon)
+    
+    def clear_mission_display(self):
+        """Limpa os marcadores de missão do mapa."""
+        if self.map_widget and hasattr(self.map_widget, 'clear_mission_markers'):
+            self.map_widget.clear_mission_markers()
 
 class InteractiveMapWidget(QWebEngineView):
     """
@@ -212,6 +291,13 @@ class InteractiveMapWidget(QWebEngineView):
         """
         super().__init__(parent)
         
+        # Configura settings do WebEngine para permitir acesso a URLs remotas de arquivos locais
+        # Isso é necessário para carregar tiles do OpenStreetMap
+        from PyQt6.QtWebEngineCore import QWebEngineSettings
+        settings = self.settings()
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, True)
+        settings.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
+        
         self.mapa_manager = mapa_manager
         
         # Coordenadas padrão para o centro do mapa e nível de zoom.
@@ -223,24 +309,64 @@ class InteractiveMapWidget(QWebEngineView):
         # Carrega os parâmetros do mapa de um arquivo de configuração.
         self.load_map_parameters()
         
-        # Localiza o arquivo HTML do mapa. Primeiro tenta no diretório atual, depois no diretório de trabalho.
-        map_file_path = os.path.join(os.path.dirname(__file__), "map.html")
-        if not os.path.exists(map_file_path):
-            map_file_path = os.path.join(os.getcwd(), "map.html")
+        # Flag para indicar se o mapa está pronto para receber comandos JavaScript
+        self.map_ready = False
+        
+        # Localiza o arquivo HTML do mapa.
+        # Ordem de busca:
+        # 1. Diretório share do pacote ROS2 (instalação via colcon)
+        # 2. Diretório do arquivo fonte (desenvolvimento)
+        # 3. Diretório de trabalho atual
+        map_file_path = None
+        
+        # Tenta o diretório share do pacote ROS2 primeiro
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            package_share_dir = get_package_share_directory('drone_inspetor')
+            share_path = os.path.join(package_share_dir, 'gui', 'map.html')
+            if os.path.exists(share_path):
+                map_file_path = share_path
+        except Exception:
+            pass
+        
+        # Fallback para o diretório do arquivo fonte (desenvolvimento)
+        if map_file_path is None:
+            source_path = os.path.join(os.path.dirname(__file__), "map.html")
+            if os.path.exists(source_path):
+                map_file_path = source_path
+        
+        # Fallback para o diretório de trabalho atual
+        if map_file_path is None:
+            cwd_path = os.path.join(os.getcwd(), "map.html")
+            if os.path.exists(cwd_path):
+                map_file_path = cwd_path
         
         # Carrega o arquivo HTML no QWebEngineView se ele for encontrado.
-        if os.path.exists(map_file_path):
-            self.load(QUrl.fromLocalFile(os.path.abspath(map_file_path)))
+        if map_file_path and os.path.exists(map_file_path):
+            abs_path = os.path.abspath(map_file_path)
+            gui_log_info("MapaManager", f"Carregando mapa de: {abs_path}")
+            
+            # Conecta o sinal loadFinished para inicializar o mapa APENAS quando a página estiver pronta
+            self.loadFinished.connect(self._on_load_finished)
+            
+            self.load(QUrl.fromLocalFile(abs_path))
         else:
             # Registra erro se o arquivo map.html não for encontrado
-            gui_log_error("InteractiveMapWidget", f"Arquivo map.html não encontrado em: {map_file_path}")
+            gui_log_error("MapaManager", f"Arquivo map.html não encontrado!")
+    
+    def _on_load_finished(self, success: bool):
+        """
+        Callback chamado quando o carregamento da página HTML é concluído.
         
-        # Configura um timer para inicializar o mapa JavaScript após o carregamento da página.
-        # Isso garante que o JavaScript seja executado apenas quando a página estiver pronta.
-        self.init_timer = QTimer()
-        self.init_timer.timeout.connect(self.initialize_map)
-        self.init_timer.setSingleShot(True)
-        self.init_timer.start(5000) # Atraso de 5 segundos para garantir o carregamento da página.
+        Args:
+            success (bool): True se o carregamento foi bem-sucedido.
+        """
+        if success:
+            gui_log_info("MapaManager", "Página HTML carregada com sucesso, inicializando mapa...")
+            # Pequeno delay para garantir que o JavaScript esteja pronto
+            QTimer.singleShot(500, self.initialize_map)
+        else:
+            gui_log_error("MapaManager", "Falha ao carregar a página HTML do mapa!")
     
     def load_map_parameters(self):
         """
@@ -267,7 +393,7 @@ class InteractiveMapWidget(QWebEngineView):
                     
         except Exception as e:
             # Em caso de erro ao carregar os parâmetros, registra mensagem de erro
-            gui_log_error("InteractiveMapWidget", f"Erro ao carregar parâmetros do mapa: {e}")
+            gui_log_error("MapaManager", f"Erro ao carregar parâmetros do mapa: {e}")
     
     def initialize_map(self):
         """
@@ -275,14 +401,21 @@ class InteractiveMapWidget(QWebEngineView):
         Executa comandos JavaScript para definir o centro e o zoom inicial do mapa.
         """
         try:
+            gui_log_info("MapaManager", f"Inicializando mapa com centro: ({self.map_center_lat}, {self.map_center_lon}), zoom: {self.zoom_level}")
+            
+            # Marca o mapa como pronto para receber comandos
+            self.map_ready = True
+            
             # Constrói o script JavaScript para definir o centro e o zoom do mapa.
             script = f"setMapCenter({self.map_center_lat}, {self.map_center_lon}, {self.zoom_level});"
             # Executa o script JavaScript na página do QWebEngineView.
             self.page().runJavaScript(script, self.on_js_finished)
             
+            gui_log_info("MapaManager", "Mapa inicializado com sucesso!")
+            
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
-            gui_log_error("InteractiveMapWidget", f"Erro ao inicializar mapa: {e}")
+            gui_log_error("MapaManager", f"Erro ao inicializar mapa: {e}")
     
     def update_drone_position(self, lat, lon, alt, heading, speed):
         """
@@ -295,6 +428,10 @@ class InteractiveMapWidget(QWebEngineView):
             heading (float): Direção do drone em graus (0° = Norte, sentido horário).
             speed (float): Velocidade do drone (m/s).
         """
+        # Não executa JavaScript se o mapa ainda não estiver pronto
+        if not self.map_ready:
+            return
+            
         try:
             # Constrói o script JavaScript para atualizar a posição do drone.
             script = f"updateDronePosition({lat}, {lon}, {alt}, {heading}, {speed});"
@@ -303,7 +440,7 @@ class InteractiveMapWidget(QWebEngineView):
             
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
-            gui_log_error("InteractiveMapWidget", f"Erro ao atualizar posição do drone: {e}")
+            gui_log_error("MapaManager", f"Erro ao atualizar posição do drone: {e}")
     
     def zoom_in(self):
         """
@@ -314,7 +451,7 @@ class InteractiveMapWidget(QWebEngineView):
             self.page().runJavaScript("zoomIn();")
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
-            gui_log_error("InteractiveMapWidget", f"Erro ao fazer zoom in: {e}")
+            gui_log_error("MapaManager", f"Erro ao fazer zoom in: {e}")
     
     def zoom_out(self):
         """
@@ -325,7 +462,7 @@ class InteractiveMapWidget(QWebEngineView):
             self.page().runJavaScript("zoomOut();")
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
-            gui_log_error("InteractiveMapWidget", f"Erro ao fazer zoom out: {e}")
+            gui_log_error("MapaManager", f"Erro ao fazer zoom out: {e}")
     
     def on_js_finished(self, result):
         """
@@ -337,6 +474,107 @@ class InteractiveMapWidget(QWebEngineView):
         """
         # Este método é um placeholder para depuração e não realiza nenhuma ação visível.
         pass
+
+    # ==================== MÉTODOS PARA MARCADORES DE MISSÃO ====================
+    
+    def add_home_marker(self, lat: float, lon: float):
+        """
+        Adiciona um marcador "H" para a posição home no mapa.
+        Remove o marcador se as coordenadas forem inválidas (NaN ou zero).
+        
+        Args:
+            lat (float): Latitude do home em graus.
+            lon (float): Longitude do home em graus.
+        """
+        import math
+        
+        if not self.map_ready:
+            return
+        
+        # Valida se os valores são números válidos (não NaN)
+        if math.isnan(lat) or math.isnan(lon):
+            # Remove marcador home se existir
+            self._remove_home_marker()
+            return
+        
+        # Remove marcador se as coordenadas são zero (não inicializado)
+        if lat == 0.0 and lon == 0.0:
+            self._remove_home_marker()
+            return
+        
+        try:
+            script = f"addHomeMarker({lat}, {lon});"
+            self.page().runJavaScript(script)
+        except Exception as e:
+            gui_log_error("MapaManager", f"Erro ao adicionar marcador home: {e}")
+    
+    def _remove_home_marker(self):
+        """Remove o marcador home do mapa."""
+        if not self.map_ready:
+            return
+        try:
+            self.page().runJavaScript("removeHomeMarker();")
+        except Exception:
+            pass
+    
+    def add_inspection_point(self, index: int, lat: float, lon: float, is_detection_point: bool = False):
+        """
+        Adiciona um ponto de inspeção numerado no mapa.
+        
+        Args:
+            index (int): Índice/número do ponto de inspeção.
+            lat (float): Latitude do ponto.
+            lon (float): Longitude do ponto.
+            is_detection_point (bool): True se é um ponto de detecção (cor vermelha).
+        """
+        if not self.map_ready:
+            gui_log_error("MapaManager", "Mapa não pronto para adicionar ponto de inspeção")
+            return
+        
+        try:
+            is_detection_js = "true" if is_detection_point else "false"
+            script = f"addInspectionPoint({index}, {lat}, {lon}, {is_detection_js});"
+            self.page().runJavaScript(script)
+        except Exception as e:
+            gui_log_error("MapaManager", f"Erro ao adicionar ponto de inspeção: {e}")
+    
+    def display_mission_points(self, mission_data: dict):
+        """
+        Exibe todos os pontos de inspeção de uma missão no mapa.
+        
+        Args:
+            mission_data (dict): Dados da missão contendo 'pontos_de_inspecao'.
+        """
+        if not mission_data or 'pontos_de_inspecao' not in mission_data:
+            gui_log_error("MapaManager", "Dados de missão inválidos")
+            return
+        
+        # Limpa marcadores anteriores
+        self.clear_mission_markers()
+        
+        pontos = mission_data.get('pontos_de_inspecao', [])
+        for i, ponto in enumerate(pontos, start=1):
+            lat = ponto.get('lat')
+            lon = ponto.get('lon')
+            is_detection = ponto.get('ponto_de_deteccao', False)
+            
+            if lat is not None and lon is not None:
+                self.add_inspection_point(i, lat, lon, is_detection)
+        
+        gui_log_info("MapaManager", f"Exibidos {len(pontos)} pontos de inspeção no mapa")
+    
+    def clear_mission_markers(self):
+        """
+        Remove todos os marcadores de missão (pontos de inspeção e home) do mapa.
+        """
+        if not self.map_ready:
+            return
+        
+        try:
+            self.page().runJavaScript("clearMissionMarkers();")
+            gui_log_info("MapaManager", "Marcadores de missão limpos")
+        except Exception as e:
+            gui_log_error("MapaManager", f"Erro ao limpar marcadores de missão: {e}")
 
 class ExpandedMapWindow(QMainWindow):
     """

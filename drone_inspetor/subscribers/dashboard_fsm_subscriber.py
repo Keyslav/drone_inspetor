@@ -32,10 +32,26 @@ class DashboardFSMSubscriber:
     def fsm_state_callback(self, msg: FSMStateMSG):
         """
         Callback para mensagens de estado da FSM.
-        Converte mensagem ROS para string e emite o sinal state_received da subclasse FSM.
+        Converte mensagem ROS para dict e emite o sinal state_received com dados completos.
+        
+        Os campos emitidos correspondem aos campos de FSMStateMSG.msg:
+        - state, state_name (estado atual)
+        - on_mission, cancel_mission (flags de missão)
+        - mission_name, tempo_de_permanencia (missão atual)
+        - takeoff_altitude (parâmetros)
+        - ponto_de_inspecao_indice_atual, ponto_de_inspecao_tempo_de_chegada (waypoints)
         """
-        # Converte mensagem ROS para string para compatibilidade com sinais PyQt
-        state_str = msg.state_name
-        self.DashboardNode.get_logger().info(f"Estado da FSM Recebido: {state_str}")
-        self.signals.state_received.emit(state_str)
+        # Converte mensagem ROS para dict para compatibilidade com sinais PyQt
+        state_data = {
+            "state": msg.state,
+            "state_name": msg.state_name,
+            "on_mission": msg.on_mission,
+            "cancel_mission": msg.cancel_mission,
+            "mission_name": msg.mission_name,
+            "tempo_de_permanencia": msg.tempo_de_permanencia,
+            "takeoff_altitude": msg.takeoff_altitude,
+            "ponto_de_inspecao_indice_atual": msg.ponto_de_inspecao_indice_atual,
+            "ponto_de_inspecao_tempo_de_chegada": msg.ponto_de_inspecao_tempo_de_chegada
+        }
+        self.signals.fsm_state_updated.emit(state_data)
 
