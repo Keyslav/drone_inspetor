@@ -6,17 +6,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>RPLiDAR C1 Dashboard</title>
     <style>
-        /* O CSS está correto e não precisa de alterações */
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
 
-        html {
-            font-size: clamp(10px, 1.2vw, 16px);
-        }
-
+        html,
         body {
             width: 100%;
             height: 100%;
@@ -39,280 +35,718 @@
             border-radius: 5px;
             padding: 0.5rem;
             display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 0;
+            flex-direction: column;
             width: 100%;
             height: 100%;
         }
 
-        .lidar-container {
-            width: 100%;
-            height: 100%;
+        /* Container principal do radar - ocupa todo espaço disponível acima do indicador */
+        .radar-wrapper {
+            position: relative;
+            flex: 1;
+            min-height: 0;
             display: flex;
             align-items: center;
             justify-content: center;
-            position: relative;
         }
 
-        .lidar-display {
-            width: 80%;
-            padding-top: 80%;
-            height: 0;
+        /* Container que mantém o aspecto quadrado do radar */
+        .radar-container {
             position: relative;
-            border: 2px solid rgba(0, 255, 136, 0.3);
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(0, 255, 136, 0.05) 0%, transparent 70%);
-            /* Adiciona overflow: hidden para uma camada extra de segurança visual */
-            overflow: hidden;
+            /* Usa a menor dimensão para garantir que caiba */
+            width: min(100%, 100vh - 4rem);
+            aspect-ratio: 1 / 1;
+            max-width: 100%;
+            max-height: 100%;
         }
 
-        .range-circle,
-        .angle-label,
-        .angle-marker,
-        .angle-line,
-        .lidar-point,
-        .scan-line,
+        /* SVG do radar ocupa todo o container */
+        .radar-svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Estilo dos textos no SVG */
+        .radar-text {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            fill: rgba(0, 255, 136, 0.9);
+            font-weight: 500;
+        }
+
+        .angle-text {
+            font-size: 21px;
+            text-anchor: middle;
+            dominant-baseline: middle;
+        }
+
+        .range-text {
+            font-size: 18px;
+            text-anchor: middle;
+            dominant-baseline: middle;
+        }
+
+        .range-text-bg {
+            fill: rgba(0, 0, 0, 0.6);
+        }
+
+        /* Círculos de range */
+        .range-circle {
+            fill: none;
+            stroke: rgba(0, 255, 136, 0.2);
+            stroke-width: 1;
+        }
+
+        /* Círculo externo principal */
+        .outer-circle {
+            fill: rgba(0, 255, 136, 0.03);
+            stroke: rgba(0, 255, 136, 0.4);
+            stroke-width: 2;
+        }
+
+        /* Linhas de ângulo */
+        .angle-line {
+            stroke: rgba(0, 255, 136, 0.15);
+            stroke-width: 1;
+        }
+
+        /* Marcadores de ângulo */
+        .angle-marker {
+            stroke: rgba(0, 255, 136, 0.5);
+            stroke-width: 2;
+        }
+
+        /* Linha de scan */
+        .scan-line {
+            stroke: rgba(0, 255, 136, 0.8);
+            stroke-width: 2;
+            filter: drop-shadow(0 0 4px rgba(0, 255, 136, 0.6));
+        }
+
+        /* Gradiente para a linha de scan */
+        .scan-gradient stop:first-child {
+            stop-color: rgba(0, 255, 136, 0.9);
+        }
+
+        .scan-gradient stop:last-child {
+            stop-color: transparent;
+        }
+
+        /* Pontos do LiDAR */
+        .lidar-point {
+            filter: drop-shadow(0 0 2px currentColor);
+        }
+
+        /* Ícone do drone no centro */
         .drone-icon {
             position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 12%;
+            height: 12%;
+            min-width: 28px;
+            min-height: 28px;
+            max-width: 60px;
+            max-height: 60px;
+            background-image: url("target.png");
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+            z-index: 10;
             pointer-events: none;
         }
 
-        .range-circle {
-            border: 1px solid rgba(0, 255, 136, 0.2);
-            border-radius: 50%;
-            display: flex;
-            align-items: flex-end;
-            justify-content: center;
-        }
-
-        .range-label {
-            font-size: 1.2rem;
-            color: rgba(0, 255, 136, 0.8);
-            margin-bottom: -0.6rem;
-            background: rgba(0, 0, 0, 0.5);
-            padding: 0.2rem 0.4rem;
-            border-radius: 3px;
-        }
-
-        .angle-label {
-            font-size: 1.2rem;
-            color: rgba(0, 255, 136, 0.8);
-            transform: translate(-50%, -50%);
-        }
-
-        .angle-marker {
-            width: 1px;
-            height: 10px;
-            background-color: rgba(0, 255, 136, 0.5);
-            transform-origin: bottom;
-        }
-
-        .angle-line {
-            height: 1px;
-            background-color: rgba(0, 255, 136, 0.3);
-            transform-origin: center;
-        }
-
-        .drone-icon {
+        /* Estilo para quando target.png não existe */
+        .drone-icon-fallback {
+            position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 13%;
-            height: 13%;
-            min-width: 32px;
-            min-height: 32px;
+            width: 24px;
+            height: 24px;
+            border: 2px solid rgba(0, 255, 136, 0.8);
+            border-radius: 50%;
+            background: rgba(0, 255, 136, 0.2);
             z-index: 10;
-            background-image: url("target.png");
-            background-size: contain;
+            pointer-events: none;
         }
 
-        .scan-line {
-            top: 50%;
-            left: 50%;
-            width: 50%;
+        .drone-icon-fallback::before,
+        .drone-icon-fallback::after {
+            content: '';
+            position: absolute;
+            background: rgba(0, 255, 136, 0.8);
+        }
+
+        .drone-icon-fallback::before {
+            width: 100%;
             height: 2px;
-            background: linear-gradient(90deg, rgba(0, 255, 136, 0.8) 0%, transparent 100%);
-            transform-origin: 0 50%;
-            z-index: 5;
+            top: 50%;
+            left: 0;
+            transform: translateY(-50%);
         }
 
-        .lidar-point {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            transform: translate(-50%, -50%);
+        .drone-icon-fallback::after {
+            width: 2px;
+            height: 100%;
+            left: 50%;
+            top: 0;
+            transform: translateX(-50%);
+        }
+
+        /* ==================== INDICADOR DE DISTÂNCIA INFERIOR ==================== */
+        .ground-distance-container {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: rgba(0, 0, 0, 0.4);
+            border-top: 1px solid rgba(0, 255, 136, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .ground-distance-label {
+            font-size: 14px;
+            color: rgba(255, 255, 255, 0.8);
+            white-space: nowrap;
+            min-width: 120px;
+        }
+
+        .ground-distance-bar-container {
+            flex: 1;
+            height: 24px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .ground-distance-bar {
+            height: 100%;
+            border-radius: 12px;
+            transition: width 0.3s ease;
+            /* Cor inicial verde - será sobrescrita pelo JS */
+            background: linear-gradient(90deg, rgba(0, 255, 0, 0.8), rgba(0, 255, 0, 0.6));
+            box-shadow: 0 0 10px rgba(0, 255, 0, 0.4);
+        }
+
+        .ground-distance-bar.pulsing {
+            animation: pulse-danger 0.5s infinite;
+        }
+
+        @keyframes pulse-danger {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        .ground-distance-value {
+            font-size: 18px;
+            font-weight: 600;
+            min-width: 70px;
+            text-align: right;
+            transition: color 0.3s ease;
+        }
+
+        .ground-distance-value.no-data {
+            color: rgba(128, 128, 128, 0.8);
         }
     </style>
 </head>
 
 <body>
-    <!-- Estrutura HTML sem alterações -->
     <div class="dashboard">
         <div class="radar-section">
-            <div class="lidar-container" id="lidarContainer">
-                <div class="lidar-display" id="lidarDisplay">
-                    <div class="scan-line" id="scanLine"></div>
-                    <div class="drone-icon"></div>
+            <div class="radar-wrapper">
+                <div class="radar-container" id="radarContainer">
+                    <svg class="radar-svg" id="radarSvg" viewBox="0 0 500 500" preserveAspectRatio="xMidYMid meet">
+                        <defs>
+                            <!-- Gradiente para a linha de scan -->
+                            <linearGradient id="scanGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                                <stop offset="0%" stop-color="rgba(0, 255, 136, 0.9)" />
+                                <stop offset="100%" stop-color="transparent" />
+                            </linearGradient>
+
+                            <!-- Gradiente radial para o fundo -->
+                            <radialGradient id="radarGradient" cx="50%" cy="50%" r="50%">
+                                <stop offset="0%" stop-color="rgba(0, 255, 136, 0.08)" />
+                                <stop offset="70%" stop-color="rgba(0, 255, 136, 0.02)" />
+                                <stop offset="100%" stop-color="transparent" />
+                            </radialGradient>
+                        </defs>
+
+                        <!-- Grupo de elementos estáticos (círculos, linhas, labels) -->
+                        <g id="staticElements"></g>
+
+                        <!-- Grupo de pontos do LiDAR -->
+                        <g id="pointsGroup"></g>
+
+                        <!-- Linha de scan animada -->
+                        <line id="scanLine" class="scan-line" x1="250" y1="250" x2="250" y2="25"
+                            stroke="url(#scanGradient)" />
+                    </svg>
+
+                    <!-- Ícone do drone no centro -->
+                    <div class="drone-icon" id="droneIcon"></div>
                 </div>
+            </div>
+
+            <!-- Indicador de distância inferior (altímetro LiDAR) -->
+            <div class="ground-distance-container">
+                <span class="ground-distance-label">↓ Distância Inferior:</span>
+                <div class="ground-distance-bar-container">
+                    <div class="ground-distance-bar" id="groundDistanceBar"></div>
+                </div>
+                <span class="ground-distance-value no-data" id="groundDistanceValue">-- m</span>
             </div>
         </div>
     </div>
 
     <script>
-        const MAX_RANGE = 12;
-        let displayRange = MAX_RANGE;
+        // =====================================================================
+        // CONFIGURAÇÕES DO RADAR
+        // =====================================================================
+        const CONFIG = {
+            MAX_RANGE: 12,           // Alcance máximo em metros
+            NUM_RANGE_CIRCLES: 4,    // Número de círculos de distância
+            ANGLE_STEP: 45,          // Intervalo entre labels de ângulo (graus)
+            SCAN_SPEED: 180,         // Velocidade de rotação do scan (graus/segundo)
+            SVG_SIZE: 500,           // Tamanho do viewBox do SVG
+            RADAR_PADDING: 0.16,     // Padding para os labels de ângulo (% do raio)
+            POINT_SIZE: 3            // Tamanho dos pontos do LiDAR
+        };
+
+        // =====================================================================
+        // ESTADO DO RADAR
+        // =====================================================================
+        let displayRange = CONFIG.MAX_RANGE;
         let isInitialized = false;
         let lastAnimationTime = null;
         let scanAnimationAngle = 0;
-        let current_point_vector = [];
+        let currentPointVector = [];
+        let resizeObserver = null;
 
-        const lidarContainer = document.getElementById("lidarContainer");
-        const lidarDisplay = document.getElementById("lidarDisplay");
-        const scanLine = document.getElementById("scanLine");
+        // =====================================================================
+        // ELEMENTOS DOM
+        // =====================================================================
+        const radarContainer = document.getElementById('radarContainer');
+        const radarSvg = document.getElementById('radarSvg');
+        const staticElements = document.getElementById('staticElements');
+        const pointsGroup = document.getElementById('pointsGroup');
+        const scanLine = document.getElementById('scanLine');
+        const droneIcon = document.getElementById('droneIcon');
 
-        function updateScanAnimation(timestamp) {
-            if (!isInitialized) return;
-            if (!lastAnimationTime) lastAnimationTime = timestamp;
-            const deltaTime = (timestamp - lastAnimationTime) / 1000;
-            lastAnimationTime = timestamp;
-            scanAnimationAngle = (scanAnimationAngle + 180 * deltaTime) % 360;
-            scanLine.style.transform = `rotate(${scanAnimationAngle - 90}deg)`;
-            requestAnimationFrame(updateScanAnimation);
+        // Centro e raio do radar no sistema de coordenadas do SVG
+        const CENTER = CONFIG.SVG_SIZE / 2;
+        const RADAR_RADIUS = CENTER * (1 - CONFIG.RADAR_PADDING);
+
+        // =====================================================================
+        // FUNÇÕES DE DESENHO DO RADAR
+        // =====================================================================
+
+        /**
+         * Cria um elemento SVG com os atributos especificados
+         */
+        function createSvgElement(type, attributes) {
+            const element = document.createElementNS('http://www.w3.org/2000/svg', type);
+            for (const [key, value] of Object.entries(attributes)) {
+                element.setAttribute(key, value);
+            }
+            return element;
         }
 
+        /**
+         * Gera todos os elementos estáticos do radar
+         */
+        function generateStaticElements() {
+            // Limpa elementos anteriores
+            staticElements.innerHTML = '';
+
+            // 1. Círculo de fundo com gradiente
+            const bgCircle = createSvgElement('circle', {
+                cx: CENTER,
+                cy: CENTER,
+                r: RADAR_RADIUS,
+                fill: 'url(#radarGradient)',
+                class: 'outer-circle'
+            });
+            staticElements.appendChild(bgCircle);
+
+            // 2. Linhas diagonais (45° e -45°)
+            [45, -45].forEach(angle => {
+                const rad = (angle - 90) * Math.PI / 180;
+                const x1 = CENTER - Math.cos(rad) * RADAR_RADIUS;
+                const y1 = CENTER - Math.sin(rad) * RADAR_RADIUS;
+                const x2 = CENTER + Math.cos(rad) * RADAR_RADIUS;
+                const y2 = CENTER + Math.sin(rad) * RADAR_RADIUS;
+
+                const line = createSvgElement('line', {
+                    x1, y1, x2, y2,
+                    class: 'angle-line'
+                });
+                staticElements.appendChild(line);
+            });
+
+            // 3. Círculos de distância
+            generateRangeCircles();
+
+            // 4. Marcadores e labels de ângulo
+            generateAngleLabels();
+        }
+
+        /**
+         * Gera os círculos de distância com labels
+         */
         function generateRangeCircles() {
-            // (Função sem alterações)
-            lidarDisplay.querySelectorAll(".range-circle").forEach(el => el.remove());
-            const numCircles = 4;
-            for (let i = 1; i <= numCircles; i++) {
-                const radiusPercent = (i / numCircles) * 100;
-                const circle = document.createElement("div");
-                circle.className = "range-circle";
-                circle.style.width = `${radiusPercent}%`;
-                circle.style.height = `${radiusPercent}%`;
-                circle.style.top = "50%";
-                circle.style.left = "50%";
-                circle.style.transform = "translate(-50%, -50%)";
-                const label = document.createElement("div");
-                label.className = "range-label";
-                const distance = (displayRange / numCircles) * i;
-                label.textContent = `${+distance.toFixed(2)}m`;
-                circle.appendChild(label);
-                lidarDisplay.appendChild(circle);
+            // Remove círculos anteriores
+            staticElements.querySelectorAll('.range-circle, .range-text, .range-text-bg').forEach(el => el.remove());
+
+            for (let i = 1; i <= CONFIG.NUM_RANGE_CIRCLES; i++) {
+                const radiusFraction = i / CONFIG.NUM_RANGE_CIRCLES;
+                const radius = RADAR_RADIUS * radiusFraction;
+
+                // Círculo
+                const circle = createSvgElement('circle', {
+                    cx: CENTER,
+                    cy: CENTER,
+                    r: radius,
+                    class: 'range-circle'
+                });
+                staticElements.appendChild(circle);
+
+                // Label de distância (na parte inferior do círculo)
+                const distance = (displayRange / CONFIG.NUM_RANGE_CIRCLES) * i;
+                const labelY = CENTER + radius - 15;
+
+                // Fundo do texto
+                const textBg = createSvgElement('rect', {
+                    x: CENTER - 18,
+                    y: labelY - 8,
+                    width: 36,
+                    height: 16,
+                    rx: 3,
+                    class: 'range-text-bg'
+                });
+                staticElements.appendChild(textBg);
+
+                // Texto
+                const label = createSvgElement('text', {
+                    x: CENTER,
+                    y: labelY,
+                    class: 'radar-text range-text'
+                });
+                label.textContent = `${distance.toFixed(1)}m`;
+                staticElements.appendChild(label);
             }
         }
 
-        function generateAngleMarkers() {
-            // (Função sem alterações)
-            lidarContainer.querySelectorAll(".angle-label, .angle-marker, .angle-line").forEach(el => el.remove());
-            const displayRadius = lidarDisplay.clientWidth / 2;
-            for (let angle = 0; angle < 360; angle += 45) {
+        /**
+         * Gera os marcadores e labels de ângulo ao redor do radar
+         */
+        function generateAngleLabels() {
+            // Remove labels anteriores
+            staticElements.querySelectorAll('.angle-text, .angle-marker').forEach(el => el.remove());
+
+            const labelRadius = RADAR_RADIUS + 20; // Posição dos labels fora do círculo
+
+            for (let angle = 0; angle < 360; angle += CONFIG.ANGLE_STEP) {
+                // Converte para ângulo visual (0° no topo, sentido horário)
                 const visualRad = (angle - 90) * Math.PI / 180;
-                const marker = document.createElement("div");
-                marker.className = "angle-marker";
-                const markerX = (lidarContainer.clientWidth / 2) + Math.cos(visualRad) * displayRadius;
-                const markerY = (lidarContainer.clientHeight / 2) + Math.sin(visualRad) * displayRadius;
-                marker.style.left = `${markerX}px`;
-                marker.style.top = `${markerY}px`;
-                marker.style.transform = `translate(-50%, -100%) rotate(${angle}deg)`;
-                lidarContainer.appendChild(marker);
-                const label = document.createElement("div");
-                label.className = "angle-label";
+
+                // Marcador na borda do círculo
+                const markerInnerR = RADAR_RADIUS - 5;
+                const markerOuterR = RADAR_RADIUS + 5;
+
+                const marker = createSvgElement('line', {
+                    x1: CENTER + Math.cos(visualRad) * markerInnerR,
+                    y1: CENTER + Math.sin(visualRad) * markerInnerR,
+                    x2: CENTER + Math.cos(visualRad) * markerOuterR,
+                    y2: CENTER + Math.sin(visualRad) * markerOuterR,
+                    class: 'angle-marker'
+                });
+                staticElements.appendChild(marker);
+
+                // Calcula o ângulo para exibição (0° na frente, positivo à esquerda)
                 let displayAngle = angle;
-                if (displayAngle > 180) { displayAngle -= 360; }
+                if (displayAngle > 180) displayAngle -= 360;
                 displayAngle = -displayAngle;
+
+                // Label de ângulo
+                const labelX = CENTER + Math.cos(visualRad) * labelRadius;
+                const labelY = CENTER + Math.sin(visualRad) * labelRadius;
+
+                const label = createSvgElement('text', {
+                    x: labelX,
+                    y: labelY,
+                    class: 'radar-text angle-text'
+                });
                 label.textContent = `${displayAngle}°`;
-                const labelRadius = displayRadius + 25;
-                const labelX = (lidarContainer.clientWidth / 2) + Math.cos(visualRad) * labelRadius;
-                const labelY = (lidarContainer.clientHeight / 2) + Math.sin(visualRad) * labelRadius;
-                label.style.left = `${labelX}px`;
-                label.style.top = `${labelY}px`;
-                lidarContainer.appendChild(label);
+                staticElements.appendChild(label);
             }
-            const drawLine = (angle) => {
-                const line = document.createElement("div");
-                line.className = "angle-line";
-                line.style.width = "100%";
-                line.style.top = "50%";
-                line.style.left = "0%";
-                line.style.transform = `rotate(${angle}deg)`;
-                lidarDisplay.appendChild(line);
-            };
-            drawLine(45);
-            drawLine(-45);
         }
 
+        // =====================================================================
+        // FUNÇÕES DE PLOTAGEM DE PONTOS
+        // =====================================================================
+
+        /**
+         * Plota os pontos do LiDAR no radar
+         */
         function plotLidarPoints() {
             if (!isInitialized) return;
-            lidarDisplay.querySelectorAll(".lidar-point").forEach(p => p.remove());
-            const displayRadius = lidarDisplay.clientWidth / 2;
-            const scale = displayRadius / displayRange;
 
-            for (let i = 0; i < current_point_vector.length; i += 2) {
-                const distance = current_point_vector[i];
-                const angleRad = current_point_vector[i + 1];
+            // Limpa pontos anteriores
+            pointsGroup.innerHTML = '';
 
-                // CORREÇÃO: Adiciona a condição para filtrar os pontos
-                // Só plota se a distância for menor ou igual ao alcance de exibição atual.
-                if (distance <= displayRange) {
-                    const x = displayRadius - (distance * Math.sin(angleRad)) * scale;
-                    const y = displayRadius - (distance * Math.cos(angleRad)) * scale;
+            const scale = RADAR_RADIUS / displayRange;
 
-                    const pointElement = document.createElement("div");
-                    pointElement.className = "lidar-point";
-                    pointElement.style.left = `${x}px`;
-                    pointElement.style.top = `${y}px`;
-                    pointElement.style.backgroundColor = getColorByDistance(distance);
-                    lidarDisplay.appendChild(pointElement);
+            for (let i = 0; i < currentPointVector.length; i += 2) {
+                const distance = currentPointVector[i];
+                const angleRad = currentPointVector[i + 1];
+
+                // Só plota pontos dentro do alcance de exibição
+                if (distance <= displayRange && distance > 0) {
+                    // Converte coordenadas polares para cartesianas
+                    // O ângulo 0 é na frente (direção +Y no sistema do drone)
+                    const x = CENTER - (distance * Math.sin(angleRad)) * scale;
+                    const y = CENTER - (distance * Math.cos(angleRad)) * scale;
+
+                    const point = createSvgElement('circle', {
+                        cx: x,
+                        cy: y,
+                        r: CONFIG.POINT_SIZE,
+                        fill: getColorByDistance(distance),
+                        class: 'lidar-point'
+                    });
+                    pointsGroup.appendChild(point);
                 }
             }
         }
 
+        /**
+         * Retorna a cor do ponto baseada na distância
+         */
         function getColorByDistance(distance) {
-            if (distance > 5) return "rgb(0, 255, 0)";
-            if (distance < 1) return "rgb(255, 0, 0)";
+            if (distance > 5) return 'rgb(0, 255, 0)';      // Verde (longe)
+            if (distance < 1) return 'rgb(255, 0, 0)';      // Vermelho (muito perto)
+
+            // Gradiente de vermelho para verde entre 1m e 5m
             const t = (distance - 1) / 4;
             const r = Math.round(255 * (1 - t));
             const g = Math.round(255 * t);
             return `rgb(${r}, ${g}, 0)`;
         }
 
-        function initializeRadarElements() {
-            if (!lidarDisplay) return;
-            const tryToInitialize = () => {
-                if (lidarDisplay.clientWidth > 10) {
-                    isInitialized = true;
-                    generateRangeCircles();
-                    generateAngleMarkers();
-                    requestAnimationFrame(updateScanAnimation);
-                } else {
-                    requestAnimationFrame(tryToInitialize);
-                }
-            };
-            tryToInitialize();
+        // =====================================================================
+        // ANIMAÇÃO DO SCAN
+        // =====================================================================
+
+        /**
+         * Atualiza a animação da linha de scan
+         */
+        function updateScanAnimation(timestamp) {
+            if (!isInitialized) return;
+
+            if (!lastAnimationTime) lastAnimationTime = timestamp;
+            const deltaTime = (timestamp - lastAnimationTime) / 1000;
+            lastAnimationTime = timestamp;
+
+            // Atualiza o ângulo
+            scanAnimationAngle = (scanAnimationAngle + CONFIG.SCAN_SPEED * deltaTime) % 360;
+
+            // Calcula a posição final da linha
+            const rad = (scanAnimationAngle - 90) * Math.PI / 180;
+            const x2 = CENTER + Math.cos(rad) * RADAR_RADIUS;
+            const y2 = CENTER + Math.sin(rad) * RADAR_RADIUS;
+
+            scanLine.setAttribute('x2', x2);
+            scanLine.setAttribute('y2', y2);
+
+            requestAnimationFrame(updateScanAnimation);
         }
 
-        lidarDisplay.addEventListener("wheel", function (event) {
+        // =====================================================================
+        // CONTROLE DE ZOOM (SCROLL)
+        // =====================================================================
+
+        radarContainer.addEventListener('wheel', function (event) {
             event.preventDefault();
+
             if (event.deltaY < 0) {
                 displayRange = Math.max(1, displayRange - 1);
             } else {
-                displayRange = Math.min(MAX_RANGE, displayRange + 1);
+                displayRange = Math.min(CONFIG.MAX_RANGE, displayRange + 1);
             }
+
             generateRangeCircles();
             plotLidarPoints();
         });
 
-        function startRadarInitialization() {
-            initializeRadarElements();
+        // =====================================================================
+        // INICIALIZAÇÃO
+        // =====================================================================
+
+        /**
+         * Verifica se a imagem do drone existe
+         */
+        function checkDroneIcon() {
+            const img = new Image();
+            img.onload = function () {
+                // Imagem existe, mantém o ícone
+            };
+            img.onerror = function () {
+                // Imagem não existe, usa fallback
+                droneIcon.classList.add('drone-icon-fallback');
+                droneIcon.style.backgroundImage = 'none';
+            };
+            img.src = 'target.png';
         }
 
+        /**
+         * Inicializa o radar
+         */
+        function initializeRadar() {
+            if (isInitialized) return;
+
+            isInitialized = true;
+            generateStaticElements();
+            checkDroneIcon();
+            requestAnimationFrame(updateScanAnimation);
+        }
+
+        /**
+         * Função chamada pelo Python após o carregamento da página
+         */
+        function startRadarInitialization() {
+            // Aguarda um frame para garantir que o layout está pronto
+            requestAnimationFrame(() => {
+                initializeRadar();
+            });
+        }
+
+        /**
+         * Função chamada pelo Python para atualizar os pontos
+         */
         function dashboard_update_point_vector(newVector) {
-            if (newVector && Array.isArray(newVector)) {
-                current_point_vector = newVector;
-                plotLidarPoints();
+            // Se for inválido ou nulo, usa array vazio para limpar a tela
+            if (!newVector || !Array.isArray(newVector)) {
+                currentPointVector = [];
+            } else {
+                currentPointVector = newVector;
             }
+            // Sempre atualiza (redesenha/limpa)
+            plotLidarPoints();
+        }
+
+        // =====================================================================
+        // INDICADOR DE DISTÂNCIA INFERIOR
+        // =====================================================================
+
+        const groundDistanceBar = document.getElementById('groundDistanceBar');
+        const groundDistanceValue = document.getElementById('groundDistanceValue');
+
+        // Configuração do indicador de distância inferior
+        const GROUND_CONFIG = {
+            MAX_DISTANCE: 10,      // Distância máxima exibida (metros)
+            GREEN_THRESHOLD: 3,    // Acima disso = verde puro
+            RED_THRESHOLD: 1       // Abaixo disso = vermelho piscante
+        };
+
+        /**
+         * Calcula a cor RGB para a distância (verde -> vermelho)
+         * @param {number} distance - Distância em metros
+         * @returns {object} - {r, g, b} valores de 0 a 255
+         */
+        function getColorForDistance(distance) {
+            // Acima de 3m = verde puro
+            if (distance >= GROUND_CONFIG.GREEN_THRESHOLD) {
+                return { r: 0, g: 255, b: 0 };
+            }
+
+            // Abaixo de 1m = vermelho puro
+            if (distance <= GROUND_CONFIG.RED_THRESHOLD) {
+                return { r: 255, g: 0, b: 0 };
+            }
+
+            // Entre 1m e 3m = transição suave verde -> vermelho
+            // t = 0 quando distance = 3 (verde)
+            // t = 1 quando distance = 1 (vermelho)
+            const range = GROUND_CONFIG.GREEN_THRESHOLD - GROUND_CONFIG.RED_THRESHOLD;
+            const t = (GROUND_CONFIG.GREEN_THRESHOLD - distance) / range;
+
+            // Interpolação linear de verde para vermelho
+            const r = Math.round(255 * t);
+            const g = Math.round(255 * (1 - t));
+            const b = 0;
+
+            return { r, g, b };
+        }
+
+        /**
+         * Função chamada pelo Python para atualizar a distância inferior
+         * @param {number} distance - Distância em metros (null ou NaN = sem dados)
+         */
+        function dashboard_update_ground_distance(distance) {
+            // Verifica se os elementos existem
+            if (!groundDistanceBar || !groundDistanceValue) {
+                console.warn('Ground distance elements not found');
+                return;
+            }
+
+            // Verifica se há dados válidos
+            if (distance === null || distance === undefined || isNaN(distance)) {
+                groundDistanceBar.style.width = '0%';
+                groundDistanceBar.style.background = 'rgba(128, 128, 128, 0.5)';
+                groundDistanceBar.style.boxShadow = 'none';
+                groundDistanceBar.classList.remove('pulsing');
+                groundDistanceValue.textContent = '-- m';
+                groundDistanceValue.className = 'ground-distance-value no-data';
+                return;
+            }
+
+            // Calcula a largura da barra (máximo 100%)
+            const percentage = Math.min(100, (distance / GROUND_CONFIG.MAX_DISTANCE) * 100);
+            groundDistanceBar.style.width = `${percentage}%`;
+
+            // Atualiza o valor
+            groundDistanceValue.textContent = `${distance.toFixed(2)} m`;
+            groundDistanceValue.className = 'ground-distance-value';
+
+            // Calcula a cor baseada na distância
+            const color = getColorForDistance(distance);
+            const colorStr = `rgb(${color.r}, ${color.g}, ${color.b})`;
+            const colorStrLight = `rgba(${color.r}, ${color.g}, ${color.b}, 0.6)`;
+
+            // Aplica a cor na barra e no texto
+            groundDistanceBar.style.background = `linear-gradient(90deg, ${colorStr}, ${colorStrLight})`;
+            groundDistanceBar.style.boxShadow = `0 0 10px rgba(${color.r}, ${color.g}, ${color.b}, 0.5)`;
+            groundDistanceValue.style.color = colorStr;
+
+            // Adiciona/remove animação de pulso para distâncias perigosas
+            if (distance <= GROUND_CONFIG.RED_THRESHOLD) {
+                groundDistanceBar.classList.add('pulsing');
+            } else {
+                groundDistanceBar.classList.remove('pulsing');
+            }
+        }
+
+        // Configura observer para redimensionamento (opcional, SVG já é responsivo)
+        if (typeof ResizeObserver !== 'undefined') {
+            resizeObserver = new ResizeObserver(() => {
+                // O SVG com viewBox se ajusta automaticamente
+                // Mas podemos ajustar o tamanho da fonte se necessário
+            });
+            resizeObserver.observe(radarContainer);
         }
     </script>
 </body>

@@ -34,6 +34,23 @@ class FSMManager:
         # Inicializa os atributos que armazenarão os widgets da interface da FSM.
         self.fsm_tree = None
         self.fsm_states = {} # Dicionário para mapear nomes de estados para itens da árvore.
+        
+        # Dados dinâmicos da missão (atualizados via update_state)
+        self.current_mission_data = {
+            "ponto_de_inspecao_indice_atual": 0,
+            "total_pontos_de_inspecao": 0,
+            "objeto_alvo": "",
+            "tipos_anomalia": []
+        }
+        
+        # Textos base para os itens (sem dados dinâmicos)
+        self.base_texts = {
+            "EXECUTANDO_INSPECIONANDO": "🔍 INSPECIONANDO",
+            "EXECUTANDO_INSPECIONANDO_DETECTANDO": "🔄 DETECTANDO",
+            "EXECUTANDO_INSPECIONANDO_ESCANEANDO": "🔭 ESCANEANDO",
+            "EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO": "✅ ESCANEAMENTO FINALIZADO",
+            "EXECUTANDO_INSPECIONANDO_FALHA": "⚠️ FALHA NA DETECÇÃO"
+        }
 
     def setup_b2_fsm(self):
         """
@@ -198,27 +215,27 @@ class FSMManager:
         self.fsm_states["EXECUTANDO_INSPECIONANDO"] = inspecionando_item
         self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO"] = [executando_item, inspecionando_item]
         
-        # Sub-sub-estado: DETECTANDO
+        # Sub-sub-estado: DETECTANDO (20)
         detectando_item = QTreeWidgetItem(inspecionando_item)
         detectando_item.setText(0, "🔄 DETECTANDO")
         self.fsm_states["EXECUTANDO_INSPECIONANDO_DETECTANDO"] = detectando_item
         self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_DETECTANDO"] = [executando_item, inspecionando_item, detectando_item]
         
-        # Sub-sub-estado: CENTRALIZANDO
-        centralizando_item = QTreeWidgetItem(inspecionando_item)
-        centralizando_item.setText(0, "🎯 CENTRALIZANDO")
-        self.fsm_states["EXECUTANDO_INSPECIONANDO_CENTRALIZANDO"] = centralizando_item
-        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_CENTRALIZANDO"] = [executando_item, inspecionando_item, centralizando_item]
-        
-        # Sub-sub-estado: ESCANEANDO
+        # Sub-sub-estado: ESCANEANDO (22)
         escaneando_item = QTreeWidgetItem(inspecionando_item)
         escaneando_item.setText(0, "🔭 ESCANEANDO")
         self.fsm_states["EXECUTANDO_INSPECIONANDO_ESCANEANDO"] = escaneando_item
         self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_ESCANEANDO"] = [executando_item, inspecionando_item, escaneando_item]
         
-        # Sub-sub-estado: FALHA
+        # Sub-sub-estado: ESCANEAMENTO_FINALIZADO (23)
+        escaneamento_finalizado_item = QTreeWidgetItem(inspecionando_item)
+        escaneamento_finalizado_item.setText(0, "✅ ESCANEAMENTO FINALIZADO")
+        self.fsm_states["EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO"] = escaneamento_finalizado_item
+        self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO"] = [executando_item, inspecionando_item, escaneamento_finalizado_item]
+        
+        # Sub-sub-estado: FALHA (25)
         falha_item = QTreeWidgetItem(inspecionando_item)
-        falha_item.setText(0, "⚠️ FALHA")
+        falha_item.setText(0, "⚠️ FALHA NA DETECÇÃO")
         self.fsm_states["EXECUTANDO_INSPECIONANDO_FALHA"] = falha_item
         self.fsm_highlight_items["EXECUTANDO_INSPECIONANDO_FALHA"] = [executando_item, inspecionando_item, falha_item]
         
@@ -308,12 +325,57 @@ class FSMManager:
         # Extrai state_name do dict ou usa string diretamente
         if isinstance(state_data, dict):
             state = state_data.get("state_name", "")
+            
+            # Atualiza dados dinâmicos da missão
+            self.current_mission_data["ponto_de_inspecao_indice_atual"] = state_data.get("ponto_de_inspecao_indice_atual", 0)
+            self.current_mission_data["total_pontos_de_inspecao"] = state_data.get("total_pontos_de_inspecao", 0)
+            self.current_mission_data["objeto_alvo"] = state_data.get("objeto_alvo", "")
+            self.current_mission_data["tipos_anomalia"] = state_data.get("tipos_anomalia", [])
         else:
             state = str(state_data)
         
-        # Registra a atualização do estado
-        # gui_log_info("FSMManager", f"Atualizando estado para: {state}")
+        # Atualiza textos dinâmicos dos itens da árvore
+        self._update_dynamic_labels()
         
         # Destaca o estado atual na árvore de estados.
         self.highlight_current_state_in_tree(state)
+    
+    def _update_dynamic_labels(self):
+        """
+        Atualiza os textos dinâmicos dos itens INSPECIONANDO, DETECTANDO e ESCANEANDO
+        com informações da missão atual.
+        """
+        idx = self.current_mission_data["ponto_de_inspecao_indice_atual"]
+        total = self.current_mission_data["total_pontos_de_inspecao"]
+        objeto_alvo = self.current_mission_data["objeto_alvo"]
+        tipos_anomalia = self.current_mission_data["tipos_anomalia"]
         
+        # INSPECIONANDO: mostra índice atual / total (ex: "🔍 INSPECIONANDO (2/4)")
+        inspecionando_item = self.fsm_states.get("EXECUTANDO_INSPECIONANDO")
+        if inspecionando_item:
+            if total > 0:
+                # Índice é 0-based, exibimos como 1-based
+                text = f"🔍 INSPECIONANDO ({idx + 1}/{total})"
+            else:
+                text = self.base_texts["EXECUTANDO_INSPECIONANDO"]
+            inspecionando_item.setText(0, text)
+        
+        # DETECTANDO: mostra objeto alvo (ex: "🔄 DETECTANDO: Flare")
+        detectando_item = self.fsm_states.get("EXECUTANDO_INSPECIONANDO_DETECTANDO")
+        if detectando_item:
+            if objeto_alvo:
+                text = f"🔄 DETECTANDO: {objeto_alvo}"
+            else:
+                text = self.base_texts["EXECUTANDO_INSPECIONANDO_DETECTANDO"]
+            detectando_item.setText(0, text)
+        
+        # ESCANEANDO: mostra tipos de anomalia (ex: "🔭 ESCANEANDO: corrosion, crack")
+        escaneando_item = self.fsm_states.get("EXECUTANDO_INSPECIONANDO_ESCANEANDO")
+        if escaneando_item:
+            if tipos_anomalia:
+                # Formata lista de anomalias (remove prefixos comuns para legibilidade)
+                anomalias_formatadas = [a.replace("_", " ").replace("corrosion", "corr.") for a in tipos_anomalia]
+                text = f"🔭 ESCANEANDO: {', '.join(anomalias_formatadas)}"
+            else:
+                text = self.base_texts["EXECUTANDO_INSPECIONANDO_ESCANEANDO"]
+            escaneando_item.setText(0, text)

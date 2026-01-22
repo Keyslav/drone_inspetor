@@ -48,10 +48,14 @@ class DashboardFSMSubscriber:
             "on_mission": msg.on_mission,
             "cancel_mission": msg.cancel_mission,
             "mission_name": msg.mission_name,
+            "mission_folder_path": msg.mission_folder_path,
             "tempo_de_permanencia": msg.tempo_de_permanencia,
             "takeoff_altitude": msg.takeoff_altitude,
             "ponto_de_inspecao_indice_atual": msg.ponto_de_inspecao_indice_atual,
-            "ponto_de_inspecao_tempo_de_chegada": msg.ponto_de_inspecao_tempo_de_chegada
+            "total_pontos_de_inspecao": msg.total_pontos_de_inspecao,
+            "ponto_de_inspecao_tempo_de_chegada": msg.ponto_de_inspecao_tempo_de_chegada,
+            "objeto_alvo": msg.objeto_alvo,
+            "tipos_anomalia": list(msg.tipos_anomalia)
         }
         self.signals.fsm_state_updated.emit(state_data)
 

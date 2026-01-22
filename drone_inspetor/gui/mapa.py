@@ -254,9 +254,20 @@ class MapaManager:
             gui_log_error("MapaManager", f"Missão '{mission_name}' não encontrada")
             return
         
+        # Armazena missão atual para sincronização com mapa expandido
+        self._current_mission_data = mission_data
+        
         # Exibe pontos no mapa principal
         if self.map_widget and hasattr(self.map_widget, 'display_mission_points'):
             self.map_widget.display_mission_points(mission_data)
+        
+        # Exibe pontos no mapa expandido se estiver aberto
+        if (hasattr(self, 'expanded_window') and 
+            self.expanded_window is not None and 
+            self.expanded_window.isVisible() and
+            hasattr(self.expanded_window, 'map_widget') and
+            self.expanded_window.map_widget.map_ready):
+            self.expanded_window.map_widget.display_mission_points(mission_data)
     
     def update_home_position(self, home_lat: float, home_lon: float):
         """
@@ -312,6 +323,9 @@ class InteractiveMapWidget(QWebEngineView):
         # Flag para indicar se o mapa está pronto para receber comandos JavaScript
         self.map_ready = False
         
+        # Lista de ações pendentes (scripts JS) para executar quando O mapa carregar
+        self.pending_actions = []
+        
         # Localiza o arquivo HTML do mapa.
         # Ordem de busca:
         # 1. Diretório share do pacote ROS2 (instalação via colcon)
@@ -354,19 +368,29 @@ class InteractiveMapWidget(QWebEngineView):
             # Registra erro se o arquivo map.html não for encontrado
             gui_log_error("MapaManager", f"Arquivo map.html não encontrado!")
     
-    def _on_load_finished(self, success: bool):
+    def _on_load_finished(self, ok):
         """
-        Callback chamado quando o carregamento da página HTML é concluído.
+        Slot chamado quando o carregamento da página termina.
+        """
+        if not ok:
+            gui_log_error("MapaManager", "Falha ao carregar o mapa")
+            return
+            
+        gui_log_info("MapaManager", "Mapa carregado com sucesso via loadFinished")
+        self.map_ready = True
         
-        Args:
-            success (bool): True se o carregamento foi bem-sucedido.
-        """
-        if success:
-            gui_log_info("MapaManager", "Página HTML carregada com sucesso, inicializando mapa...")
-            # Pequeno delay para garantir que o JavaScript esteja pronto
-            QTimer.singleShot(500, self.initialize_map)
-        else:
-            gui_log_error("MapaManager", "Falha ao carregar a página HTML do mapa!")
+        # Inicializa o mapa
+        self.initialize_map()
+        
+        # Executa ações pendentes
+        if self.pending_actions:
+            gui_log_info("MapaManager", f"Executando {len(self.pending_actions)} ações pendentes")
+            for script in self.pending_actions:
+                try:
+                    self.page().runJavaScript(script)
+                except Exception as e:
+                    gui_log_error("MapaManager", f"Erro ao executar ação pendente: {e}")
+            self.pending_actions.clear()
     
     def load_map_parameters(self):
         """
@@ -520,20 +544,17 @@ class InteractiveMapWidget(QWebEngineView):
     def add_inspection_point(self, index: int, lat: float, lon: float, is_detection_point: bool = False):
         """
         Adiciona um ponto de inspeção numerado no mapa.
-        
-        Args:
-            index (int): Índice/número do ponto de inspeção.
-            lat (float): Latitude do ponto.
-            lon (float): Longitude do ponto.
-            is_detection_point (bool): True se é um ponto de detecção (cor vermelha).
+        Se o mapa não estiver pronto, enfileira a ação.
         """
+        is_detection_js = "true" if is_detection_point else "false"
+        script = f"addInspectionPoint({index}, {lat}, {lon}, {is_detection_js});"
+        
         if not self.map_ready:
-            gui_log_error("MapaManager", "Mapa não pronto para adicionar ponto de inspeção")
+            self.pending_actions.append(script)
+            gui_log_info("MapaManager", f"Ação enfileirada: Ponto {index}")
             return
         
         try:
-            is_detection_js = "true" if is_detection_point else "false"
-            script = f"addInspectionPoint({index}, {lat}, {lon}, {is_detection_js});"
             self.page().runJavaScript(script)
         except Exception as e:
             gui_log_error("MapaManager", f"Erro ao adicionar ponto de inspeção: {e}")
@@ -541,15 +562,12 @@ class InteractiveMapWidget(QWebEngineView):
     def display_mission_points(self, mission_data: dict):
         """
         Exibe todos os pontos de inspeção de uma missão no mapa.
-        
-        Args:
-            mission_data (dict): Dados da missão contendo 'pontos_de_inspecao'.
         """
         if not mission_data or 'pontos_de_inspecao' not in mission_data:
             gui_log_error("MapaManager", "Dados de missão inválidos")
             return
         
-        # Limpa marcadores anteriores
+        # Limpa marcadores anteriores (também enfileirado se necessário)
         self.clear_mission_markers()
         
         pontos = mission_data.get('pontos_de_inspecao', [])
@@ -561,24 +579,28 @@ class InteractiveMapWidget(QWebEngineView):
             if lat is not None and lon is not None:
                 self.add_inspection_point(i, lat, lon, is_detection)
         
-        gui_log_info("MapaManager", f"Exibidos {len(pontos)} pontos de inspeção no mapa")
+        gui_log_info("MapaManager", f"Solicitada exibição de {len(pontos)} pontos de inspeção")
     
     def clear_mission_markers(self):
         """
-        Remove todos os marcadores de missão (pontos de inspeção e home) do mapa.
+        Remove todos os marcadores de missão.
+        Se o mapa não estiver pronto, enfileira a ação.
         """
+        script = "clearMissionMarkers();"
+        
         if not self.map_ready:
+            self.pending_actions.append(script)
             return
         
         try:
-            self.page().runJavaScript("clearMissionMarkers();")
-            gui_log_info("MapaManager", "Marcadores de missão limpos")
+            self.page().runJavaScript(script)
         except Exception as e:
             gui_log_error("MapaManager", f"Erro ao limpar marcadores de missão: {e}")
 
 class ExpandedMapWindow(QMainWindow):
     """
     Janela expandida para exibir o mapa em tela cheia.
+    Usa zoom 3x maior e ícones/fontes 3x maiores que o mapa principal.
     """
     def __init__(self, mapa_manager=None):
         """
@@ -590,17 +612,23 @@ class ExpandedMapWindow(QMainWindow):
         super().__init__()
         # Define o título e a geometria da janela.
         self.setWindowTitle("Mapa GPS Expandido")
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1400, 900)
         
         self.mapa_manager = mapa_manager
+        self._current_mission_data = None
         
         # Configura o widget central e seu layout.
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout(central_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         
         # Cria uma nova instância do InteractiveMapWidget para a janela expandida.
         self.map_widget = InteractiveMapWidget(parent=self, mapa_manager=mapa_manager)
+        
+        # Zoom 3x maior: se o mapa principal usa 15, o expandido usa 18
+        self.map_widget.zoom_level = min(self.map_widget.zoom_level + 3, 19)
+        
         layout.addWidget(self.map_widget)
         
         # Conecta o sinal de carregamento do mapa ao callback.
@@ -613,10 +641,81 @@ class ExpandedMapWindow(QMainWindow):
         Args:
             ok (bool): True se o carregamento foi bem-sucedido, False caso contrário.
         """
-        if ok:
-            gui_log_info("ExpandedMapWindow", "Mapa expandido carregado com sucesso")
-            # Opcional: injetar JavaScript específico para a versão expandida, se necessário
-        else:
+        if not ok:
             gui_log_error("ExpandedMapWindow", "Falha ao carregar mapa expandido")
-
-
+            return
+        
+        gui_log_info("ExpandedMapWindow", "Mapa expandido carregado com sucesso")
+        
+        # Aplica zoom aumentado
+        self.map_widget.map_ready = True
+        script = f"setMapCenter({self.map_widget.map_center_lat}, {self.map_widget.map_center_lon}, {self.map_widget.zoom_level});"
+        self.map_widget.page().runJavaScript(script)
+        
+        # Injeta CSS para ícones e fontes 3x maiores
+        self._inject_expanded_styles()
+        
+        # Sincroniza posição atual do drone
+        if self.mapa_manager:
+            self.map_widget.update_drone_position(
+                self.mapa_manager.drone_lat,
+                self.mapa_manager.drone_lon,
+                self.mapa_manager.drone_alt,
+                self.mapa_manager.drone_heading,
+                self.mapa_manager.drone_speed
+            )
+            
+            # Sincroniza marcadores de missão se existir missão exibida
+            if hasattr(self.mapa_manager, '_current_mission_data') and self.mapa_manager._current_mission_data:
+                self.map_widget.display_mission_points(self.mapa_manager._current_mission_data)
+    
+    def _inject_expanded_styles(self):
+        """Injeta estilos CSS para aumentar tamanho de ícones e fontes."""
+        css_script = """
+        (function() {
+            var style = document.createElement('style');
+            style.textContent = `
+                /* Ícones 3x maiores */
+                .drone-icon {
+                    width: 72px !important;
+                    height: 72px !important;
+                    margin-left: -36px !important;
+                    margin-top: -36px !important;
+                }
+                .home-marker {
+                    width: 60px !important;
+                    height: 60px !important;
+                    font-size: 30px !important;
+                    margin-left: -30px !important;
+                    margin-top: -30px !important;
+                }
+                .inspection-marker {
+                    width: 45px !important;
+                    height: 45px !important;
+                    font-size: 21px !important;
+                    margin-left: -22px !important;
+                    margin-top: -22px !important;
+                }
+                /* Botões de zoom maiores */
+                .leaflet-control-zoom a {
+                    width: 60px !important;
+                    height: 60px !important;
+                    font-size: 36px !important;
+                    line-height: 60px !important;
+                }
+                /* Tooltip/popup fonts 3x */
+                .leaflet-popup-content {
+                    font-size: 21px !important;
+                }
+                .leaflet-tooltip {
+                    font-size: 18px !important;
+                }
+            `;
+            document.head.appendChild(style);
+        })();
+        """
+        self.map_widget.page().runJavaScript(css_script)
+    
+    def mouseDoubleClickEvent(self, event):
+        """Fecha a janela com duplo clique."""
+        self.close()

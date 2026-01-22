@@ -23,16 +23,22 @@ class CameraScreen(BaseScreen):
     DashboardNode através de sinais PyQt6 e os exibe.
     """
     
-    def __init__(self, signals, video_label):
+    def __init__(self, signals, video_label, title_label=None):
         """
         Inicializa a tela da câmera principal.
 
         Args:
             signals: Objeto de sinais PyQt6 para comunicação (não utilizado diretamente aqui)
             video_label (QLabel): O widget QLabel onde o feed de vídeo será exibido.
+            title_label (QLabel, optional): O widget QLabel do título para exibir indicador de gravação.
         """
         # Chama o construtor da classe base BaseScreen
         super().__init__(video_label, "Câmera Principal")
+        
+        # Armazena referência ao título para indicador de gravação
+        self.title_label = title_label
+        self._is_recording = False
+        self._base_title = "Câmera Principal"
         
         # Instancia o ImageProcessor para converter mensagens de imagem ROS para formatos PyQt
         self.image_processor = ImageProcessor()
@@ -134,6 +140,50 @@ class CameraScreen(BaseScreen):
         if self.video_label and self.video_label.pixmap():
             return self.video_label.pixmap()
         return None
+    
+    def set_recording_indicator(self, is_recording: bool):
+        """
+        Atualiza o indicador de gravação de vídeo na tela da câmera.
+        Exibe um ícone vermelho quando gravando, ou cinza quando não está.
+        
+        Args:
+            is_recording (bool): True se está gravando, False caso contrário.
+        """
+        # Evita atualizações desnecessárias
+        if self._is_recording == is_recording:
+            return
+        
+        self._is_recording = is_recording
+        
+        # Atualiza o título com o indicador
+        if self.title_label:
+            if is_recording:
+                new_title = f"🔴 REC | {self._base_title}"
+                self.title_label.setStyleSheet(f"""
+                    font-weight: bold; 
+                    color: {COMMON_STYLES["text_color"]};
+                    background-color: #c0392b;
+                    padding: 4px; 
+                    border-radius: 3px;
+                    font-size: 13px;
+                    border: 1px solid #e74c3c;
+                    margin-bottom: 6px;
+                """)
+            else:
+                new_title = f"⚫ | {self._base_title}"
+                self.title_label.setStyleSheet(f"""
+                    font-weight: bold; 
+                    color: {COMMON_STYLES["text_color"]};
+                    background-color: {COMMON_STYLES["accent_color"]};
+                    padding: 4px; 
+                    border-radius: 3px;
+                    font-size: 13px;
+                    border: 1px solid {COMMON_STYLES["border_color"]};
+                    margin-bottom: 6px;
+                """)
+            
+            self.title_label.setText(new_title)
+            gui_log_info("CameraScreen", f"Indicador de gravação: {'ATIVO' if is_recording else 'INATIVO'}")
     
     def set_camera_status(self, status_text, is_error=False):
         """

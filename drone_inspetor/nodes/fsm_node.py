@@ -27,6 +27,7 @@ from drone_inspetor_msgs.msg import (
     DashboardFsmCommandMSG,
 )
 from drone_inspetor_msgs.action import DroneCommand
+from drone_inspetor_msgs.srv import CVDetectionSRV, RecordDetectionsSRV, EnableAnomalyDetectionSRV
 
 
 # ==================================================================================================
@@ -123,9 +124,9 @@ class FSMStateDescription(IntEnum):
     EXECUTANDO_INSPECIONANDO = 12               # Percorrendo pontos de inspeção
     
     # Estados INSPECIONANDO - Nível 2
-    EXECUTANDO_INSPECIONANDO_DETECTANDO = 20    # Girando 360° procurando target
-    EXECUTANDO_INSPECIONANDO_CENTRALIZANDO = 21 # Centralizando target no frame
-    EXECUTANDO_INSPECIONANDO_ESCANEANDO = 22    # Escaneando/inspecionando
+    EXECUTANDO_INSPECIONANDO_DETECTANDO = 20    # Aguardando detecção do objeto alvo
+    EXECUTANDO_INSPECIONANDO_ESCANEANDO = 22    # Escaneando anomalias (detecção habilitada)
+    EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO = 23  # Finalizando escaneamento
     EXECUTANDO_INSPECIONANDO_FALHA = 25         # Falha na detecção do target
     
     # Estados de finalização
@@ -355,6 +356,13 @@ class FSMState:
         # Controle de waypoints da missão
         self.ponto_de_inspecao_indice_atual = 0
         self.ponto_de_inspecao_tempo_de_chegada = 0.0
+        self._detection_started = False  # Flag para controlar se a detecção já foi iniciada neste ponto
+        self._detection_start_time = 0.0  # Timestamp de início da detecção
+        self._scanning_started = False  # Flag para controlar se o escaneamento já foi iniciado
+        self._scanning_start_time = 0.0  # Timestamp de início do escaneamento
+        
+        # Diretório da missão atual (criado quando missão inicia)
+        self.mission_folder_path = ""
     
     def _load_missions(self):
         """Carrega missões do arquivo missions.json."""
@@ -398,8 +406,50 @@ class FSMState:
         self.mission = self.missions[mission_name]
         self.ponto_de_inspecao_indice_atual = 0
         
+        # Cria pasta da missão
+        self.mission_folder_path = self._create_mission_folder(mission_name)
+        
         self._node.get_logger().info(f"Missão '{mission_name}' carregada com sucesso")
+        self._node.get_logger().info(f"Pasta da missão: {self.mission_folder_path}")
         return True, ""
+    
+    def _create_mission_folder(self, mission_name: str) -> str:
+        """
+        Cria a pasta da missão com formato mission_<data>_<hora>.
+        
+        Args:
+            mission_name: Nome da missão (para log)
+            
+        Returns:
+            Caminho completo da pasta da missão
+        """
+        import os
+        from datetime import datetime
+        
+        # Obtém diretório base do parâmetro global (via node)
+        missions_directory = self._node.get_missions_directory()
+        
+        # Expande ~ para o home do usuário
+        missions_directory = os.path.expanduser(missions_directory)
+        
+        # Cria nome da pasta com timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        folder_name = f"mission_{timestamp}"
+        folder_path = os.path.join(missions_directory, folder_name)
+        
+        # Cria o diretório (e subpastas necessárias)
+        try:
+            os.makedirs(folder_path, exist_ok=True)
+            # Cria subpasta para fotos
+            os.makedirs(os.path.join(folder_path, "fotos"), exist_ok=True)
+            # Cria subpasta para vídeos
+            os.makedirs(os.path.join(folder_path, "videos"), exist_ok=True)
+            self._node.get_logger().info(f"📁 Pasta da missão criada: {folder_path}")
+        except OSError as e:
+            self._node.get_logger().error(f"Erro ao criar pasta da missão: {e}")
+            return ""
+        
+        return folder_path
     
     def reset(self):
         """
@@ -418,6 +468,7 @@ class FSMState:
         
         # Missão atual
         self.mission = None
+        self.mission_folder_path = ""
         self.ponto_de_inspecao_indice_atual = 0
         self.ponto_de_inspecao_tempo_de_chegada = 0.0
         
@@ -439,6 +490,7 @@ class FSMState:
         
         # Missão atual
         msg.mission_name = self.mission.get('nome', '') if self.mission else ""
+        msg.mission_folder_path = self.mission_folder_path
         msg.tempo_de_permanencia = self.tempo_de_permanencia
         
         # Parâmetros de configuração
@@ -446,7 +498,24 @@ class FSMState:
         
         # Controle de waypoints
         msg.ponto_de_inspecao_indice_atual = self.ponto_de_inspecao_indice_atual
+        
+        # Total de pontos de inspeção
+        if self.mission and 'pontos_de_inspecao' in self.mission:
+            msg.total_pontos_de_inspecao = len(self.mission['pontos_de_inspecao'])
+        else:
+            msg.total_pontos_de_inspecao = 0
+        
         msg.ponto_de_inspecao_tempo_de_chegada = self.ponto_de_inspecao_tempo_de_chegada
+        
+        # Objeto alvo e tipos de anomalia do ponto atual (se disponível)
+        msg.objeto_alvo = ""
+        msg.tipos_anomalia = []
+        if self.mission and 'pontos_de_inspecao' in self.mission:
+            pontos = self.mission['pontos_de_inspecao']
+            if 0 <= self.ponto_de_inspecao_indice_atual < len(pontos):
+                ponto_atual = pontos[self.ponto_de_inspecao_indice_atual]
+                msg.objeto_alvo = ponto_atual.get('objeto_alvo', '')
+                msg.tipos_anomalia = ponto_atual.get('tipos_anomalia', [])
         
         self._node.fsm_state_pub.publish(msg)
     
@@ -541,7 +610,7 @@ class FSMState:
                     self.muda_estado(FSMStateDescription.EXECUTANDO_ARMANDO)
                     return
                 
-                self._node.get_logger().info("Estado da FSM: PRONTO >>> Aguardando Missão...", throttle_duration_sec=5)
+                self._node.get_logger().info("Estado da FSM: PRONTO >>> Aguardando Missão...", throttle_duration_sec=500)
 
             # =================================================
             # ESTADO: EXECUTANDO_ARMANDO
@@ -613,7 +682,7 @@ class FSMState:
                         self._node.get_logger().error("Timeout no GOTO! Abortando missão.")
                         self.muda_estado(FSMStateDescription.RETORNANDO)
                         return
-                    self._node.get_logger().info(f"Aguardando chegada ao ponto... Estado: {drone_state.name}", throttle_duration_sec=2)
+                    self._node.get_logger().info(f"Aguardando chegada ao ponto... Estado: {drone_state.name}", throttle_duration_sec=20)
                     return
 
                 # Verifica se há missão carregada
@@ -637,18 +706,19 @@ class FSMState:
                 # O ponto_de_inspecao_tempo_de_chegada é setado no _action_result_callback quando obtém sucesso.
                 
                 if self.ponto_de_inspecao_tempo_de_chegada > 0.0:
-                    # Chegamos e a action terminou com sucesso. Processa tempo de espera.
+                    # Chegamos e a action terminou com sucesso.
                     
-                    # Verifica se é ponto de detecção (precisa aguardar tempo_de_permanencia)
+                    # Verifica se é ponto de detecção
                     if ponto_atual.get('ponto_de_deteccao', False):
-                        elapsed = time.time() - self.ponto_de_inspecao_tempo_de_chegada
-                        if elapsed < self.tempo_de_permanencia:
-                            remaining = self.tempo_de_permanencia - elapsed
-                            self._node.get_logger().info(f"Aguardando no ponto de detecção... {remaining:.1f}s restantes", throttle_duration_sec=1)
-                            return
+                        # Transiciona para estado de detecção
+                        self._node.get_logger().info(
+                            f"Chegou ao ponto de detecção {self.ponto_de_inspecao_indice_atual + 1}. "
+                            f"Transitando para EXECUTANDO_INSPECIONANDO_DETECTANDO..."
+                        )
+                        self.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO)
+                        return
                     
-                    # Tempo de espera concluído (ou não era ponto de espera)
-                    # Avança para o próximo ponto
+                    # Não era ponto de detecção, avança para o próximo ponto
                     self._node.get_logger().info(f"Ponto {self.ponto_de_inspecao_indice_atual + 1}/{len(pontos)} concluído!")
                     self.ponto_de_inspecao_indice_atual += 1
                     self.ponto_de_inspecao_tempo_de_chegada = 0.0
@@ -678,22 +748,149 @@ class FSMState:
             # ESTADO: EXECUTANDO_INSPECIONANDO_DETECTANDO
             # =================================================
             case FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO:
-                # Por enquanto, não faz nada (reservado para futura implementação)
-                pass
-
-            # =================================================
-            # ESTADO: EXECUTANDO_INSPECIONANDO_CENTRALIZANDO
-            # =================================================
-            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO:
-                # Por enquanto, não faz nada (reservado para futura implementação)
-                pass
+                # Obtém dados da missão e ponto atual
+                if not self.mission or 'pontos_de_inspecao' not in self.mission:
+                    self._node.get_logger().error("Missão não disponível no estado DETECTANDO!")
+                    self.muda_estado(FSMStateDescription.RETORNANDO)
+                    return
+                
+                pontos = self.mission['pontos_de_inspecao']
+                if self.ponto_de_inspecao_indice_atual >= len(pontos):
+                    self._node.get_logger().error("Índice de ponto inválido no estado DETECTANDO!")
+                    self.muda_estado(FSMStateDescription.RETORNANDO)
+                    return
+                
+                ponto_atual = pontos[self.ponto_de_inspecao_indice_atual]
+                
+                # Lê informações de detecção do ponto atual
+                objeto_alvo = ponto_atual.get('objeto_alvo', '')
+                tipos_anomalia = ponto_atual.get('tipos_anomalia', [])
+                
+                # === FASE 1: Iniciar detecção (uma vez ao entrar no estado) ===
+                if not self._detection_started:
+                    # Marca que a detecção foi iniciada
+                    self._detection_started = True
+                    self._detection_start_time = time.time()
+                    
+                    # Solicita detecção via service
+                    if objeto_alvo and self._node._cv_detection_client.wait_for_service(timeout_sec=1.0):
+                        detection_request = CVDetectionSRV.Request()
+                        detection_request.object_name = objeto_alvo
+                        detection_request.anomaly_types = tipos_anomalia
+                        detection_request.timeout_seconds = 2.0
+                        
+                        future = self._node._cv_detection_client.call_async(detection_request)
+                        future.add_done_callback(self._node._detection_response_callback)
+                        self._node.get_logger().info(f"🔍 Solicitada detecção de '{objeto_alvo}'")
+                    return
+                
+                # === FASE 2: Aguardar resposta da detecção ===
+                elapsed = time.time() - self._detection_start_time
+                if elapsed < 10.0 and self._node._detection_bbox_center is None:  # Aguarda até 10s para resposta
+                    self._node.get_logger().info(f"Aguardando detecção... {elapsed:.1f}s", throttle_duration_sec=1)
+                    return
+                
+                # === FASE 3: Verificar resultado e decidir próximo passo ===
+                if self._node._detection_bbox_center is not None:
+                    # Detecção bem sucedida - transicionar para APROXIMANDO
+                    self._node.get_logger().info(
+                        f"✅ Objeto detectado! bbox_center={self._node._detection_bbox_center}. "
+                        f"Transitando para APROXIMANDO..."
+                    )
+                    self._node._approach_arrival_time = 0.0  # Resetar para nova aproximação
+                    self._detection_started = False  # Resetar flag
+                    self.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO)
+                else:
+                    # Detecção falhou - avança para próximo ponto
+                    self._node.get_logger().warn(
+                        f"❌ Objeto '{objeto_alvo}' não detectado. Avançando para próximo ponto..."
+                    )
+                    # Para gravação
+                    if self._node._cv_record_client.wait_for_service(timeout_sec=1.0):
+                        record_request = RecordDetectionsSRV.Request()
+                        record_request.start_recording = False
+                        self._node._cv_record_client.call_async(record_request)
+                    
+                    self.ponto_de_inspecao_indice_atual += 1
+                    self.ponto_de_inspecao_tempo_de_chegada = 0.0
+                    self._detection_started = False  # Resetar flag para próximo ponto
+                    self._node._detection_bbox_center = None
+                    self.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO)
 
             # =================================================
             # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEANDO
             # =================================================
             case FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO:
-                # Por enquanto, não faz nada (reservado para futura implementação)
-                pass
+                # Escaneia por 5 segundos com detecção de anomalias habilitada
+                
+                # === FASE 1: Iniciar escaneamento (uma vez ao entrar no estado) ===
+                if not self._scanning_started:
+                    self._scanning_started = True
+                    self._scanning_start_time = time.time()
+                    self._node.get_logger().info("🔍 Iniciando escaneamento (5 segundos)...")
+                    
+                    # Inicia gravação via service
+                    if self._node._cv_record_client.wait_for_service(timeout_sec=1.0):
+                        record_request = RecordDetectionsSRV.Request()
+                        record_request.start_recording = True
+                        self._node._cv_record_client.call_async(record_request)
+                        self._node.get_logger().info("🔴 Solicitado: iniciar gravação de vídeo")
+                    
+                    # Habilita detecção de anomalias via service
+                    if self._node._cv_anomaly_detection_client.wait_for_service(timeout_sec=1.0):
+                        request = EnableAnomalyDetectionSRV.Request()
+                        request.enable = True
+                        self._node._cv_anomaly_detection_client.call_async(request)
+                        self._node.get_logger().info("🔴 Solicitado: habilitar detecção de anomalias")
+                    return
+                
+                # === FASE 2: Aguarda 5 segundos ===
+                elapsed = time.time() - self._scanning_start_time
+                if elapsed < 5.0:
+                    self._node.get_logger().info(
+                        f"🔍 Escaneando... {5.0 - elapsed:.1f}s restantes", 
+                        throttle_duration_sec=1
+                    )
+                    return
+                
+                # === FASE 3: 5 segundos passaram - transicionar para ESCANEAMENTO_FINALIZADO ===
+                self._node.get_logger().info("✅ Escaneamento concluído. Transitando para ESCANEAMENTO_FINALIZADO...")
+                self._scanning_started = False  # Resetar flag
+                self._scanning_start_time = 0.0  # Resetar timestamp
+                self.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO)
+
+            # =================================================
+            # ESTADO: EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO
+            # =================================================
+            case FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO:
+                # Para gravação, desabilita detecção de anomalias e avança para próximo ponto
+                
+                self._node.get_logger().info("✅ Finalizando escaneamento. Parando gravação e salvando vídeo/fotos...")
+                
+                # Para gravação via service do CV_node
+                if self._node._cv_record_client.wait_for_service(timeout_sec=1.0):
+                    record_request = RecordDetectionsSRV.Request()
+                    record_request.start_recording = False
+                    self._node._cv_record_client.call_async(record_request)
+                    self._node.get_logger().info("� Solicitado: parar gravação e salvar vídeo")
+                
+                # Desabilita detecção de anomalias via service
+                if self._node._cv_anomaly_detection_client.wait_for_service(timeout_sec=1.0):
+                    request = EnableAnomalyDetectionSRV.Request()
+                    request.enable = False
+                    self._node._cv_anomaly_detection_client.call_async(request)
+                    self._node.get_logger().info("⬛ Solicitado: desabilitar detecção de anomalias")
+                
+                # Limpar variáveis e avançar para próximo ponto
+                self._node._detection_bbox_center = None
+                self.ponto_de_inspecao_indice_atual += 1
+                self.ponto_de_inspecao_tempo_de_chegada = 0.0
+                
+                self._node.get_logger().info(
+                    f"📍 Ponto {self.ponto_de_inspecao_indice_atual}/{len(self.mission['pontos_de_inspecao'])} concluído. "
+                    f"Voltando para EXECUTANDO_INSPECIONANDO..."
+                )
+                self.muda_estado(FSMStateDescription.EXECUTANDO_INSPECIONANDO)
 
             # =================================================
             # ESTADO: EXECUTANDO_INSPECIONANDO_FALHA
@@ -716,7 +913,7 @@ class FSMState:
 
                 # Verifica se está em trânsito RTL
                 if self._node._action_in_progress or drone_state in DRONE_STATES_RTL:
-                    self._node.get_logger().info(f"RTL em progresso... Estado: {drone_state.name}", throttle_duration_sec=2)
+                    self._node.get_logger().info(f"RTL em progresso... Estado: {drone_state.name}", throttle_duration_sec=200)
                     return
                 
                 # Verifica se drone já pousou e desarmou
@@ -783,8 +980,8 @@ class FSMNode(Node):
             FSMStateDescription.EXECUTANDO_DECOLANDO,
             FSMStateDescription.EXECUTANDO_INSPECIONANDO,
             FSMStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO,
-            FSMStateDescription.EXECUTANDO_INSPECIONANDO_CENTRALIZANDO,
             FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
+            FSMStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO,
             FSMStateDescription.EXECUTANDO_INSPECIONANDO_FALHA,
             FSMStateDescription.INSPECAO_FINALIZADA,
         ],
@@ -859,6 +1056,35 @@ class FSMNode(Node):
         self._action_timeout = 60.0  # Timeout padrão de 60 segundos desde último feedback
 
         # ==================================================================
+        # SERVICE CLIENTS (CV_NODE)
+        # ==================================================================
+        # Client para service de detecção de objetos
+        self._cv_detection_client = self.create_client(
+            CVDetectionSRV,
+            '/drone_inspetor/interno/cv_node/srv/detection'
+        )
+        self.get_logger().info("Service client criado: /drone_inspetor/interno/cv_node/srv/detection")
+        
+        # Client para service de gravação de vídeo
+        self._cv_record_client = self.create_client(
+            RecordDetectionsSRV,
+            '/drone_inspetor/interno/cv_node/srv/record_detections'
+        )
+        self.get_logger().info("Service client criado: /drone_inspetor/interno/cv_node/srv/record_detections")
+        
+        # Client para service de habilitação de detecção de anomalias
+        self._cv_anomaly_detection_client = self.create_client(
+            EnableAnomalyDetectionSRV,
+            '/drone_inspetor/interno/cv_node/srv/enable_anomaly_detection'
+        )
+        self.get_logger().info("Service client criado: /drone_inspetor/interno/cv_node/srv/enable_anomaly_detection")
+        
+        # Variáveis para controle de aproximação (usadas em estados APROXIMANDO/ESCANEANDO)
+        self._detection_bbox_center = None    # Centro do bbox detectado [x, y]
+        self._approach_arrival_time = 0.0     # Tempo de chegada na aproximação
+        self._previous_inspection_position = None  # (lat, lon, alt) antes de aproximar
+
+        # ==================================================================
         # SUBSCRIBERS
         # ==================================================================
         # Recebe estado do drone_node
@@ -883,6 +1109,22 @@ class FSMNode(Node):
         self.topic_health_timer = self.create_timer(2.0, self.check_essential_topics)
         
         self.get_logger().info("================ FSM NODE PRONTO ================")
+
+    # ==================================================================
+    # MÉTODOS AUXILIARES DE CONFIGURAÇÃO
+    # ==================================================================
+    
+    def get_missions_directory(self) -> str:
+        """
+        Obtém o diretório base para salvar dados das missões.
+        Lê do parâmetro global do config params.yaml.
+        
+        Returns:
+            Caminho do diretório de missões (padrão: ~/Drone_Inspetor_Missoes)
+        """
+        # TODO: Implementar leitura do params.yaml via rosparam ou arquivo direto
+        # Por enquanto retorna o valor padrão
+        return "~/Drone_Inspetor_Missoes"
 
     # ==================================================================
     # TIMERS - Funções Principais (executadas periodicamente)
@@ -1042,7 +1284,7 @@ class FSMNode(Node):
         # Atualiza o tempo do último feedback (usado para timeout)
         self._last_action_feedback_time = time.time()
         
-        self.get_logger().info(
+        self.get_logger().debug(
             f"Feedback Action: estado = {feedback.state_name}, "
             f"distância = {feedback.distance_to_target:.2f}m, "
             f"progresso = {feedback.progress_percent:.1f}%",
@@ -1100,11 +1342,38 @@ class FSMNode(Node):
             self.get_logger().info("Action cancelada com sucesso")
         else:
             self.get_logger().warn("Falha ao cancelar action")
+    
+    def _detection_response_callback(self, future):
+        """
+        Callback chamado quando a resposta do service de detecção CV é recebida.
         
-        self._action_in_progress = False
-        self._action_start_time = 0.0
-        self._last_action_feedback_time = 0.0
-        self._current_goal_handle = None
+        Args:
+            future: Future com o resultado do service CVDetectionSRV
+        """
+        try:
+            response = future.result()
+            
+            if response.success and len(response.bbox_center) >= 2:
+                # Usa o centro do bounding box retornado pelo service
+                bbox_center_x = response.bbox_center[0]
+                bbox_center_y = response.bbox_center[1]
+                
+                self._detection_bbox_center = (bbox_center_x, bbox_center_y)
+                
+                self.get_logger().info(
+                    f"🎯 Detecção bem sucedida! {response.message}, "
+                    f"Confiança: {response.confidence:.2f}, "
+                    f"BBox Center: ({bbox_center_x:.1f}, {bbox_center_y:.1f})"
+                )
+            else:
+                self._detection_bbox_center = None
+                self.get_logger().warn(
+                    f"❌ {response.message if response.message else 'Objeto não detectado'}"
+                )
+                
+        except Exception as e:
+            self._detection_bbox_center = None
+            self.get_logger().error(f"Erro ao processar resposta de detecção: {e}")
 
     def check_action_timeout(self) -> bool:
         """

@@ -28,7 +28,7 @@ setup(
         (os.path.join('share', package_name, 'nodes'), glob(os.path.join('drone_inspetor', 'nodes', '*.py'))),
         (os.path.join('share', package_name, 'missions'), glob(os.path.join('drone_inspetor', 'missions', '*.json'))),
         # Copiar modelo YOLO best.pt para o diretório de instalação
-        (os.path.join('share', package_name), ['best.pt']),
+        (os.path.join('share', package_name, 'redes_treinadas'), glob(os.path.join('drone_inspetor', 'redes_treinadas', '*.pt'))),
     ],
     install_requires=[
         'setuptools',

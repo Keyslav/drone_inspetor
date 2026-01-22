@@ -133,3 +133,26 @@ class LidarScreen(QWidget):
     def update_obstacle_detections(self, detections: dict):
         # (Placeholder)
         pass
+
+    def update_ground_distance(self, distance: float):
+        """
+        Atualiza o indicador de distância inferior (LiDAR de altitude).
+
+        Args:
+            distance (float): Distância em metros até o solo/obstáculo abaixo do drone.
+                              Pode ser None ou NaN se não houver dados válidos.
+        """
+        if not self.is_page_loaded:
+            return
+
+        try:
+            # Trata valores inválidos
+            if distance is None or (isinstance(distance, float) and not distance == distance):  # NaN check
+                js_command = "dashboard_update_ground_distance(null);"
+            else:
+                js_command = f"dashboard_update_ground_distance({distance});"
+
+            self.web_view.page().runJavaScript(js_command)
+
+        except Exception as e:
+            gui_log_error("LidarScreen", f"Erro ao enviar distância inferior para o JavaScript: {e}")

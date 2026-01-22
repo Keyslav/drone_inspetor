@@ -1,43 +1,179 @@
 {
-  "flare": {
-    "nome": "Inspeção de Flare",
+  "Flare": {
+    "nome": "Flare",
     "descricao": "Missão de inspeção visual de flare industrial",
     "objeto_detectavel": "flare",
     "pontos_de_inspecao": [
       {
         "command": "GOTO",
-        "lat": -22.633978,
-        "lon": -40.092433,
+        "lat": -22.633930,
+        "lon": -40.092435,
         "alt": 99.0,
         "yaw": 0.0,
-        "ponto_de_deteccao": false
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "flare",
+        "tipos_anomalia": [
+          "Rust"
+        ]
       },
       {
         "command": "GOTO_FOCUS",
-        "lat": -22.633889,
-        "lon": -40.092326,
+        "lat": -22.633890,
+        "lon": -40.092395,
         "alt": 99.0,
-        "focus_lat": -22.633888,
+        "focus_lat": -22.633890,
         "focus_lon": -40.092435,
-        "ponto_de_deteccao": true
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "flare",
+        "tipos_anomalia": [
+          "Rust"
+        ]
       },
       {
         "command": "GOTO_FOCUS",
-        "lat": -22.633800,
-        "lon": -40.092433,
+        "lat": -22.633850,
+        "lon": -40.092435,
         "alt": 99.0,
-        "focus_lat": -22.633888,
+        "focus_lat": -22.633890,
         "focus_lon": -40.092435,
-        "ponto_de_deteccao": true
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "flare",
+        "tipos_anomalia": [
+          "Rust"
+        ]
       },
       {
         "command": "GOTO_FOCUS",
-        "lat": -22.633889,
-        "lon": -40.092504,
+        "lat": -22.633890,
+        "lon": -40.092485,
         "alt": 99.0,
-        "focus_lat": -22.633888,
+        "focus_lat": -22.633890,
         "focus_lon": -40.092435,
-        "ponto_de_deteccao": true
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "flare",
+        "tipos_anomalia": [
+          "Rust"
+        ]
+      }
+    ]
+  },
+  "Roldanas_Perfuracao": {
+    "nome": "Roldanas_Perfuracao",
+    "descricao": "Missão de inspeção visual das Roldanas da Torre de Perfuração",
+    "objeto_detectavel": "roldanas",
+    "pontos_de_inspecao": [
+      {
+        "command": "GOTO",
+        "lat": -22.633990,
+        "lon": -40.093330,
+        "alt": 106.0,
+        "yaw": 0.0,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "roldanas",
+        "tipos_anomalia": [
+          "Rust",
+          "Crack"
+        ]
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633890,
+        "lon": -40.093430,
+        "alt": 106.0,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "roldanas",
+        "tipos_anomalia": [
+          "Rust",
+          "Crack"
+        ]
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633790,
+        "lon": -40.093330,
+        "alt": 106.0,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "roldanas",
+        "tipos_anomalia": [
+          "Rust",
+          "Crack"
+        ]
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633890,
+        "lon": -40.093230,
+        "alt": 106.0,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "roldanas",
+        "tipos_anomalia": [
+          "Rust",
+          "Crack"
+        ]
+      }
+    ]
+  },
+  "Catarina": {
+    "nome": "Catarina",
+    "descricao": "Missão de inspeção visual da Catarina",
+    "objeto_detectavel": "catarina",
+    "pontos_de_inspecao": [
+      {
+        "command": "GOTO",
+        "lat": -22.633990,
+        "lon": -40.093330,
+        "alt": 85.0,
+        "yaw": 0.0,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "catarina",
+        "tipos_anomalia": [
+          "Rust"
+        ]
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633890,
+        "lon": -40.093430,
+        "alt": 85.0,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "catarina",
+        "tipos_anomalia": [
+          "Rust"
+        ]
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633790,
+        "lon": -40.093330,
+        "alt": 85.0,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "catarina",
+        "tipos_anomalia": [
+          "Rust"
+        ]
+      },
+      {
+        "command": "GOTO_FOCUS",
+        "lat": -22.633890,
+        "lon": -40.093230,
+        "alt": 85.0,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
+        "ponto_de_deteccao": true,
+        "objeto_alvo": "catarina",
+        "tipos_anomalia": [
+          "Rust"
+        ]
       }
     ]
   }

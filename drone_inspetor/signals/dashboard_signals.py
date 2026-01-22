@@ -22,8 +22,9 @@ class CameraSignals(QObject):
     
     Emite sinais quando novas imagens ou atualizações de status são recebidas.
     """
-    image_received = pyqtSignal(object)  # Recebe a imagem da câmera
-    status_updated = pyqtSignal(str)     # Atualizações de status da câmera
+    image_received = pyqtSignal(object)       # Recebe a imagem da câmera
+    status_updated = pyqtSignal(str)          # Atualizações de status da câmera
+    recording_status_received = pyqtSignal(bool)  # Status de gravação (True = gravando)
 
 class LidarSignals(QObject):
     """
@@ -31,8 +32,9 @@ class LidarSignals(QObject):
     
     Emite sinais quando novos dados de varredura laser, estatísticas ou detecções são recebidos.
     """
-    point_vector_received = pyqtSignal(object) # Recebe o vetor de pontos do LiDAR
-    statistics_received = pyqtSignal(dict)    # Estatísticas do LiDAR
+    lidar_data_received = pyqtSignal(dict)          # Dados consolidados do LiDAR (point_vector + ground_distance)
+    point_vector_received = pyqtSignal(object)      # Recebe o vetor de pontos do LiDAR (legado)
+    statistics_received = pyqtSignal(dict)          # Estatísticas do LiDAR
     obstacle_detections_received = pyqtSignal(list) # Detecções de obstáculos do LiDAR
 
 class FSMSignals(QObject):

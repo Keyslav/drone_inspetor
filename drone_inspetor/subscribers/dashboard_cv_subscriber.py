@@ -2,6 +2,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
+from drone_inspetor_msgs.msg import CVDetectionMSG
 import json
 from drone_inspetor.signals.dashboard_signals import CVSignals
 from cv_bridge import CvBridge
@@ -39,7 +40,7 @@ class DashboardCVSubscriber:
 
         # Subscriber para detecções de objetos
         self.cv_detections_sub = self.DashboardNode.create_subscription(
-            String,
+            CVDetectionMSG,
             "/drone_inspetor/interno/cv_node/object_detections",
             self.cv_detections_callback,
             qos_sensor_data
@@ -66,18 +67,30 @@ class DashboardCVSubscriber:
         except Exception as e:
             self.DashboardNode.get_logger().error(f"Erro ao converter imagem CV comprimida: {e}")
 
-    def cv_detections_callback(self, msg):
+    def cv_detections_callback(self, msg: CVDetectionMSG):
         """
         Callback para mensagens de detecções de objetos de Visão Computacional.
-        Emite o sinal JSON (str) detections_received da subclasse CV.
-        # Decodifica o JSON e emite o sinal detections_received da subclasse CV.
+        Converte CVDetectionMSG para JSON string e emite o sinal detections_received.
         """
         try:
-            # detections = json.loads(msg.data)
-            # self.signals.detections_received.emit(detections)
-            self.signals.detections_received.emit(msg.data)
-        except json.JSONDecodeError as e:
-            self.DashboardNode.get_logger().error(f"Erro ao decodificar JSON de detecções CV: {e}")
+            # Converte CVDetectionMSG para dicionário Python
+            detections_dict = {
+                'timestamp': msg.timestamp,
+                'count': msg.count,
+                'detections': [
+                    {
+                        'object_type': d.object_type,
+                        'class_name': d.class_name,
+                        'confidence': d.confidence,
+                        'bbox': list(d.bbox),
+                        'bbox_center': list(d.bbox_center)
+                    } for d in msg.detections
+                ]
+            }
+            # Converte para JSON string e emite
+            self.signals.detections_received.emit(json.dumps(detections_dict))
+        except Exception as e:
+            self.DashboardNode.get_logger().error(f"Erro ao processar detecções CV: {e}")
 
     def cv_analysis_callback(self, msg):
         """

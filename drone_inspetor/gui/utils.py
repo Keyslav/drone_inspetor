@@ -162,10 +162,22 @@ class BaseScreen:
     def expand_screen(self, event=None):
         """
         Expande a tela em janela separada.
+        Limita a uma janela expandida por tela - se já existir, foca nela.
         
         Args:
             event: Evento de clique (opcional)
         """
+        # Limpa janelas fechadas da lista
+        self.expanded_windows = [w for w in self.expanded_windows if w.isVisible()]
+        
+        # Se já existe uma janela expandida, apenas foca nela
+        if self.expanded_windows:
+            existing_window = self.expanded_windows[0]
+            existing_window.raise_()
+            existing_window.activateWindow()
+            gui_log_info(self.screen_name, f"Focando janela existente de {self.screen_name}")
+            return
+        
         gui_log_info(self.screen_name, f"Expandindo {self.screen_name}")
         
         # Cria widget expandido

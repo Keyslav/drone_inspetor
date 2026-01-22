@@ -88,7 +88,7 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
-        ros_gz_bridge_node,
+        #ros_gz_bridge_node,
         camera_node,
         cv_node,
         depth_node,

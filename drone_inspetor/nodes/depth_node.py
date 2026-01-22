@@ -599,7 +599,7 @@ def main(args=None):
     depth_node = DepthNode()
     rclpy.spin(depth_node)
     depth_node.destroy_node()
-    rclpy.shutdown()
+    rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()

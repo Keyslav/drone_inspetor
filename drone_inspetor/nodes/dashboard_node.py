@@ -21,6 +21,7 @@ from rclpy.executors import MultiThreadedExecutor
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread
 import sys
+import signal
 
 # Importações de sinais e GUI
 from drone_inspetor.signals.dashboard_signals import DashboardSignals
@@ -183,14 +184,25 @@ def main(args=None):
     dashboard_gui = DashboardGUI(signals=signals)
     dashboard_gui.showMaximized()
 
+    # ==================== HANDLER DE SINAL PARA CTRL+C ====================
+    # Configura handler para fechar a aplicação imediatamente ao receber Ctrl+C
+    def signal_handler(sig, frame):
+        print("\nCtrl+C recebido, fechando dashboard...")
+        app.quit()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    # Permite que sinais Python sejam processados mesmo com Qt rodando
+    # Timer de 100ms para verificar sinais pendentes
+    from PyQt6.QtCore import QTimer
+    timer = QTimer()
+    timer.timeout.connect(lambda: None)  # Apenas para processar eventos Python
+    timer.start(100)
+
     # ==================== LOOP DE EVENTOS PRINCIPAL ====================
     # Inicia o loop de eventos da aplicação PyQt6
     # Este loop processa eventos da GUI (cliques, redimensionamentos, etc.)
-    try:
-        exit_code = app.exec()
-    except KeyboardInterrupt:
-        # Trata interrupção por teclado (Ctrl+C) de forma graciosa
-        exit_code = 0
+    exit_code = app.exec()
 
     # ==================== LIMPEZA E FINALIZAÇÃO ====================
     # Realiza limpeza adequada de todos os recursos antes de encerrar

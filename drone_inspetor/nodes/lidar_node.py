@@ -1,67 +1,90 @@
 """
 lidar_node.py
 =================================================================================================
-Nó ROS2 responsável pelo processamento de dados LiDAR.
+Nó ROS2 para processamento de dados LiDAR.
 
-Este nó processa dados de varredura laser (LaserScan) recebidos de sensores LiDAR.
-Realiza análise de distâncias, detecta obstáculos em diferentes direções, e calcula
-estatísticas para auxiliar na navegação e prevenção de colisões.
-
-ARQUITETURA:
-- Assina: /drone_inspetor/externo/lidar/scan (dados LaserScan do sensor)
-- Assina: /drone_inspetor/dashboard/lidar/control (comandos de controle em JSON)
-- Publica: /drone_inspetor/lidar_node/point_vector (vetor de pontos para visualização)
-- Publica: /drone_inspetor/lidar_node/statistics (estatísticas em JSON)
-- Publica: /drone_inspetor/lidar_node/obstacle_detections (detecções de obstáculos em JSON)
-
-FUNCIONALIDADES:
-- Processamento de mensagens LaserScan (varredura angular de distâncias)
-- Detecção de obstáculos em setores (frente, esquerda, direita, trás)
-- Cálculo de estatísticas (mínimo, máximo, média, desvio padrão)
-- Geração de vetor de pontos para visualização no dashboard HTML
-- Publicação periódica de dados a 2Hz (500ms)
+Recebe dados de varredura laser, detecta obstáculos em setores específicos,
+e fornece informações para navegação autônoma e prevenção de colisões.
 =================================================================================================
 """
 
-# ==================== IMPORTAÇÕES ====================
+# ==================================================================================================
+# IMPORTAÇÕES
+# ==================================================================================================
+
+# Bibliotecas ROS2
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String, Float32MultiArray
+from std_msgs.msg import String
+from drone_inspetor_msgs.msg import LidarMSG, LidarObstaclesMSG
 
 import numpy as np
 import json
 from datetime import datetime
 import math
+import time
+
+
+# ==================== CLASSE LIDARDATA ====================
+class LidarData:
+    """
+    Classe que encapsula os dados do sistema LiDAR para publicação.
+    """
+    
+    def __init__(self):
+        self.point_vector: list = []
+        self.ground_distance: float = 0.0
+    
+    def to_msg(self) -> LidarMSG:
+        msg = LidarMSG()
+        msg.point_vector = self.point_vector
+        msg.ground_distance = self.ground_distance
+        return msg
+
 
 class LidarNode(Node):
     """
     Nó ROS2 para processamento de dados LiDAR.
     
-    Este nó processa dados de varredura laser recebidos de sensores LiDAR. Analisa as
-    distâncias medidas em diferentes ângulos, detecta obstáculos em setores específicos,
-    e fornece estatísticas para auxiliar na navegação autônoma e prevenção de colisões.
-    
-    Responsabilidades:
-    - Assinar tópico de LaserScan do sensor LiDAR externo
-    - Processar dados de varredura laser e converter para formato utilizável
-    - Detectar obstáculos em diferentes direções (frente, esquerda, direita, trás)
-    - Calcular estatísticas de distância (mínimo, máximo, média, desvio padrão)
-    - Gerar vetor de pontos para visualização no dashboard HTML
-    - Publicar estatísticas e detecções em tópicos padronizados em formato JSON
-    - Responder a comandos de controle do dashboard (ex: ajuste de threshold)
+    Processa dados de varredura laser, detecta obstáculos em setores específicos,
+    e fornece informações para navegação autônoma e prevenção de colisões.
     """
     
+    COOLDOWN_SECONDS = 3.0  # Tempo mínimo antes de resetar uma flag
+    
     def __init__(self):
-        """
-        Inicializa o nó de LiDAR.
-        """
         super().__init__("lidar_node")
         self.get_logger().info("Nó LidarNode iniciado.")
         
-        # ==================== CONFIGURAÇÃO DE QoS ========================
-        # QoS para dados de sensores: VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
+        # ==================== DECLARAÇÃO DE PARÂMETROS ROS2 ====================
+        self.declare_parameter("lidar_data_publish_rate", 5.0)
+        self.declare_parameter("obstacles_publish_rate", 5.0)
+        
+        # Obtém valores dos parâmetros
+        self._lidar_data_rate = self.get_parameter("lidar_data_publish_rate").get_parameter_value().double_value
+        self._obstacles_rate = self.get_parameter("obstacles_publish_rate").get_parameter_value().double_value
+
+        self.get_logger().info(f"Parâmetros: lidar_data={self._lidar_data_rate}Hz, obstacles={self._obstacles_rate}Hz")
+        
+        # ==================== FLAGS DE OBSTÁCULOS (com cooldown) ====================
+        self._obstacle_flags = {
+            'have_obstacles_8m': False,
+            'have_obstacles_5m': False,
+            'have_obstacles_3m': False,
+            'have_obstacles_2m': False,
+            'have_obstacles_1m': False,
+            'have_obstacles_front_90': False,
+            'have_obstacles_right_90': False,
+            'have_obstacles_back_90': False,
+            'have_obstacles_left_90': False,
+            'have_obstacles_down_1m': False,
+            'have_obstacles_down_05m': False,
+        }
+        self._flag_set_times = {key: 0.0 for key in self._obstacle_flags}
+        
+        # ==================== CONFIGURAÇÃO DE QoS ====================
         qos_sensor_data = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
@@ -69,8 +92,7 @@ class LidarNode(Node):
             depth=10
         )
         
-        # QoS para comandos: VOLATILE + RELIABLE (garantir entrega de comandos)
-        qos_commands = QoSProfile(
+        qos_reliable = QoSProfile(
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
@@ -78,299 +100,214 @@ class LidarNode(Node):
         )
         
         # ==================== SUBSCRIBERS ====================
-        # Assina tópico de varredura laser do sensor LiDAR externo
-        # As mensagens LaserScan contêm arrays de distâncias medidas em diferentes ângulos
         self.laserscan_subscription = self.create_subscription(
             LaserScan,
             "/drone_inspetor/externo/lidar/scan",
             self.laserscan_callback,
             qos_sensor_data
         )
-        self.get_logger().info(f"Assinado tópico: {self.laserscan_subscription.topic_name}")
+        self.get_logger().info(f"Assinado: {self.laserscan_subscription.topic_name}")
         
-        # Assina tópico de comandos de controle do dashboard
-        # Permite ajustar parâmetros do LiDAR em tempo de execução (ex: threshold de obstáculos)
-        self.lidar_control_subscription = self.create_subscription(
-            String,
-            "/drone_inspetor/dashboard/lidar/control",
-            self.lidar_control_callback,
-            qos_commands
+        self.lidar_down_subscription = self.create_subscription(
+            LaserScan,
+            "/drone_inspetor/externo/lidar_down/scan",
+            self.lidar_down_callback,
+            qos_sensor_data
         )
-        self.get_logger().info(f"Assinado tópico: {self.lidar_control_subscription.topic_name}")
+        self.get_logger().info(f"Assinado: {self.lidar_down_subscription.topic_name}")
         
         # ==================== PUBLISHERS ====================
-        # Publica vetor de pontos LiDAR para visualização no dashboard HTML
-        # Formato: [distancia1, angulo1, distancia2, angulo2, ...]
-        # Este formato é otimizado para renderização em JavaScript/HTML5 Canvas
-        self.point_vector_publisher = self.create_publisher(
-            Float32MultiArray,
-            "/drone_inspetor/lidar_node/point_vector",
+        # Publisher para dashboard (vetor de pontos)
+        self.lidar_data_publisher = self.create_publisher(
+            LidarMSG,
+            "/drone_inspetor/lidar_node/lidar_data",
             qos_sensor_data
         )
-        self.get_logger().info(f"Publicando no tópico: {self.point_vector_publisher.topic_name}")
-
-        # Publica estatísticas de LiDAR em formato JSON
-        # Contém: número de pontos válidos, distância mínima/máxima/média, desvio padrão
-        self.lidar_stats_publisher = self.create_publisher(
-            String,
-            "/drone_inspetor/lidar_node/statistics",
-            qos_sensor_data
+        self.get_logger().info(f"Publicando: {self.lidar_data_publisher.topic_name}")
+        
+        # Publisher para drone_node (detecção de obstáculos)
+        self.obstacles_publisher = self.create_publisher(
+            LidarObstaclesMSG,
+            "/drone_inspetor/interno/lidar_node/obstacle_detections",
+            qos_reliable
         )
-        self.get_logger().info(f"Publicando no tópico: {self.lidar_stats_publisher.topic_name}")
+        self.get_logger().info(f"Publicando: {self.obstacles_publisher.topic_name}")
         
-        # Publica detecções de obstáculos em formato JSON
-        # Indica presença de obstáculos em diferentes setores (frente, esquerda, direita, trás)
-        self.obstacle_publisher = self.create_publisher(
-            String,
-            "/drone_inspetor/lidar_node/obstacle_detections",
-            qos_sensor_data
-        )
-        self.get_logger().info(f"Publicando no tópico: {self.obstacle_publisher.topic_name}")
+        # ==================== TIMERS ====================
+        # Timer para publicar lidar_data
+        lidar_period = 1.0 / self._lidar_data_rate
+        self.lidar_data_timer = self.create_timer(lidar_period, self.publish_lidar_data)
         
-        # ==================== TIMER PARA RELATÓRIOS ====================
-        # Timer para publicar dados periodicamente a 2Hz (500ms)
-        # Publica vetor de pontos, estatísticas e detecções de obstáculos
-        # A publicação periódica garante que o dashboard sempre tenha dados atualizados
-        self.stats_timer = self.create_timer(0.5, self.publish_lidar_data_and_stats)
+        # Timer para publicar obstacle_detections
+        obstacles_period = 1.0 / self._obstacles_rate
+        self.obstacles_timer = self.create_timer(obstacles_period, self.publish_obstacles)
         
-        self.get_logger().info("LidarNode inicializado com sucesso.")
-        
-        # ==================== INICIALIZAÇÃO DE ATRIBUTOS ===============================================
-        # Armazena estatísticas calculadas da última varredura processada
-        self.lidar_statistics = {}
-        
-        # Armazena detecções de obstáculos da última varredura processada
-        self.obstacle_detections = {}
-        
-        # Armazena a última mensagem LaserScan recebida
+        # ==================== DADOS ====================
+        self.lidar_data = LidarData()
         self.current_laserscan = None
         
-        # Armazena o vetor de pontos calculado da última varredura
-        # Formato: [distancia1, angulo1, distancia2, angulo2, ...]
-        self.current_point_vector_data = []
+        # Configurações de range válido
+        self.min_range = 0.1
+        self.max_range = 12.0
         
-        # ==================== CONFIGURAÇÕES PADRÃO ======================================================
-        # Range válido de distância: valores fora deste range são considerados inválidos
-        self.min_range = 0.1   # metros (distância mínima válida)
-        self.max_range = 10.0  # metros (distância máxima válida)
-        
-        # Threshold de obstáculo: distâncias menores que este valor indicam presença de obstáculo
-        self.obstacle_threshold = 2.0  # metros
+        self.get_logger().info("LidarNode inicializado com sucesso.")
 
-    def laserscan_callback(self, msg):
+    # ==================== MÉTODOS DE FLAGS COM COOLDOWN ====================
+    def _set_flag(self, name: str, value: bool):
+        """Seta uma flag com cooldown de 3 segundos."""
+        current_time = time.time()
+        
+        if value:
+            # Setando para True - atualiza timestamp
+            self._obstacle_flags[name] = True
+            self._flag_set_times[name] = current_time
+        else:
+            # Tentando resetar para False - só permite se passaram 3 segundos
+            if current_time - self._flag_set_times[name] >= self.COOLDOWN_SECONDS:
+                self._obstacle_flags[name] = False
+    
+    def _reset_all_flags(self):
+        """Reseta todas as flags para False, respeitando cooldown."""
+        for name in self._obstacle_flags:
+            self._set_flag(name, False)
+    
+    def _to_obstacles_msg(self) -> LidarObstaclesMSG:
+        """Converte flags para mensagem ROS."""
+        msg = LidarObstaclesMSG()
+        msg.have_obstacles_8m = self._obstacle_flags['have_obstacles_8m']
+        msg.have_obstacles_5m = self._obstacle_flags['have_obstacles_5m']
+        msg.have_obstacles_3m = self._obstacle_flags['have_obstacles_3m']
+        msg.have_obstacles_2m = self._obstacle_flags['have_obstacles_2m']
+        msg.have_obstacles_1m = self._obstacle_flags['have_obstacles_1m']
+        msg.have_obstacles_front_90 = self._obstacle_flags['have_obstacles_front_90']
+        msg.have_obstacles_right_90 = self._obstacle_flags['have_obstacles_right_90']
+        msg.have_obstacles_back_90 = self._obstacle_flags['have_obstacles_back_90']
+        msg.have_obstacles_left_90 = self._obstacle_flags['have_obstacles_left_90']
+        msg.have_obstacles_down_1m = self._obstacle_flags['have_obstacles_down_1m']
+        msg.have_obstacles_down_05m = self._obstacle_flags['have_obstacles_down_05m']
+        return msg
+
+    # ==================== CALLBACKS ====================
+    def laserscan_callback(self, msg: LaserScan):
         """
         Callback para processar varredura laser LaserScan.
-        Calcula vetor de pontos, estatísticas e obstáculos, armazenando para publicação periódica.
-        
-        Args:
-            msg: Mensagem sensor_msgs/LaserScan
+        Atualiza vetor de pontos e calcula obstáculos por setor.
         """
-        self.get_logger().debug("Processando varredura laser")
-        
         try:
             self.current_laserscan = msg
-            
-            # Converte LaserScan para array numpy
             ranges = np.array(msg.ranges)
             angles = np.linspace(msg.angle_min, msg.angle_max, len(ranges))
-
-            # Gerar vetor de pontos no formato [distancia1, angulo1, distancia2, angulo2, ...]
+            
+            # Gerar vetor de pontos [dist1, ang1, dist2, ang2, ...]
             point_vector = []
             for i in range(len(ranges)):
-                if ranges[i] >= msg.range_min and ranges[i] <= msg.range_max and np.isfinite(ranges[i]):
+                if msg.range_min <= ranges[i] <= msg.range_max and np.isfinite(ranges[i]):
                     point_vector.append(float(ranges[i]))
                     point_vector.append(float(angles[i]))
             
-            self.current_point_vector_data = point_vector
+            self.lidar_data.point_vector = point_vector
             
-            # Calcular estatísticas e obstáculos
-            self.lidar_statistics = self.calculate_statistics(ranges)
-            self.obstacle_detections = self.calculate_obstacles(ranges, angles)
-            
-            # Registrar no log
-            self.get_logger().debug(f"Estatísticas calculadas: {json.dumps(self.lidar_statistics)}")
-            self.get_logger().debug(f"Obstáculos detectados: {json.dumps(self.obstacle_detections)}")
-            self.get_logger().debug(f"Vetor de pontos calculado: {len(point_vector)//2} pontos")
+            # Calcular obstáculos por setor
+            self._calculate_sector_obstacles(ranges, angles)
             
         except Exception as e:
             self.get_logger().error(f"Erro no processamento de LaserScan: {e}")
 
-    def lidar_control_callback(self, msg):
+    def lidar_down_callback(self, msg: LaserScan):
         """
-        Callback para comandos de controle do LiDAR.
-        
-        Args:
-            msg: Mensagem std_msgs/String com comando
+        Callback para receber dados do LiDAR 1D inferior.
+        Atualiza distância ao solo e flags de obstáculo abaixo.
         """
         try:
-            command_data = json.loads(msg.data)
-            command = command_data.get("command", "").lower()
-            
-            if command == "set_threshold":
-                threshold = command_data.get("threshold", self.obstacle_threshold)
-                self.set_obstacle_threshold(threshold)
-            else:
-                self.get_logger().warn(f"Comando LiDAR desconhecido: {command}")
-                
-        except json.JSONDecodeError:
-            self.get_logger().warn(f"Comando inválido, esperado JSON: {msg.data}")
-                
+            if msg.ranges and len(msg.ranges) > 0:
+                valid_ranges = [r for r in msg.ranges if msg.range_min <= r <= msg.range_max]
+                if valid_ranges:
+                    ground_dist = float(min(valid_ranges))
+                    self.lidar_data.ground_distance = ground_dist
+                    
+                    # Atualiza flags de obstáculo abaixo
+                    self._set_flag('have_obstacles_down_1m', ground_dist <= 1.0)
+                    self._set_flag('have_obstacles_down_05m', ground_dist <= 0.5)
+                    
         except Exception as e:
-            self.get_logger().error(f"Erro no comando LiDAR: {e}")
+            self.get_logger().error(f"Erro no LiDAR down: {e}")
 
-    def calculate_obstacles(self, ranges, angles):
+    def _calculate_sector_obstacles(self, ranges: np.ndarray, angles: np.ndarray):
         """
-        Calcula a presença de obstáculos em diferentes direções.
+        Calcula a presença de obstáculos em cada quadrante (90°).
         
-        Args:
-            ranges: Array numpy com distâncias
-            angles: Array numpy com ângulos em radianos
-        
-        Returns:
-            dict: Dicionário com presença de obstáculos (frente, lados, trás)
+        Quadrantes (em graus, convenção: 0° = frente, positivo = direita):
+        - front_90:  -45° a +45°
+        - right_90:  +45° a +135°
+        - back_90:   +135° a -135° (±180°)
+        - left_90:   -45° a -135°
         """
-        obstacles = {
-            "front": False,
-            "left": False,
-            "right": False,
-            "rear": False
-        }
+        # Converter ângulos para graus
+        angles_deg = np.degrees(angles)
         
-        # Definir setores angulares (em radianos)
-        front_range = (-math.pi/4, math.pi/4)      # -45 a 45 graus
-        left_range = (math.pi/4, 3*math.pi/4)      # 45 a 135 graus
-        right_range = (-3*math.pi/4, -math.pi/4)   # -135 a -45 graus
-        rear_range = (3*math.pi/4, 5*math.pi/4)    # 135 a 225 graus
-        
-        for i, (distance, angle) in enumerate(zip(ranges, angles)):
-            if not (self.min_range <= distance <= self.max_range) or not np.isfinite(distance):
+        for dist, angle_deg in zip(ranges, angles_deg):
+            if not (self.min_range <= dist <= self.max_range) or not np.isfinite(dist):
                 continue
-                
-            if distance < self.obstacle_threshold:
-                if front_range[0] <= angle <= front_range[1]:
-                    obstacles["front"] = True
-                
-                if left_range[0] <= angle <= left_range[1]:
-                    obstacles["left"] = True
-                
-                if right_range[0] <= angle <= right_range[1]:
-                    obstacles["right"] = True
-                
-                if rear_range[0] <= angle <= rear_range[1]:
-                    obstacles["rear"] = True
-        
-        return obstacles
+            
+            # Flags de distância (qualquer ângulo)
+            if dist <= 8.0:
+                self._set_flag('have_obstacles_8m', True)
+            if dist <= 5.0:
+                self._set_flag('have_obstacles_5m', True)
+            if dist <= 3.0:
+                self._set_flag('have_obstacles_3m', True)
+            if dist <= 2.0:
+                self._set_flag('have_obstacles_2m', True)
+            if dist <= 1.0:
+                self._set_flag('have_obstacles_1m', True)
+            
+            # Quadrantes apenas para obstáculos a 1 metro
+            if dist > 1.0:
+                continue
+            
+            # Normaliza ângulo para -180 a 180 (usando módulo)
+            angle_norm = ((angle_deg + 180) % 360) - 180
+            
+            # Frente: -45° a +45°
+            if -45 <= angle_norm <= 45:
+                self._set_flag('have_obstacles_front_90', True)
+            
+            # Direita: +45° a +135°
+            elif 45 < angle_norm <= 135:
+                self._set_flag('have_obstacles_right_90', True)
+            
+            # Esquerda: -45° a -135°
+            elif -135 <= angle_norm < -45:
+                self._set_flag('have_obstacles_left_90', True)
+            
+            # Trás: +135° a +180° ou -135° a -180°
+            else:
+                self._set_flag('have_obstacles_back_90', True)
 
-    def calculate_statistics(self, ranges):
-        """
-        Calcula estatísticas relevantes para o LiDAR.
-        
-        Args:
-            ranges: Array numpy com distâncias
-        
-        Returns:
-            dict: Dicionário com estatísticas
-        """
-        valid_ranges = [r for r in ranges if self.min_range <= r <= self.max_range and np.isfinite(r)]
-        
-        if not valid_ranges:
-            return {
-                "timestamp": datetime.now().isoformat(),
-                "valid_points": 0,
-                "min_distance": None,
-                "max_distance": None,
-                "avg_distance": None,
-                "std_distance": None
-            }
-        
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "valid_points": len(valid_ranges),
-            "min_distance": float(np.min(valid_ranges)),
-            "max_distance": float(np.max(valid_ranges)),
-            "avg_distance": float(np.mean(valid_ranges)),
-            "std_distance": float(np.std(valid_ranges))
-        }
-
-    def publish_point_vector(self, point_vector):
-        """
-        Publica o vetor de pontos LiDAR.
-        
-        Args:
-            point_vector: Lista de floats [distancia1, angulo1, distancia2, angulo2, ...]
-        """
+    # ==================== PUBLISHERS ====================
+    def publish_lidar_data(self):
+        """Publica os dados consolidados do LiDAR para o dashboard."""
         try:
-            msg = Float32MultiArray()
-            msg.data = point_vector
-            self.point_vector_publisher.publish(msg)
-            self.get_logger().debug(f"Vetor de pontos LiDAR publicado: {len(point_vector)//2} pontos")
+            msg = self.lidar_data.to_msg()
+            self.lidar_data_publisher.publish(msg)
         except Exception as e:
-            self.get_logger().error(f"Erro ao publicar vetor de pontos: {e}")
+            self.get_logger().error(f"Erro ao publicar lidar_data: {e}")
 
-    def publish_obstacles(self, obstacles):
-        """
-        Publica detecções de obstáculos via ROS2 em formato JSON.
-        
-        Args:
-            obstacles: Dicionário com detecções de obstáculos
-        """
+    def publish_obstacles(self):
+        """Publica detecções de obstáculos para o drone_node."""
         try:
-            obstacles_msg = String()
-            obstacles_msg.data = json.dumps(obstacles)
-            self.obstacle_publisher.publish(obstacles_msg)
-            self.get_logger().debug("Obstáculos publicados")
+            msg = self._to_obstacles_msg()
+            self.obstacles_publisher.publish(msg)
+            self.get_logger().debug(
+                f"Obstacles: front={msg.have_obstacles_front_90}, 1m={msg.have_obstacles_1m}"
+            )
+            
+            # Reseta flags APÓS publicar para evitar race condition
+            self._reset_all_flags()
+            
         except Exception as e:
-            self.get_logger().error(f"Erro ao publicar obstáculos: {e}")
-    
-    def publish_lidar_statistics(self, statistics):
-        """
-        Publica estatísticas de LiDAR em formato JSON.
-        
-        Args:
-            statistics: Dicionário com estatísticas
-        """
-        try:
-            stats_msg = String()
-            stats_msg.data = json.dumps(statistics)
-            self.lidar_stats_publisher.publish(stats_msg)
-            self.get_logger().debug("Estatísticas LiDAR publicadas")
-        except Exception as e:
-            self.get_logger().error(f"Erro ao publicar estatísticas: {e}")
+            self.get_logger().error(f"Erro ao publicar obstacles: {e}")
 
-    def publish_lidar_data_and_stats(self):
-        """
-        Publica o vetor de pontos, estatísticas e obstáculos periodicamente (2Hz).
-        """
-
-        if not self.current_laserscan or not self.current_point_vector_data:
-            self.get_logger().debug("Nenhum dado LiDAR disponível para publicação")
-            return
-
-        try:
-            # Publicar vetor de pontos
-            self.publish_point_vector(self.current_point_vector_data)
-
-            # Publicar estatísticas
-            self.publish_lidar_statistics(self.lidar_statistics)
-
-            # Publicar obstáculos
-            self.publish_obstacles(self.obstacle_detections)
-
-        except Exception as e:
-            self.get_logger().error(f"Erro ao publicar dados LiDAR: {e}")
-
-    def set_obstacle_threshold(self, threshold):
-        """
-        Define threshold para detecção de obstáculos.
-        
-        Args:
-            threshold: Threshold em metros
-        """
-        if threshold > 0:
-            self.obstacle_threshold = threshold
-            self.get_logger().info(f"Threshold de obstáculos alterado para: {threshold}m")
-        else:
-            self.get_logger().warn("Threshold deve ser positivo")
 
 def main(args=None):
     """Função principal do nó."""
@@ -384,6 +321,7 @@ def main(args=None):
     finally:
         lidar_node.destroy_node()
         rclpy.try_shutdown()
+
 
 if __name__ == "__main__":
     main()

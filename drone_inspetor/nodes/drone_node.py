@@ -78,7 +78,7 @@ from px4_msgs.msg import (
 from std_msgs.msg import String
 
 # --- Importação das mensagens ROS customizadas ---
-from drone_inspetor_msgs.msg import DroneStateMSG
+from drone_inspetor_msgs.msg import DroneStateMSG, LidarObstaclesMSG
 from drone_inspetor_msgs.action import DroneCommand
 
 # --- Importação para Enums ---
@@ -184,6 +184,21 @@ class DroneNode(Node):
         # self.create_subscription(MessageFormatResponse, "/fmu/out/message_format_response", self.message_format_response_callback, qos_profile)
         # self.create_subscription(RegisterExtComponentReply, "/fmu/out/register_ext_component_reply", self.register_ext_component_reply_callback, qos_profile)
 
+        # --- Subscriber do LiDAR para detecção de obstáculos ---
+        # QoS RELIABLE para garantir entrega das flags de obstáculos
+        qos_obstacles = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        self.create_subscription(
+            LidarObstaclesMSG,
+            "/drone_inspetor/interno/lidar_node/obstacle_detections",
+            self.lidar_obstacles_callback,
+            qos_obstacles
+        )
+
         # --- Action Server para comandos da FSM ---
         # Este é o canal principal de comunicação com a FSM (usando DroneCommand Action)
         # O subscriber de tópico foi substituído por um ActionServer para:
@@ -271,8 +286,12 @@ class DroneNode(Node):
         # MÁQUINA DE ESTADOS
         # ==================================================================
         
+        # Declara e carrega parâmetro step_distance
+        self.declare_parameter("step_distance", 5.0)
+        step_distance = self.get_parameter("step_distance").get_parameter_value().double_value
+        
         # Inicializa a máquina de estados do drone
-        self.drone_state = DroneState(self)
+        self.drone_state = DroneState(self, step_distance=step_distance)
         
         # Conjunto de comandos pendentes enviados pelo drone_node (para filtrar ACKs)
         self.pending_commands = set()
@@ -488,6 +507,29 @@ class DroneNode(Node):
             msg.last_static_yaw_deg_normalized = float('nan')
             msg.last_static_yaw_rad = float('nan')
         
+        # --- Ponto de Desvio de Trajetória (quando há obstáculos) ---
+        if self.drone_state.trajectory_adjusted is not None:
+            msg.has_trajectory_adjusted = True
+            msg.trajectory_adjusted_x = self.drone_state.trajectory_adjusted[0]
+            msg.trajectory_adjusted_y = self.drone_state.trajectory_adjusted[1]
+            msg.trajectory_adjusted_z = -self.drone_state.trajectory_adjusted[2]  # Z é negativo, então invertemos
+        else:
+            msg.has_trajectory_adjusted = False
+            msg.trajectory_adjusted_x = float('nan')
+            msg.trajectory_adjusted_y = float('nan')
+            msg.trajectory_adjusted_z = float('nan')
+        
+        # --- Velocidade Corrente (m/s) ---
+        msg.current_velocity_x = self.drone_state.px4.current_velocity_x
+        msg.current_velocity_y = self.drone_state.px4.current_velocity_y
+        msg.current_velocity_z = self.drone_state.px4.current_velocity_z
+        
+        # --- Aceleração Corrente (m/s²) ---
+        msg.current_acceleration_x = self.drone_state.px4.current_acceleration_x
+        msg.current_acceleration_y = self.drone_state.px4.current_acceleration_y
+        msg.current_acceleration_z = self.drone_state.px4.current_acceleration_z
+        
+
         # Publica mensagem
         self.drone_state_pub.publish(msg)
         
@@ -562,17 +604,35 @@ class DroneNode(Node):
         """
         Cria um setpoint de trajetória calculando o próximo ponto baseado no estado atual.
         Delega o cálculo para calculate_next_trajectory_by_state() que processa cada estado.
+        Aplica adjust_trajectory() para modificar baseado em obstáculos detectados.
         
         GOTO: Rotação inicial → Movimento → Rotação final
         GOTO_FOCUS: Rotação para foco → Movimento apontando para foco → Estabilização
-        RTL: Rotação para home → Movimento → Rotação para home_yaw → Pouso
+        RTL: Rotação para home → Movimento → Rotação para foco → Pouso
         
         Returns:
             TrajectorySetpoint: Mensagem com setpoint completo
         """
         # Calcula posição e yaw na trajetória simplificada (yaw retornado em radianos)
         next_x, next_y, next_z, target_yaw_rad = self.calculate_next_trajectory_by_state()
+
+        # Reduz magnitude baseado em distância de obstáculos
+        next_x, next_y, next_z = self.drone_state.obstacles.calculate_trajectory_magnitude_reduction(
+            self.drone_state.px4.local_position.x,
+            self.drone_state.px4.local_position.y,
+            self.drone_state.px4.local_position.z,
+            next_x, next_y, next_z
+        )
         
+        # Só chama ajuste de trajetória se tiver obstáculo próximo (1m lados OU 0.5m abaixo)
+        """ if self.drone_state.obstacles.have_obstacles_1 or self.drone_state.obstacles.have_down_obstacles_05:
+            next_x, next_y, next_z = self.drone_state.obstacles.calculate_trajectory_adjustment(
+                self.drone_state.px4.local_position.x,
+                self.drone_state.px4.local_position.y,
+                self.drone_state.px4.local_position.z,
+                next_x, next_y, next_z
+            ) """
+
         # Cria mensagem de trajetória
         trajectory_msg = TrajectorySetpoint()
         trajectory_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
@@ -591,51 +651,7 @@ class DroneNode(Node):
         
         return trajectory_msg
 
-    def _calculate_incremental_yaw(self, current_yaw_rad: float, target_yaw_rad: float, max_step_deg: float) -> float:
-        """
-        Calcula o próximo yaw incremental para rotação suave.
-        
-        Em vez de enviar o target_yaw diretamente, esta função calcula um passo
-        intermediário de no máximo max_step_deg graus (ou a distância restante se menor).
-        
-        Args:
-            current_yaw_rad: Yaw atual em radianos (-pi a pi)
-            target_yaw_rad: Yaw alvo em radianos (-pi a pi)
-            max_step_deg: Passo máximo em graus (ex: 45.0)
-        
-        Returns:
-            float: Próximo yaw em radianos (-pi a pi)
-        """
-        # Converte para graus para facilitar cálculos
-        current_deg = math.degrees(current_yaw_rad)
-        target_deg = math.degrees(target_yaw_rad)
-        
-        # Calcula a diferença angular usando o caminho mais curto
-        diff = target_deg - current_deg
-        
-        # Normaliza para -180 a 180 (caminho mais curto)
-        while diff > 180:
-            diff -= 360
-        while diff < -180:
-            diff += 360
-        
-        # Se a distância for menor que o passo máximo, vai direto para o alvo
-        if abs(diff) <= max_step_deg:
-            return target_yaw_rad
-        
-        # Caso contrário, avança apenas max_step_deg na direção correta
-        if diff > 0:
-            next_deg = current_deg + max_step_deg
-        else:
-            next_deg = current_deg - max_step_deg
-        
-        # Normaliza o resultado para -180 a 180
-        while next_deg > 180:
-            next_deg -= 360
-        while next_deg < -180:
-            next_deg += 360
-        
-        return math.radians(next_deg)
+
 
     def calculate_next_trajectory_by_state(self):
         """
@@ -736,34 +752,15 @@ class DroneNode(Node):
                 if distance_to_target <= 1e-6:
                     return (target_x, target_y, target_z, yaw_to_use)
                 
-                # Normaliza e calcula próximo passo
-                direction = [dx / distance_to_target, dy / distance_to_target, dz / distance_to_target]
-                step_initial = max(1, distance_to_origin)
-                step_dist = min(step_initial, self.drone_state.step_distance, distance_to_target)
-
-                next_x = current_x + direction[0] * step_dist
-                next_y = current_y + direction[1] * step_dist
-                next_z = current_z + direction[2] * step_dist
-                
-                return (next_x, next_y, next_z, yaw_to_use)
+                # Calcula próximo passo
+                current_pos = (current_x, current_y, current_z)
+                target_pos = (target_x, target_y, target_z)
+                next_pos = self._calculate_next_step(current_pos, target_pos, distance_to_target, distance_to_origin)
+                return (*next_pos, yaw_to_use)
             
             case DroneStateDescription.VOANDO_GIRANDO_COM_FOCO:
                 # Mantém posição e gira para apontar ao focus
-                focus_dx = self.drone_state.focus_local_position[0] - current_x
-                focus_dy = self.drone_state.focus_local_position[1] - current_y
-                focus_yaw_rad = math.atan2(focus_dy, focus_dx)
-                focus_yaw_deg = math.degrees(focus_yaw_rad)
-                if focus_yaw_deg > 180:
-                    focus_yaw_deg -= 360
-                    focus_yaw_rad = math.radians(focus_yaw_deg)
-                elif focus_yaw_deg < -180:
-                    focus_yaw_deg += 360
-                    focus_yaw_rad = math.radians(focus_yaw_deg)
-                # Armazena ambas versões (normalized = -180/180, deg = 0-360)
-                self.drone_state.focus_yaw_deg_normalized = focus_yaw_deg
-                focus_yaw_deg_0_360 = focus_yaw_deg if focus_yaw_deg >= 0 else focus_yaw_deg + 360
-                self.drone_state.focus_yaw_deg = focus_yaw_deg_0_360
-                self.drone_state.focus_yaw_rad = focus_yaw_rad
+                focus_yaw_rad = self._calculate_focus_yaw(current_x, current_y)
                 # Calcula yaw incremental (passo máximo de yaw_step_deg)
                 next_yaw_rad = self._calculate_incremental_yaw(
                     self.drone_state.px4.current_yaw_rad,
@@ -775,52 +772,17 @@ class DroneNode(Node):
             case DroneStateDescription.VOANDO_A_CAMINHO_COM_FOCO:
                 # Move em direção ao alvo mantendo yaw apontando para o focus
                 if distance_to_target <= 1e-6:
-                    # Calcula yaw para o focus da posição alvo
-                    focus_dx = self.drone_state.focus_local_position[0] - target_x
-                    focus_dy = self.drone_state.focus_local_position[1] - target_y
-                    focus_yaw_rad = math.atan2(focus_dy, focus_dx)
-                    focus_yaw_deg = math.degrees(focus_yaw_rad)
-                    if focus_yaw_deg > 180:
-                        focus_yaw_deg -= 360
-                        focus_yaw_rad = math.radians(focus_yaw_deg)
-                    elif focus_yaw_deg < -180:
-                        focus_yaw_deg += 360
-                        focus_yaw_rad = math.radians(focus_yaw_deg)
-                    # Armazena ambas versões (normalized = -180/180, deg = 0-360)
-                    self.drone_state.focus_yaw_deg_normalized = focus_yaw_deg
-                    focus_yaw_deg_0_360 = focus_yaw_deg if focus_yaw_deg >= 0 else focus_yaw_deg + 360
-                    self.drone_state.focus_yaw_deg = focus_yaw_deg_0_360
-                    self.drone_state.focus_yaw_rad = focus_yaw_rad
+                    focus_yaw_rad = self._calculate_focus_yaw(target_x, target_y)
                     return (target_x, target_y, target_z, focus_yaw_rad)
                 
-                # Normaliza e calcula próximo passo
-                direction = [dx / distance_to_target, dy / distance_to_target, dz / distance_to_target]
-                step_initial = max(1, distance_to_origin)
-                step_dist = min(step_initial, self.drone_state.step_distance, distance_to_target)
-                
-                next_x = current_x + direction[0] * step_dist
-                next_y = current_y + direction[1] * step_dist
-                next_z = current_z + direction[2] * step_dist
+                # Calcula próximo passo
+                current_pos = (current_x, current_y, current_z)
+                target_pos = (target_x, target_y, target_z)
+                next_pos = self._calculate_next_step(current_pos, target_pos, distance_to_target, distance_to_origin)
                 
                 # Calcula yaw dinamicamente para apontar da posição ATUAL para o focus
-                focus_dx = self.drone_state.focus_local_position[0] - current_x
-                focus_dy = self.drone_state.focus_local_position[1] - current_y
-                focus_yaw_rad = math.atan2(focus_dy, focus_dx)
-                focus_yaw_deg = math.degrees(focus_yaw_rad)
-                # Normaliza para -180 a 180
-                if focus_yaw_deg > 180:
-                    focus_yaw_deg -= 360
-                    focus_yaw_rad = math.radians(focus_yaw_deg)
-                elif focus_yaw_deg < -180:
-                    focus_yaw_deg += 360
-                    focus_yaw_rad = math.radians(focus_yaw_deg)
-                
-                # Armazena ambas versões (normalized = -180/180, deg = 0-360)
-                self.drone_state.focus_yaw_deg_normalized = focus_yaw_deg
-                focus_yaw_deg_0_360 = focus_yaw_deg if focus_yaw_deg >= 0 else focus_yaw_deg + 360
-                self.drone_state.focus_yaw_deg = focus_yaw_deg_0_360
-                self.drone_state.focus_yaw_rad = focus_yaw_rad
-                return (next_x, next_y, next_z, focus_yaw_rad)
+                focus_yaw_rad = self._calculate_focus_yaw(current_x, current_y)
+                return (*next_pos, focus_yaw_rad)
             
             case DroneStateDescription.VOANDO_GIRANDO_FIM:
                 # Na posição alvo, gira incrementalmente para yaw final
@@ -829,15 +791,7 @@ class DroneNode(Node):
                     self.drone_state.target_final_yaw_rad,
                     self.drone_state.yaw_step_deg
                 )
-                # Usa last_static_position se disponível para hover estável durante giro
-                if self.drone_state.last_static_position is not None:
-                    return (
-                        self.drone_state.last_static_position[0],
-                        self.drone_state.last_static_position[1],
-                        self.drone_state.last_static_position[2],
-                        next_yaw_rad
-                    )
-                return (target_x, target_y, target_z, next_yaw_rad)
+                return self._get_hover_position_with_yaw(next_yaw_rad, (target_x, target_y, target_z))
             
             # ============== ESTADOS RTL (Return To Launch) ==============
             
@@ -855,16 +809,11 @@ class DroneNode(Node):
                 if distance_to_target <= 1e-6:
                     return (target_x, target_y, target_z, self.drone_state.target_direction_yaw_rad)
                 
-                # Normaliza e calcula próximo passo
-                direction = [dx / distance_to_target, dy / distance_to_target, dz / distance_to_target]
-                step_initial = max(1, distance_to_origin)
-                step_dist = min(step_initial, self.drone_state.step_distance, distance_to_target)
-                
-                next_x = current_x + direction[0] * step_dist
-                next_y = current_y + direction[1] * step_dist
-                next_z = current_z + direction[2] * step_dist
-                
-                return (next_x, next_y, next_z, self.drone_state.target_direction_yaw_rad)
+                # Calcula próximo passo
+                current_pos = (current_x, current_y, current_z)
+                target_pos = (target_x, target_y, target_z)
+                next_pos = self._calculate_next_step(current_pos, target_pos, distance_to_target, distance_to_origin)
+                return (*next_pos, self.drone_state.target_direction_yaw_rad)
             
             case DroneStateDescription.RETORNANDO_GIRANDO_FIM:
                 # Na posição HOME, gira incrementalmente para yaw final (home_yaw)
@@ -873,15 +822,7 @@ class DroneNode(Node):
                     self.drone_state.px4.home_yaw_rad,
                     self.drone_state.yaw_step_deg
                 )
-                # Usa last_static_position se disponível para hover estável durante giro
-                if self.drone_state.last_static_position is not None:
-                    return (
-                        self.drone_state.last_static_position[0],
-                        self.drone_state.last_static_position[1],
-                        self.drone_state.last_static_position[2],
-                        next_yaw_rad
-                    )
-                return (target_x, target_y, target_z, next_yaw_rad)
+                return self._get_hover_position_with_yaw(next_yaw_rad, (target_x, target_y, target_z))
             
             # ============== ESTADO POUSANDO ==============
             
@@ -899,6 +840,140 @@ class DroneNode(Node):
                     throttle_duration_sec=5.0
                 )
                 return (current_x, current_y, current_z, self.drone_state.last_static_yaw_rad)
+
+
+
+    def _calculate_incremental_yaw(self, current_yaw_rad: float, target_yaw_rad: float, max_step_deg: float) -> float:
+        """
+        Calcula o próximo yaw incremental para rotação suave.
+        
+        Em vez de enviar o target_yaw diretamente, esta função calcula um passo
+        intermediário de no máximo max_step_deg graus (ou a distância restante se menor).
+        
+        Args:
+            current_yaw_rad: Yaw atual em radianos (-pi a pi)
+            target_yaw_rad: Yaw alvo em radianos (-pi a pi)
+            max_step_deg: Passo máximo em graus (ex: 45.0)
+        
+        Returns:
+            float: Próximo yaw em radianos (-pi a pi)
+        """
+        # Converte para graus para facilitar cálculos
+        current_deg = math.degrees(current_yaw_rad)
+        target_deg = math.degrees(target_yaw_rad)
+        
+        # Calcula a diferença angular usando o caminho mais curto
+        diff = target_deg - current_deg
+        
+        # Normaliza para -180 a 180 (caminho mais curto)
+        while diff > 180:
+            diff -= 360
+        while diff < -180:
+            diff += 360
+        
+        # Se a distância for menor que o passo máximo, vai direto para o alvo
+        if abs(diff) <= max_step_deg:
+            return target_yaw_rad
+        
+        # Caso contrário, avança apenas max_step_deg na direção correta
+        if diff > 0:
+            next_deg = current_deg + max_step_deg
+        else:
+            next_deg = current_deg - max_step_deg
+        
+        # Normaliza o resultado para -180 a 180
+        while next_deg > 180:
+            next_deg -= 360
+        while next_deg < -180:
+            next_deg += 360
+        
+        return math.radians(next_deg)
+
+    def _calculate_focus_yaw(self, from_x: float, from_y: float) -> float:
+        """
+        Calcula e armazena o yaw para apontar ao focus a partir de uma posição.
+        
+        Args:
+            from_x: Posição X de origem (metros)
+            from_y: Posição Y de origem (metros)
+        
+        Returns:
+            float: Yaw em radianos (-pi a pi)
+        """
+        focus_dx = self.drone_state.focus_local_position[0] - from_x
+        focus_dy = self.drone_state.focus_local_position[1] - from_y
+        focus_yaw_rad = math.atan2(focus_dy, focus_dx)
+        focus_yaw_deg = math.degrees(focus_yaw_rad)
+        
+        # Normaliza para -180 a 180
+        if focus_yaw_deg > 180:
+            focus_yaw_deg -= 360
+            focus_yaw_rad = math.radians(focus_yaw_deg)
+        elif focus_yaw_deg < -180:
+            focus_yaw_deg += 360
+            focus_yaw_rad = math.radians(focus_yaw_deg)
+        
+        # Armazena ambas versões (normalized = -180/180, deg = 0-360)
+        self.drone_state.focus_yaw_deg_normalized = focus_yaw_deg
+        focus_yaw_deg_0_360 = focus_yaw_deg if focus_yaw_deg >= 0 else focus_yaw_deg + 360
+        self.drone_state.focus_yaw_deg = focus_yaw_deg_0_360
+        self.drone_state.focus_yaw_rad = focus_yaw_rad
+        
+        return focus_yaw_rad
+
+    def _calculate_next_step(self, current_pos: tuple, target_pos: tuple, 
+                              distance_to_target: float, distance_to_origin: float) -> tuple:
+        """
+        Calcula o próximo passo de movimento em direção ao alvo.
+        
+        Args:
+            current_pos: (x, y, z) posição atual em metros
+            target_pos: (x, y, z) posição alvo em metros
+            distance_to_target: Distância até o alvo em metros
+            distance_to_origin: Distância até a origem em metros
+        
+        Returns:
+            tuple: (next_x, next_y, next_z) próxima posição em metros
+        """
+        if distance_to_target <= 1e-6:
+            return target_pos
+        
+        dx = target_pos[0] - current_pos[0]
+        dy = target_pos[1] - current_pos[1]
+        dz = target_pos[2] - current_pos[2]
+        
+        direction = (dx / distance_to_target, dy / distance_to_target, dz / distance_to_target)
+        step_initial = max(1.0, distance_to_origin)
+        # Aplica fator de redução de velocidade (calculado pelo lidar_node)
+        # Factor varia de 1 (sem obstáculo) a 32 (obstáculo < 1m)
+        step_dist = min(step_initial, self.drone_state.step_distance, distance_to_target)
+        
+        next_x = current_pos[0] + direction[0] * step_dist
+        next_y = current_pos[1] + direction[1] * step_dist
+        next_z = current_pos[2] + direction[2] * step_dist
+        
+        return (next_x, next_y, next_z)
+
+    def _get_hover_position_with_yaw(self, yaw_rad: float, fallback_pos: tuple) -> tuple:
+        """
+        Retorna posição para hover estável com yaw especificado.
+        Usa last_static_position se disponível, senão usa fallback_pos.
+        
+        Args:
+            yaw_rad: Yaw em radianos
+            fallback_pos: (x, y, z) posição fallback se last_static_position não disponível
+        
+        Returns:
+            tuple: (x, y, z, yaw_rad)
+        """
+        if self.drone_state.last_static_position is not None:
+            return (
+                self.drone_state.last_static_position[0],
+                self.drone_state.last_static_position[1],
+                self.drone_state.last_static_position[2],
+                yaw_rad
+            )
+        return (fallback_pos[0], fallback_pos[1], fallback_pos[2], yaw_rad)
 
 
     def global_to_local_position(self, target_lat, target_lon, target_alt):
@@ -1016,7 +1091,6 @@ class DroneNode(Node):
         
         COMANDOS SUPORTADOS (DroneCommand Action):
         - command="ARM": Arma os motores
-        - command="DISARM": Desarma os motores
         - command="TAKEOFF", altitude=3.0: Decola até a altitude especificada
         - command="LAND": Pousa na posição atual
         - command="GOTO", lat=..., lon=..., alt=..., yaw=...: Move o drone para posição
@@ -1055,7 +1129,6 @@ class DroneNode(Node):
         # Timeouts por tipo de comando (segundos)
         command_timeouts = {
             "ARM": 10.0,
-            "DISARM": 10.0,
             "STOP": 5.0,
             "TAKEOFF": 60.0,
             "LAND": 60.0,
@@ -1127,8 +1200,6 @@ class DroneNode(Node):
             match command:
                 case "ARM":
                     self.arm()
-                case "DISARM":
-                    self.disarm()
                 case "TAKEOFF":
                     # Extrai altitude do request (usa padrão se NaN)
                     alt = request.altitude if not math.isnan(request.altitude) else self.drone_state.takeoff_altitude
@@ -1187,9 +1258,6 @@ class DroneNode(Node):
         match command:
             case "ARM":
                 return current_state == DroneStateDescription.POUSADO_ARMADO
-            
-            case "DISARM":
-                return current_state == DroneStateDescription.POUSADO_DESARMADO
             
             case "STOP":
                 return current_state in [
@@ -1496,9 +1564,27 @@ class DroneNode(Node):
         Processa a mensagem de posição local do drone.
         A posição local é relativa ao ponto de partida (home) e é dada em metros.
         Coordenadas: X (norte), Y (leste), Z (para baixo, negativo = para cima)
+        Também captura velocidade (vx, vy, vz) e aceleração (ax, ay, az).
         """
         self.drone_state.px4.local_position = msg
         
+        # Captura velocidade corrente (m/s)
+        self.drone_state.px4.current_velocity_x = msg.vx if hasattr(msg, 'vx') else 0.0
+        self.drone_state.px4.current_velocity_y = msg.vy if hasattr(msg, 'vy') else 0.0
+        self.drone_state.px4.current_velocity_z = msg.vz if hasattr(msg, 'vz') else 0.0
+        
+        # Captura aceleração corrente (m/s²)
+        self.drone_state.px4.current_acceleration_x = msg.ax if hasattr(msg, 'ax') else 0.0
+        self.drone_state.px4.current_acceleration_y = msg.ay if hasattr(msg, 'ay') else 0.0
+        self.drone_state.px4.current_acceleration_z = msg.az if hasattr(msg, 'az') else 0.0
+
+
+    def lidar_obstacles_callback(self, msg: LidarObstaclesMSG):
+        """
+        Processa dados de obstáculos do LiDAR.
+        Atualiza as flags de obstáculos em DroneObstacles usando a nova mensagem LidarObstaclesMSG.
+        """
+        self.drone_state.obstacles.update_from_lidar_obstacles(msg)
 
     def vehicle_global_position_callback(self, msg):
         """
@@ -1711,17 +1797,6 @@ class DroneNode(Node):
             "Enviando comando para ARMAR motores..."
         )
         self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=1.0)
-
-    def disarm(self):
-        """
-        Envia o comando para desarmar os motores do drone.
-        Comando: VEHICLE_CMD_COMPONENT_ARM_DISARM com param1=0.0
-        """
-        self.get_logger().info(
-            f"{self.PX4_TX_PREFIX}[{self.PX4_TOPIC_VEHICLE_COMMAND}] "
-            "Enviando comando para DESARMAR motores..."
-        )
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=0.0)
 
     def takeoff(self, altitude=None):
         """
@@ -2106,49 +2181,6 @@ class DroneNode(Node):
 
 
     # ==================================================================
-    # SEÇÃO 5: VERIFICAÇÃO - Funções Auxiliares
-    # ==================================================================
-
-    def is_at_target_position(self):
-        """
-        Verifica se o drone está próximo da posição alvo usando coordenadas locais.
-        Também verifica se o yaw está no alvo (se especificado).
-        
-        Returns:
-            bool: True se o drone está dentro da tolerância do alvo (posição e yaw), False caso contrário
-        """
-        # Calcula distância usando coordenadas locais diretamente
-        dx = self.drone_state.px4.local_position.x - self.drone_state.target_local_position[0]
-        dy = self.drone_state.px4.local_position.y - self.drone_state.target_local_position[1]
-        dz = self.drone_state.px4.local_position.z - self.drone_state.target_local_position[2]
-        
-        distance_2d = math.sqrt(dx**2 + dy**2)
-        distance_3d = math.sqrt(dx**2 + dy**2 + dz**2)
-        
-        # Verifica se está na posição alvo
-        position_reached = distance_3d <= self.drone_state.position_tolerance
-        
-        # Verifica se o yaw está no alvo (se especificado)
-        yaw_reached = True
-        yaw_diff = None
-        if self.drone_state.target_final_yaw_deg is not None:
-            yaw_diff = self.drone_state.px4.current_yaw_deg_normalized - self.drone_state.target_final_yaw_deg
-            # Normaliza para lidar com transição 360°->0°
-            if yaw_diff < -180:
-                yaw_diff += 360
-            if yaw_diff > 180:
-                yaw_diff -= 360
-            yaw_reached = abs(yaw_diff) <= self.drone_state.yaw_tolerance_deg
-        
-        self.get_logger().info(
-            f"Verificação de chegada: distância={distance_3d:.2f}m (tol: {self.drone_state.position_tolerance}m), "
-            f"yaw_diff={abs(yaw_diff) if yaw_diff is not None else 'N/A'}° (tol: {self.drone_state.yaw_tolerance_deg}°)",
-            throttle_duration_sec=2.0
-        )
-        
-        return position_reached and yaw_reached
-
-    # ==================================================================
     # SEÇÃO 6: CONTROLE DE MODO - Funções Auxiliares
     # ==================================================================
 
@@ -2224,6 +2256,273 @@ class DroneStateDescription(IntEnum):
 
 
 # ==================================================================================================
+# CLASSE DE DETECÇÃO DE OBSTÁCULOS
+# ==================================================================================================
+
+class DroneObstacles:
+    """
+    Gerencia detecção de obstáculos usando dados do LiDAR e ajusta trajetórias.
+    Recebe LidarObstaclesMSG com flags de setor e distância.
+    """
+    
+    def __init__(self, node: 'DroneNode'):
+        """
+        Inicializa o sistema de detecção de obstáculos.
+        
+        Args:
+            node: Referência ao DroneNode para logging e acesso ao estado
+        """
+        self.node = node
+        
+        
+        # Flags de obstáculos horizontais por distância
+        self.have_obstacles_8 = False
+        self.have_obstacles_5 = False
+        self.have_obstacles_3 = False
+        self.have_obstacles_2 = False
+        self.have_obstacles_1 = False
+        
+        # Flags de obstáculos por quadrante (90°, 1 metro)
+        self.have_obstacles_front_90 = False    # -45° a +45°
+        self.have_obstacles_right_90 = False    # +45° a +135°
+        self.have_obstacles_back_90 = False     # +135° a -135°
+        self.have_obstacles_left_90 = False     # -45° a -135°
+        
+        # Flags de obstáculos inferiores
+        self.have_down_obstacles_1 = False
+        self.have_down_obstacles_05 = False
+        
+        # Flag de target impossível
+        self.is_target_impossible = False
+    
+    def update_from_lidar_obstacles(self, msg: 'LidarObstaclesMSG'):
+        """
+        Atualiza flags de obstáculos a partir da mensagem LidarObstaclesMSG.
+        Este é o ÚNICO método de atualização - chamado pelo callback do tópico.
+        
+        Args:
+            msg: Mensagem LidarObstaclesMSG com todas as flags calculadas pelo lidar_node
+        """
+        # Flags de distância - carrega diretamente da mensagem
+        self.have_obstacles_1 = msg.have_obstacles_1m
+        self.have_obstacles_2 = msg.have_obstacles_2m
+        self.have_obstacles_3 = msg.have_obstacles_3m
+        self.have_obstacles_5 = msg.have_obstacles_5m
+        self.have_obstacles_8 = msg.have_obstacles_8m
+        
+        # Flags de quadrante (90°)
+        self.have_obstacles_front_90 = msg.have_obstacles_front_90
+        self.have_obstacles_right_90 = msg.have_obstacles_right_90
+        self.have_obstacles_back_90 = msg.have_obstacles_back_90
+        self.have_obstacles_left_90 = msg.have_obstacles_left_90
+        
+        # Flags inferiores
+        self.have_down_obstacles_1 = msg.have_obstacles_down_1m
+        self.have_down_obstacles_05 = msg.have_obstacles_down_05m
+    
+    def has_obstacle_in_sector(self, angle_rad: float) -> bool:
+        """
+        Verifica se há obstáculo no quadrante (90°) correspondente ao ângulo.
+        
+        Args:
+            angle_rad: Ângulo em radianos
+            
+        Returns:
+            bool: True se a flag do quadrante correspondente estiver ativa
+        """
+        # Converte para graus e normaliza para -180 a 180
+        angle_deg = math.degrees(angle_rad)
+        while angle_deg > 180:
+            angle_deg -= 360
+        while angle_deg < -180:
+            angle_deg += 360
+            
+        # Frente: -45° a +45°
+        if -45 <= angle_deg <= 45:
+            return self.have_obstacles_front_90
+        
+        # Direita: +45° a +135°
+        elif 45 < angle_deg <= 135:
+            return self.have_obstacles_right_90
+        
+        # Esquerda: -45° a -135°
+        elif -135 <= angle_deg < -45:
+            return self.have_obstacles_left_90
+        
+        # Trás: +135° a +180° ou -135° a -180°
+        else:
+            return self.have_obstacles_back_90
+    
+    def calculate_trajectory_magnitude_reduction(self, current_x: float, current_y: float, current_z: float,
+                                                  next_x: float, next_y: float, next_z: float) -> tuple:
+        """
+        Reduz a magnitude do vetor posição baseado na distância de obstáculos.
+        Quanto mais próximo o obstáculo, menor a magnitude permitida.
+        
+        Args:
+            current_x, current_y, current_z: Posição atual
+            next_x, next_y, next_z: Próxima posição desejada
+        
+        Returns:
+            tuple: (reduced_x, reduced_y, reduced_z)
+        """
+        # Calcula vetor direção
+        dx = next_x - current_x
+        dy = next_y - current_y
+        dz = next_z - current_z
+        
+        # Magnitudes
+        magnitude_xy = math.sqrt(dx**2 + dy**2)
+        magnitude_z = abs(dz)
+        is_descending = dz > 0  # NED: positivo = para baixo
+        
+        adjusted_next_x = next_x
+        adjusted_next_y = next_y
+        adjusted_next_z = next_z
+        
+        # Redução Z baseada em proximidade de obstáculo abaixo
+        if is_descending and magnitude_z >= 1.0 and self.have_down_obstacles_1:
+            # Reduz magnitude Z para 0.5
+            adjusted_next_z = current_z + 0.5
+        
+        # Redução XY baseada em proximidade (cascata de distâncias)
+        if magnitude_xy > 0:
+            direction_xy = (dx / magnitude_xy, dy / magnitude_xy)
+            new_magnitude = magnitude_xy
+            
+            if magnitude_xy >= 4.0 and self.have_obstacles_8:
+                new_magnitude = 3.0
+            elif magnitude_xy >= 3.0 and self.have_obstacles_5:
+                new_magnitude = 2.0
+            elif magnitude_xy >= 2.0 and self.have_obstacles_3:
+                new_magnitude = 1.0
+            elif magnitude_xy >= 1.0 and self.have_obstacles_2:
+                new_magnitude = 0.5
+            
+            if new_magnitude != magnitude_xy:
+                adjusted_next_x = current_x + direction_xy[0] * new_magnitude
+                adjusted_next_y = current_y + direction_xy[1] * new_magnitude
+        
+        return (adjusted_next_x, adjusted_next_y, adjusted_next_z)
+    
+    def calculate_trajectory_adjustment(self, current_x: float, current_y: float, current_z: float,
+                                         next_x: float, next_y: float, next_z: float) -> tuple:
+        """
+        Calcula o ajuste necessário da trajetória por conta de obstáculos a 1m ou 0.5m.
+        Chamada APENAS quando há obstáculo próximo (verificado antes da chamada).
+        
+        Args:
+            current_x, current_y, current_z: Posição atual
+            next_x, next_y, next_z: Próxima posição desejada
+        
+        Returns:
+            tuple: (adjusted_x, adjusted_y, adjusted_z)
+        """
+        # === FASE 1: Verifica se já está desviando ===
+        if self.node.drone_state.trajectory_adjusted is not None:
+            adj_x, adj_y, adj_z = self.node.drone_state.trajectory_adjusted
+            dist_to_adjusted = math.sqrt(
+                (current_x - adj_x)**2 + 
+                (current_y - adj_y)**2 + 
+                (current_z - adj_z)**2
+            )
+            
+            # Se chegou no ponto de desvio (tolerância de 0.5m), reseta
+            if dist_to_adjusted < 0.5:
+                self.node.drone_state.trajectory_adjusted = None
+                self.node.get_logger().info("Desvio de trajetória concluído")
+            else:
+                # Ainda desviando - retorna o ponto de desvio
+                return self.node.drone_state.trajectory_adjusted
+        
+        # === FASE 2: Calcula vetor direção ===
+        dx = next_x - current_x
+        dy = next_y - current_y
+        dz = next_z - current_z
+        
+        magnitude_xy = math.sqrt(dx**2 + dy**2)
+        is_descending = dz > 0  # NED: positivo = para baixo
+        
+        need_adjust_xy = self.have_obstacles_1
+        need_block_z = (is_descending and self.have_down_obstacles_05)
+        
+        adjusted_next_x = next_x
+        adjusted_next_y = next_y
+        adjusted_next_z = next_z
+
+        if not need_adjust_xy and not need_block_z:
+            return (next_x, next_y, next_z)
+        
+        if need_block_z:
+            adjusted_next_z = current_z
+
+        if need_adjust_xy:
+            adjusted_xy, has_obstacle_ahead, no_escape = self.adjust_trajectory_XY(
+                (current_x, current_y), 
+                (next_x, next_y)
+            )
+
+            if has_obstacle_ahead:
+            
+                if no_escape:
+                    adjusted_next_x = current_x
+                    adjusted_next_y = current_y
+                    if need_block_z:
+                        adjusted_next_z = current_z - 50  # NED: negativo = sobe
+                else:
+                    adjusted_next_x = adjusted_xy[0]
+                    adjusted_next_y = adjusted_xy[1]
+            
+        self.node.drone_state.trajectory_adjusted = (adjusted_next_x, adjusted_next_y, adjusted_next_z)
+        return (adjusted_next_x, adjusted_next_y, adjusted_next_z)
+    
+    def adjust_trajectory_XY(self, current_pos_XY: tuple, next_pos_XY: tuple) -> tuple:
+        """
+        Ajusta a trajetória com base em obstáculos detectados.
+        Se obstáculos à frente, desvia lateralmente (esquerda/direita).
+        
+        Args:
+            current_pos_XY: (current_x, current_y) posição atual
+            next_pos_XY: (next_x, next_y) próxima posição calculada
+        
+        Returns:
+            tuple: ((adjusted_x, adjusted_y) ou None, has_obstacle_ahead, no_escape)
+        """
+        current_x, current_y = current_pos_XY
+        next_x, next_y = next_pos_XY
+        
+        # Calcula direção do movimento
+        dx = next_x - current_x
+        dy = next_y - current_y
+        direction_rad = math.atan2(dy, dx)
+        
+        # Verifica obstáculos no arco frontal (direção ±50°)
+        has_obstacle_ahead = self.has_obstacle_in_sector(direction_rad)
+        has_obstacle_left = self.has_obstacle_in_sector(direction_rad + math.radians(90))
+        has_obstacle_right = self.has_obstacle_in_sector(direction_rad - math.radians(90))
+        no_escape = has_obstacle_ahead and has_obstacle_left and has_obstacle_right
+
+        if not has_obstacle_ahead:
+            return None, False, False
+
+        if not has_obstacle_right:
+            # Sem obstáculo à direita - pode desviar 1m para direita na direção do movimento
+            right_direction = direction_rad - math.radians(90)
+            next_x = current_x + math.cos(right_direction) * 1.0
+            next_y = current_y + math.sin(right_direction) * 1.0
+        elif not has_obstacle_left:
+            # Sem obstáculo à esquerda - pode desviar 1m para esquerda na direção do movimento
+            left_direction = direction_rad + math.radians(90)
+            next_x = current_x + math.cos(left_direction) * 1.0
+            next_y = current_y + math.sin(left_direction) * 1.0
+        
+        if no_escape:
+            return None, True, True
+        
+        return (next_x, next_y), True, False
+
+
+# ==================================================================================================
 # CLASSE DE ESTADO DO PX4
 # ==================================================================================================
 
@@ -2250,6 +2549,16 @@ class DroneStatePX4:
         self.last_command_ack = None      # Última confirmação de comando recebida do PX4
         self.battery_status = None        # Status da bateria
         
+        # --- Velocidade Corrente (m/s) ---
+        self.current_velocity_x = 0.0     # Velocidade X local (m/s, Norte)
+        self.current_velocity_y = 0.0     # Velocidade Y local (m/s, Leste)
+        self.current_velocity_z = 0.0     # Velocidade Z local (m/s, para baixo)
+        
+        # --- Aceleração Corrente (m/s²) ---
+        self.current_acceleration_x = 0.0  # Aceleração X local (m/s²)
+        self.current_acceleration_y = 0.0  # Aceleração Y local (m/s²)
+        self.current_acceleration_z = 0.0  # Aceleração Z local (m/s²)
+        
         # --- Referência HOME (atualizada via home_position_callback) ---
         # Estas variáveis são atualizadas quando o PX4 envia HomePosition
         self.home_global_lat = None       # Latitude do HOME (onde local X=0)
@@ -2259,6 +2568,29 @@ class DroneStatePX4:
         self.home_yaw_deg = None          # Yaw do drone ao armar (graus, 0 a 360)
         self.home_yaw_deg_normalized = None  # Yaw do drone ao armar (graus, -180 a 180)
         self.home_yaw_rad = None          # Yaw do drone ao armar (radianos, -pi a pi)
+    
+    def get_nav_state_name(self) -> str:
+        """Retorna o nome legível do nav_state atual."""
+        NAV_STATE_NAMES = {
+            VehicleStatus.NAVIGATION_STATE_MANUAL: "MANUAL",
+            VehicleStatus.NAVIGATION_STATE_ALTCTL: "ALTITUDE_CONTROL",
+            VehicleStatus.NAVIGATION_STATE_POSCTL: "POSITION_CONTROL",
+            VehicleStatus.NAVIGATION_STATE_AUTO_MISSION: "AUTO_MISSION",
+            VehicleStatus.NAVIGATION_STATE_AUTO_LOITER: "AUTO_LOITER",
+            VehicleStatus.NAVIGATION_STATE_AUTO_RTL: "AUTO_RTL",
+            VehicleStatus.NAVIGATION_STATE_ACRO: "ACRO",
+            VehicleStatus.NAVIGATION_STATE_OFFBOARD: "OFFBOARD",
+            VehicleStatus.NAVIGATION_STATE_STAB: "STABILIZED",
+            VehicleStatus.NAVIGATION_STATE_AUTO_TAKEOFF: "AUTO_TAKEOFF",
+            VehicleStatus.NAVIGATION_STATE_AUTO_LAND: "AUTO_LAND",
+            VehicleStatus.NAVIGATION_STATE_AUTO_FOLLOW_TARGET: "FOLLOW_TARGET",
+            VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND: "PRECISION_LAND",
+            VehicleStatus.NAVIGATION_STATE_ORBIT: "ORBIT",
+            VehicleStatus.NAVIGATION_STATE_AUTO_VTOL_TAKEOFF: "VTOL_TAKEOFF",
+            VehicleStatus.NAVIGATION_STATE_DESCEND: "DESCEND",
+            VehicleStatus.NAVIGATION_STATE_TERMINATION: "TERMINATION",
+        }
+        return NAV_STATE_NAMES.get(self.nav_state, f"UNKNOWN({self.nav_state})")
 
 
 # ==================================================================================================
@@ -2298,17 +2630,21 @@ class DroneState:
         ],
     }
     
-    def __init__(self, node: 'DroneNode'):
+    def __init__(self, node: 'DroneNode', step_distance: float = 5.0):
         """
         Inicializa a máquina de estados.
         
         Args:
             node: Referência ao DroneNode para acessar métodos do nó (get_logger, reseta_variaveis_estado, etc.)
+            step_distance: Distância do próximo passo de trajetória (metros). Vem de param.yaml.
         """
         self.node = node
         
         # Cria instância do estado PX4
         self.px4 = DroneStatePX4()
+        
+        # Cria instância do sistema de detecção de obstáculos
+        self.obstacles = DroneObstacles(node)
         
         # Estado da máquina de estados
         self.state = DroneStateDescription.OFFBOARD_DESATIVADO
@@ -2321,8 +2657,8 @@ class DroneState:
         self.trajectory_start_time = None     # Timestamp do início do movimento (em segundos)
 
         # --- Parâmetros de Trajetória Simplificada ---
-        self.step_distance = 5.0              # Distância do próximo passo (metros)
-        self.yaw_step_deg = 15.0              # Passo máximo de rotação em graus (para giros incrementais)
+        self.step_distance = step_distance     # Distância do próximo passo (metros) - vem de param.yaml
+        self.yaw_step_deg = 15.0               # Passo máximo de rotação em graus (para giros incrementais)
 
         # --- Parâmetros de Navegação ---
         self.origin_local_position = None     # Posição de origem quando inicia trajetória [x, y, z]
@@ -2356,6 +2692,10 @@ class DroneState:
         self.last_static_position = None       # Última posição estática conhecida [x, y, z]
         self.last_static_yaw_deg = None        # Último yaw estático conhecido (graus, 0 a 360)
         self.last_static_yaw_deg_normalized = None  # Último yaw estático conhecido (graus, -180 a 180)
+        
+        # --- Posição de Ajuste de Trajetória ---
+        # Ponto de desvio temporário quando há obstáculos (gerenciado por DroneObstacles)
+        self.trajectory_adjusted = None  # (x, y, z) ponto de desvio temporário
         self.last_static_yaw_rad = None        # Último yaw estático conhecido (radianos)
         
         # --- Flags de Comandos Recebidos da FSM ---
@@ -2468,11 +2808,39 @@ class DroneState:
            current_state != DroneStateDescription.OFFBOARD_DESATIVADO and \
            current_state != DroneStateDescription.POUSANDO:
             self.reseta_variaveis_estado()
-            self.node.get_logger().error(f"ENTROU OFFBOARD_DESATIVADO: self.px4.nav_state = {self.px4.nav_state} e current_state = {current_state.name}")
+            self.node.get_logger().error(f"ENTROU OFFBOARD_DESATIVADO: px4.nav_state = {self.px4.get_nav_state_name()} e drone_state = {current_state.name}")
             self.mudar_estado(DroneStateDescription.OFFBOARD_DESATIVADO)
         
         # === VERIFICAÇÃO GLOBAL: Emergência ===
         self.verifica_condicao_de_emergencia()
+        
+        # === VERIFICAÇÃO GLOBAL: Target Impossível (obstáculo bloqueia caminho) ===
+        # Se is_target_impossible for True, consideramos que chegou ao target
+        # e avançamos para o próximo estado como se tivesse chegado normalmente
+        if self.obstacles.is_target_impossible:
+            self.node.get_logger().warn(
+                f"TARGET IMPOSSÍVEL: Obstáculo bloqueia caminho em estado {current_state.name}. "
+                "Avançando como se tivesse chegado ao destino."
+            )
+            # Reseta a flag
+            self.obstacles.is_target_impossible = False
+            
+            # Define transição baseada no estado atual
+            if current_state == DroneStateDescription.VOANDO_A_CAMINHO:
+                # Se tinha yaw final, vai para giro final; senão, vai para PRONTO
+                if self.target_final_yaw_deg is not None:
+                    self.mudar_estado(DroneStateDescription.VOANDO_GIRANDO_FIM)
+                else:
+                    self.reseta_variaveis_estado()
+                    self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
+                return
+            elif current_state == DroneStateDescription.VOANDO_A_CAMINHO_COM_FOCO:
+                self.reseta_variaveis_estado()
+                self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
+                return
+            elif current_state == DroneStateDescription.RETORNANDO_A_CAMINHO:
+                self.mudar_estado(DroneStateDescription.RETORNANDO_GIRANDO_FIM)
+                return
         
         # === VERIFICAÇÃO GLOBAL: Desarmamento ===
         # Se o drone desarmou e não está no estado POUSADO_DESARMADO ou OFFBOARD_DESATIVADO, para tudo e vai para POUSADO_DESARMADO
@@ -2597,10 +2965,6 @@ class DroneState:
                 
                 current_alt = -px4_local_position.z
                 target_alt = -local_target_local_position[2]
-                self.node.get_logger().info(
-                    f"Decolagem: altitude atual={current_alt:.2f}m, alvo={target_alt:.2f}m",
-                    throttle_duration_sec=1.0
-                )
                 
                 if abs(current_alt - target_alt) <= self.position_tolerance:
                     self.node.get_logger().info(
@@ -2979,7 +3343,7 @@ class DroneState:
         Verifica se um comando pode ser executado no estado atual.
         
         Args:
-            command: Nome do comando (ARM, DISARM, TAKEOFF, GOTO, LAND, RTL)
+            command: Nome do comando (ARM, TAKEOFF, GOTO, LAND, RTL, STOP)
         
         Returns:
             tuple: (pode_executar: bool, mensagem_erro: str)

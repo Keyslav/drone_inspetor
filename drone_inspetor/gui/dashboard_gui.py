@@ -298,6 +298,7 @@ class DashboardGUI(QWidget):
         ]
         
         self.video_labels = [] # Lista para armazenar os QLabels que exibem os vídeos/imagens.
+        self.title_labels = [] # Lista para armazenar os QLabels dos títulos
         
         for i, config in enumerate(screen_configs):
             row, col = config["pos"]
@@ -323,6 +324,15 @@ class DashboardGUI(QWidget):
                 border: 1px solid {COMMON_STYLES["border_color"]};
                 margin-bottom: 6px;
             """)
+            
+            # Armazena referência ao título
+            self.title_labels.append(title_label)
+            
+            # Se for o Mapa GPS (índice 3), adiciona cursor de mão e evento de duplo clique
+            if config["name"] == "Mapa GPS":
+                title_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+                title_label.mouseDoubleClickEvent = self.expand_map_screen
+            
             screen_layout.addWidget(title_label, 0, Qt.AlignmentFlag.AlignTop)
             
             # QLabel para exibir o feed de vídeo/imagem do sensor.
@@ -366,7 +376,7 @@ class DashboardGUI(QWidget):
         # Elas recebem apenas os sinais PyQt6 correspondentes, mantendo separação com ROS2.
         # Nota: As variáveis self.camera_screen, self.cv_screen, etc. foram declaradas no __init__()
         # e agora são inicializadas aqui com os QLabels correspondentes.
-        self.camera_screen = CameraScreen(self.signals.camera, self.video_labels[0])
+        self.camera_screen = CameraScreen(self.signals.camera, self.video_labels[0], self.title_labels[0])
         self.screen_instances["camera"] = self.camera_screen
         
         self.cv_screen = CVScreen(self.signals.cv, self.video_labels[1])
@@ -386,6 +396,7 @@ class DashboardGUI(QWidget):
         """
         # Conexões para Câmera: Atualiza o feed da câmera principal.
         self.signals.camera.image_received.connect(self.camera_image_update)
+        self.signals.camera.recording_status_received.connect(self.handle_recording_indicator)
 
         # Conexões para CV: Atualiza a imagem processada, dados de análise e detecções.
         self.signals.cv.image_received.connect(self.cv_image_update)
@@ -397,8 +408,10 @@ class DashboardGUI(QWidget):
         self.signals.depth.statistics_received.connect(self.depth_statistics_update)
         self.signals.depth.proximity_alert_received.connect(self.proximity_alert_update)
 
-        # Conexões para LiDAR: Atualiza o vetor de pontos, estatísticas e detecções de obstáculos.
-        self.signals.lidar.point_vector_received.connect(self.lidar_point_vector_update)
+        # Conexões para LiDAR: Atualiza os dados consolidados do LiDAR (novo sinal)
+        self.signals.lidar.lidar_data_received.connect(self.lidar_data_update)
+        # Conexões legadas (mantidas para compatibilidade, mas não usadas com a nova mensagem)
+        # self.signals.lidar.point_vector_received.connect(self.lidar_point_vector_update)
         self.signals.lidar.statistics_received.connect(self.lidar_statistics_update)
         self.signals.lidar.obstacle_detections_received.connect(self.lidar_obstacle_detections_update)
 
@@ -472,9 +485,24 @@ class DashboardGUI(QWidget):
         """
         self.depth_screen.update_proximity_alerts(alerts)
 
+    def lidar_data_update(self, lidar_data: dict):
+        """
+        Atualiza os dados consolidados do LiDAR na GUI.
+        
+        Args:
+            lidar_data (dict): Dicionário com 'point_vector' e 'ground_distance'
+        """
+        # Atualiza o vetor de pontos
+        if 'point_vector' in lidar_data:
+            self.lidar_screen.update_point_vector(lidar_data['point_vector'])
+        
+        # Atualiza a distância inferior
+        if 'ground_distance' in lidar_data:
+            self.lidar_screen.update_ground_distance(lidar_data['ground_distance'])
+
     def lidar_point_vector_update(self, point_vector_list):
         """
-        Atualiza o vetor de pontos do LiDAR na GUI.
+        Atualiza o vetor de pontos do LiDAR na GUI (legado).
         """
         self.lidar_screen.update_point_vector(point_vector_list)
 
@@ -521,6 +549,17 @@ class DashboardGUI(QWidget):
         
         self._last_on_mission_state = on_mission
     
+    def handle_recording_indicator(self, is_recording: bool):
+        """
+        Atualiza o indicador de gravação na tela da câmera.
+        Chamado quando o camera_node publica o status de gravação.
+        
+        Args:
+            is_recording (bool): True se está gravando, False caso contrário.
+        """
+        if self.camera_screen:
+            self.camera_screen.set_recording_indicator(is_recording)
+    
     def handle_mission_started(self, mission_name: str):
         """
         Handler para quando uma missão é iniciada.
@@ -538,6 +577,39 @@ class DashboardGUI(QWidget):
         Limpa os marcadores de missão do mapa.
         """
         self.mapa_manager.clear_mission_display()
+
+    def expand_map_screen(self, event=None):
+        """
+        Abre o mapa em uma janela expandida ao dar duplo clique no título.
+        Limita a uma janela expandida.
+        
+        Args:
+            event: Evento de duplo clique do mouse
+        """
+        from .utils import ExpandedWindow, gui_log_info
+        from .mapa import InteractiveMapWidget
+        
+        # Limpa janelas fechadas da lista
+        self.expanded_windows = [w for w in self.expanded_windows if w.isVisible()]
+        
+        # Se já existe janela de mapa expandida, foca nela
+        for window in self.expanded_windows:
+            if "Mapa" in window.windowTitle():
+                window.raise_()
+                window.activateWindow()
+                gui_log_info("DashboardGUI", "Focando janela existente do Mapa GPS")
+                return
+        
+        gui_log_info("DashboardGUI", "Expandindo tela do Mapa GPS")
+        
+        # Cria um novo widget de mapa para a janela expandida
+        expanded_map = InteractiveMapWidget(parent=None, mapa_manager=self.mapa_manager)
+        expanded_map.setMinimumSize(1200, 800)
+        
+        # Cria e exibe a janela expandida
+        window = ExpandedWindow("Mapa GPS", expanded_map, None)
+        self.expanded_windows.append(window)
+        window.show()
 
     def setup_control_area(self):
         """
