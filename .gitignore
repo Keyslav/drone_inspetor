@@ -1,10 +1,11 @@
+drone_inspetor/models/
+drone_inspetor/redes_treinadas/
 build/
 install/
 log/
-*.pyc
 __pycache__/
 .vscode/
 .idea/
 .DS_Store
 *.pt
-drone_inspetor/models/
+*.pyc

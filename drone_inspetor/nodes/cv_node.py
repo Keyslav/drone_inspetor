@@ -13,9 +13,18 @@ ARQUITETURA:
 - Publica: /drone_inspetor/interno/cv_node/image_processed (imagens anotadas)
 - Publica: /drone_inspetor/interno/cv_node/object_detections (dados de detecção em JSON)
 
+PARÂMETROS ROS2 (definidos em param_ros.yaml):
+- anomaly_photo_interval_seconds: Intervalo entre capturas de fotos de anomalias (segundos)
+- object_detection_min_confidence: Confiança mínima para detecção de objetos (0.0 a 1.0)
+- anomaly_detection_min_confidence: Confiança mínima para detecção de anomalias (0.0 a 1.0)
+- photo_format: Formato das imagens (jpg, png)
+- photo_quality: Qualidade de compressão JPEG (1-100)
+- video_fps: FPS do vídeo de detecções
+- video_codec: Codec de vídeo (MJPG recomendado, XVID alternativa)
+
 ALGORITMO:
-- Utiliza modelo YOLO customizado (best.pt) treinado para detecção de objetos específicos
-- Aplica threshold de confiança mínimo de 0.5 para filtrar detecções
+- Utiliza modelo YOLO customizado para detecção de objetos específicos
+- Aplica threshold de confiança mínimo configurável para filtrar detecções
 - Desenha bounding boxes e labels nas imagens processadas
 =================================================================================================
 """
@@ -109,15 +118,31 @@ class CVNode(Node):
         
         self.get_logger().info(f"Confiança mínima: objetos={self._object_min_confidence}, anomalias={self._anomaly_min_confidence}")
         
+        # ==================== PARÂMETROS DE FOTO E VÍDEO =============================================
+        # Parâmetros de foto (similar ao camera_node)
+        self.declare_parameter("photo_format", "jpg")
+        self.declare_parameter("photo_quality", 95)
+        self._photo_format = self.get_parameter("photo_format").get_parameter_value().string_value
+        self._photo_quality = self.get_parameter("photo_quality").get_parameter_value().integer_value
+        
+        # Parâmetros de vídeo
+        self.declare_parameter("video_fps", 15)
+        self.declare_parameter("video_codec", "mp4v")
+        self._video_fps = self.get_parameter("video_fps").get_parameter_value().integer_value
+        self._video_codec = self.get_parameter("video_codec").get_parameter_value().string_value
+        
+        self.get_logger().info(f"CV Foto: formato={self._photo_format}, qualidade={self._photo_quality}")
+        self.get_logger().info(f"CV Vídeo: fps={self._video_fps}, codec={self._video_codec}")
+        
         # ==================== CARREGAMENTO DOS MODELOS YOLO ===============================================
         # Obtém o caminho do diretório de instalação do pacote
         pkg_share_dir = get_package_share_directory('drone_inspetor')
         
         # Modelo 1: Detecção de objetos da plataforma (Flare, roldanas, etc.)
-        objects_model_path = os.path.join(pkg_share_dir, 'redes_treinadas', 'yolo8x_plataform_objects_detection.pt')
+        objects_model_path = os.path.join(pkg_share_dir, 'redes_treinadas', 'plataform_objects_yolo8x_detection.pt')
         
         # Modelo 2: Detecção de anomalias (corrosão) - usado em crops dos objetos detectados
-        anomalies_model_path = os.path.join(pkg_share_dir, 'redes_treinadas', 'yolo8n_corrosion_detection_1classe.pt')
+        anomalies_model_path = os.path.join(pkg_share_dir, 'redes_treinadas', 'corrosion_yolo8n_detection.pt')
         
         import torch
         if torch.cuda.is_available():
@@ -368,12 +393,21 @@ class CVNode(Node):
             prefix = state_name.lower().replace("executando_inspecionando_", "")
             ponto_str = f"P{self._ponto_indice_atual + 1:02d}"  # P01, P02, etc.
             objeto_str = f"_{self._objeto_alvo}" if self._objeto_alvo else ""
-            filename = f"{self._photo_counter:03d}_{ponto_str}_{prefix}{objeto_str}_{timestamp}.jpg"
+            filename = f"{self._photo_counter:03d}_{ponto_str}_{prefix}{objeto_str}_{timestamp}.{self._photo_format}"
             
             photo_path = os.path.join(self._photos_folder, filename)
             
+            # Configura parâmetros de compressão
+            if self._photo_format.lower() == "jpg":
+                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._photo_quality]
+            elif self._photo_format.lower() == "png":
+                png_compression = max(0, min(9, 9 - int(self._photo_quality / 11)))
+                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, png_compression]
+            else:
+                encode_params = []
+            
             # Salva a imagem anotada
-            cv2.imwrite(photo_path, self._last_annotated_image)
+            cv2.imwrite(photo_path, self._last_annotated_image, encode_params)
             self.get_logger().info(f"🔍 Foto CV capturada: {os.path.basename(photo_path)}")
             
         except Exception as e:
@@ -422,17 +456,27 @@ class CVNode(Node):
             crop_anomalias_resized = cv2.resize(crop_anomalias, (w, h), interpolation=cv2.INTER_LANCZOS4)
             
             # Salva as 5 fotos do MESMO momento (seq: momento_foto)
-            f1 = f"{ponto_str}_{obj_str}_{seq_momento}_1_original_{timestamp}.jpg"
-            f2 = f"{ponto_str}_{obj_str}_{seq_momento}_2_objeto_{timestamp}.jpg"
-            f3 = f"{ponto_str}_{obj_str}_{seq_momento}_3_anomalias_{timestamp}.jpg"
-            f4 = f"{ponto_str}_{obj_str}_{seq_momento}_4_crop_{timestamp}.jpg"
-            f5 = f"{ponto_str}_{obj_str}_{seq_momento}_5_crop_anomalias_{timestamp}.jpg"
+            ext = self._photo_format
+            f1 = f"{ponto_str}_{obj_str}_{seq_momento}_1_original_{timestamp}.{ext}"
+            f2 = f"{ponto_str}_{obj_str}_{seq_momento}_2_objeto_{timestamp}.{ext}"
+            f3 = f"{ponto_str}_{obj_str}_{seq_momento}_3_anomalias_{timestamp}.{ext}"
+            f4 = f"{ponto_str}_{obj_str}_{seq_momento}_4_crop_{timestamp}.{ext}"
+            f5 = f"{ponto_str}_{obj_str}_{seq_momento}_5_crop_anomalias_{timestamp}.{ext}"
             
-            cv2.imwrite(os.path.join(self._photos_folder, f1), img_original)
-            cv2.imwrite(os.path.join(self._photos_folder, f2), img_objeto)
-            cv2.imwrite(os.path.join(self._photos_folder, f3), img_anomalias)
-            cv2.imwrite(os.path.join(self._photos_folder, f4), crop_original_resized)
-            cv2.imwrite(os.path.join(self._photos_folder, f5), crop_anomalias_resized)
+            # Parâmetros de compressão
+            if self._photo_format.lower() == "jpg":
+                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._photo_quality]
+            elif self._photo_format.lower() == "png":
+                png_compression = max(0, min(9, 9 - int(self._photo_quality / 11)))
+                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, png_compression]
+            else:
+                encode_params = []
+            
+            cv2.imwrite(os.path.join(self._photos_folder, f1), img_original, encode_params)
+            cv2.imwrite(os.path.join(self._photos_folder, f2), img_objeto, encode_params)
+            cv2.imwrite(os.path.join(self._photos_folder, f3), img_anomalias, encode_params)
+            cv2.imwrite(os.path.join(self._photos_folder, f4), crop_original_resized, encode_params)
+            cv2.imwrite(os.path.join(self._photos_folder, f5), crop_anomalias_resized, encode_params)
             
             self.get_logger().info(f"📷 5 fotos anomalias: seq={seq_momento}, ts={timestamp}")
             
@@ -519,6 +563,9 @@ class CVNode(Node):
                 return response
             
             try:
+                # Determina extensão baseada no codec
+                video_ext = "avi" if self._video_codec in ["MJPG", "XVID"] else "mp4"
+                
                 # Gera caminho para o vídeo na pasta videos_cv da missão
                 if self._videos_folder:
                     # Cria pasta de vídeos CV se não existir
@@ -528,19 +575,19 @@ class CVNode(Node):
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     self._video_path = os.path.join(
                         self._videos_folder,
-                        f"detection_{timestamp}.mp4"
+                        f"detection_{timestamp}.{video_ext}"
                     )
                 else:
                     # Fallback se não houver missão ativa
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    self._video_path = f"/tmp/detection_{timestamp}.mp4"
+                    self._video_path = f"/tmp/detection_{timestamp}.{video_ext}"
                 
-                # Configura VideoWriter
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                # Configura VideoWriter usando parâmetros configuráveis
+                fourcc = cv2.VideoWriter_fourcc(*self._video_codec)
                 self._video_writer = cv2.VideoWriter(
                     self._video_path,
                     fourcc,
-                    10.0,  # 10 FPS
+                    float(self._video_fps),
                     self._video_frame_size
                 )
                 

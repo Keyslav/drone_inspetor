@@ -3389,10 +3389,13 @@ def main(args=None):
 
     try:
         executor.spin()
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
+    except (KeyboardInterrupt, ExternalShutdownException, Exception):
+        pass  # Ignora todas as exceções durante shutdown (inclui contexto inválido)
     finally:
-        drone_node.destroy_node()
+        try:
+            drone_node.destroy_node()
+        except Exception:
+            pass  # Ignora erros ao destruir o nó
         rclpy.try_shutdown()
 
 if __name__ == "__main__":

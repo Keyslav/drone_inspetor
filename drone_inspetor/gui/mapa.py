@@ -398,10 +398,10 @@ class InteractiveMapWidget(QWebEngineView):
         Permite personalizar o centro do mapa e o zoom sem alterar o código.
         """
         try:
-            # Constrói o caminho para o arquivo params.yaml.
-            params_path = os.path.join(os.path.dirname(__file__), "..", "config", "params.yaml")
+            # Constrói o caminho para o arquivo param_gui.yaml.
+            params_path = os.path.join(os.path.dirname(__file__), "..", "config", "param_gui.yaml")
             if not os.path.exists(params_path):
-                params_path = os.path.join(os.getcwd(), "config", "params.yaml")
+                params_path = os.path.join(os.getcwd(), "config", "param_gui.yaml")
             
             # Se o arquivo existir, carrega os parâmetros.
             if os.path.exists(params_path):

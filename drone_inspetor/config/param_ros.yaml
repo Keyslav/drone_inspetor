@@ -1,0 +1,99 @@
+# =================================================================================================
+# ARQUIVO DE PARÂMETROS ROS2 - DRONE INSPETOR
+# =================================================================================================
+# Parâmetros para os nodes ROS2 (passados via launch file)
+# =================================================================================================
+
+
+# =================================================================================================
+# PARÂMETROS GLOBAIS - Compartilhados entre múltiplos nodes (usando wildcard /**)
+# =================================================================================================
+/**:
+  ros__parameters:
+    missions_directory: "~/Drone_Inspetor_Missoes"
+
+
+# =================================================================================================
+# CAMERA NODE - Parâmetros do nó da câmera
+# =================================================================================================
+camera_node:
+  ros__parameters:
+    # Formato da foto: "jpg" (menor, com perdas) ou "png" (maior, sem perdas)
+    photo_format: "jpg"
+    # Qualidade da foto: 1-100 (jpg) ou nível de compressão invertido (png)
+    photo_quality: 95
+    # Habilita gravação de vídeo durante a missão
+    video_enabled: true
+    # FPS do vídeo: deve corresponder à taxa real de frames da câmera
+    # Se a câmera envia 15 fps e você configura 30, o vídeo ficará acelerado
+    video_fps: 30
+    # Codec de vídeo (container .avi para MJPG/XVID, .mp4 para outros):
+    # - "MJPG": Motion JPEG - baixo uso de CPU, arquivos maiores (recomendado para RPi)
+    # - "XVID": MPEG-4 - médio uso de CPU, arquivos médios, boa qualidade
+    # - "mp4v": MPEG-4 - similar ao XVID, melhor compatibilidade com browsers
+    # - "H264": H.264 - alto uso de CPU, arquivos pequenos (requer libx264)
+    video_codec: "MJPG"
+
+
+# =================================================================================================
+# FSM NODE - Parâmetros do nó da máquina de estados
+# =================================================================================================
+fsm_node:
+  ros__parameters:
+    missions_file: "missions.json"
+
+
+# =================================================================================================
+# CV NODE - Parâmetros do nó de visão computacional
+# =================================================================================================
+cv_node:
+  ros__parameters:
+    # Intervalos e confiança
+    anomaly_photo_interval_seconds: 4.0
+    object_detection_min_confidence: 0.7
+    anomaly_detection_min_confidence: 0.7
+    # Formato da foto: "jpg" (menor, com perdas) ou "png" (maior, sem perdas)
+    photo_format: "jpg"
+    # Qualidade da foto: 1-100 (jpg) ou nível de compressão invertido (png)
+    photo_quality: 95
+    # FPS do vídeo de detecção (deve corresponder à taxa de frames processados)
+    video_fps: 30
+    # Codec de vídeo:
+    # - "MJPG": baixo CPU, arquivos maiores (recomendado para RPi)
+    # - "XVID": médio CPU, boa qualidade
+    # - "mp4v": compatível com browsers
+    video_codec: "MJPG"
+
+
+# =================================================================================================
+# LIDAR NODE - Parâmetros do nó de processamento LiDAR
+# =================================================================================================
+lidar_node:
+  ros__parameters:
+    lidar_data_publish_rate: 5.0
+    obstacles_publish_rate: 5.0
+
+
+# =================================================================================================
+# DRONE NODE - Parâmetros do nó de controle do drone
+# =================================================================================================
+drone_node:
+  ros__parameters:
+    command_timeout: 30.0
+    step_distance: 5.0
+
+
+# =================================================================================================
+# DASHBOARD NODE - Parâmetros do dashboard
+# =================================================================================================
+dashboard_node:
+  ros__parameters:
+    dummy_param: true
+
+
+# =================================================================================================
+# DEPTH NODE - Parâmetros do nó de profundidade
+# =================================================================================================
+depth_node:
+  ros__parameters:
+    dummy_param: true

@@ -595,11 +595,28 @@ class DepthNode(Node):
         self.get_logger().info("Dados de profundidade resetados")
 
 def main(args=None):
+    """
+    Função principal para iniciar o nó de profundidade.
+    """
+    import signal
+    
     rclpy.init(args=args)
     depth_node = DepthNode()
-    rclpy.spin(depth_node)
-    depth_node.destroy_node()
-    rclpy.try_shutdown()
+    
+    # Handler para SIGINT (Ctrl+C) - encerramento limpo
+    def signal_handler(sig, frame):
+        depth_node.get_logger().info("Encerrando depth_node...")
+        rclpy.shutdown()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        rclpy.spin(depth_node)
+    except Exception:
+        pass  # Ignora exceções durante shutdown
+    finally:
+        depth_node.destroy_node()
+        rclpy.try_shutdown()
 
 if __name__ == "__main__":
     main()

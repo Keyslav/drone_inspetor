@@ -27,25 +27,23 @@ import subprocess
 
 def _get_missions_directory() -> str:
     """
-    Lê o diretório de missões do params.yaml.
+    Lê o diretório de missões do param_gui.yaml.
     Retorna o caminho expandido (resolve ~).
     """
-    # Tenta encontrar params.yaml
-    config_paths = [
-        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                     "config", "params.yaml"),
-        os.path.expanduser("~/ros2_ws/src/drone_inspetor/drone_inspetor/config/params.yaml"),
-    ]
+    # Caminho relativo ao próprio arquivo do projeto
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
+        "config", "param_gui.yaml"
+    )
     
-    for config_path in config_paths:
-        if os.path.exists(config_path):
-            try:
-                with open(config_path, 'r') as f:
-                    params = yaml.safe_load(f)
-                    missions_dir = params.get('missions_directory', '~/Drone_Inspetor_Missoes')
-                    return os.path.expanduser(missions_dir)
-            except Exception:
-                pass
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                params = yaml.safe_load(f)
+                missions_dir = params.get('missions_directory', '~/Drone_Inspetor_Missoes')
+                return os.path.expanduser(missions_dir)
+        except Exception:
+            pass
     
     # Fallback
     return os.path.expanduser("~/Drone_Inspetor_Missoes")
