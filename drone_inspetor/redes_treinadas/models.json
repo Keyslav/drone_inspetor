@@ -1,0 +1,144 @@
+{
+    "models": {
+        "equipment": [
+            {
+                "name": "YOLOv8x (Detection) - Platform Objects",
+                "dataset": "Platform_Objects_Dataset",
+                "classes": [
+                    "Flare",
+                    "Torre_do_Flare",
+                    "Tanque_Oleo_Enferrujado",
+                    "Tanques_Produtos_Quimicos",
+                    "Guindaste",
+                    "Torre_de_Perfuracao",
+                    "Catarina",
+                    "Sonda_de_Perfuracao",
+                    "Roldanas_de_Perfuracao"
+                ],
+                "model": "YOLOv8x",
+                "file_name": "plataform_objects_yolov8x_detection.pt",
+                "type": "detection"
+            },
+            {
+                "name": "YOLOv8n (100epochs, Lightweight, Detection) - Platform Objects",
+                "dataset": "Platform_Objects_Dataset",
+                "classes": [
+                    "Flare",
+                    "Torre_do_Flare",
+                    "Tanque_Oleo_Enferrujado",
+                    "Tanques_Produtos_Quimicos",
+                    "Guindaste",
+                    "Torre_de_Perfuracao",
+                    "Catarina",
+                    "Sonda_de_Perfuracao",
+                    "Roldanas_de_Perfuracao"
+                ],
+                "model": "YOLOv8n",
+                "file_name": "plataform_objects_yolov8n_detection_100ep.pt",
+                "type": "detection"
+            },
+            {
+                "name": "YOLOv8n (300epochs, Lightweight, Detection) - Platform Objects",
+                "dataset": "Platform_Objects_Dataset",
+                "classes": [
+                    "Flare",
+                    "Torre_do_Flare",
+                    "Tanque_Oleo_Enferrujado",
+                    "Tanques_Produtos_Quimicos",
+                    "Guindaste",
+                    "Torre_de_Perfuracao",
+                    "Catarina",
+                    "Sonda_de_Perfuracao",
+                    "Roldanas_de_Perfuracao"
+                ],
+                "model": "YOLOv8n",
+                "file_name": "plataform_objects_yolov8n_detection_300ep.pt",
+                "type": "detection"
+            },
+            {
+                "name": "YOLOv8n (300epochs, Lightweight, Detection) - Platform Objects (Flare separated)",
+                "dataset": "Platform_Objects_Flare_Separated_Dataset",
+                "classes": [
+                    "Flare",
+                    "Torre_do_Flare",
+                    "Tanque_Oleo_Enferrujado",
+                    "Tanques_Produtos_Quimicos",
+                    "Guindaste",
+                    "Torre_de_Perfuracao",
+                    "Catarina",
+                    "Sonda_de_Perfuracao",
+                    "Roldanas_de_Perfuracao"
+                ],
+                "model": "YOLOv8n",
+                "file_name": "plataform_objects_flare_separated_yolov8n_300ep.pt",
+                "type": "detection"
+            },
+            {
+                "name": "YOLOv8n (300epochs, Lightweight, Detection) - Flare",
+                "dataset": "Flare_Dataset",
+                "classes": [
+                    "Flare"
+                ],
+                "model": "YOLOv8n",
+                "file_name": "flare_yolov8n_detection_300ep.pt",
+                "type": "detection"
+            }
+        ],
+        "anomaly": [
+            {
+                "name": "Corrosion YOLOv8x (Detection)",
+                "dataset": "Corrosion_Dataset_v1",
+                "classes": [
+                    "mild_corrosion",
+                    "moderate_corrosion",
+                    "severe_corrosion"
+                ],
+                "model": "YOLOv8x",
+                "file_name": "corrosion_yolo8x_detection.pt",
+                "type": "detection"
+            },
+            {
+                "name": "Corrosion YOLOv8n (Lightweight, Detection)",
+                "dataset": "Corrosion_Dataset_v1",
+                "classes": [
+                    "mild_corrosion",
+                    "moderate_corrosion",
+                    "severe_corrosion"
+                ],
+                "model": "YOLOv8n",
+                "file_name": "corrosion_yolo8n_detection.pt",
+                "type": "detection"
+            },
+            {
+                "name": "Corrosion YOLOv8x (Segmentation)",
+                "dataset": "Corrosion_Dataset",
+                "classes": [
+                    "Rust"
+                ],
+                "model": "YOLOv8x-seg",
+                "file_name": "corrosion_yolov8x_segmentation.pt",
+                "type": "segmentation"
+            },
+            {
+                "name": "Crack YOLOv8x (Segmentation)",
+                "dataset": "Crack_Dataset_v1",
+                "classes": [
+                    "crack"
+                ],
+                "model": "YOLOv8x-seg",
+                "file_name": "crack_yolo8x_seg.pt",
+                "type": "segmentation"
+            },
+            {
+                "name": "Crack YOLOv8n (Segmentation, Lightweight)",
+                "dataset": "Crack_Dataset_v1",
+                "classes": [
+                    "crack"
+                ],
+                "model": "YOLOv8n-seg",
+                "file_name": "crack_yolo8n_seg.pt",
+                "type": "segmentation"
+            }
+        ]
+    }
+}

@@ -3,6 +3,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 from drone_inspetor_msgs.msg import CVDetectionMSG
+from drone_inspetor_msgs.srv import CVModelsSRV
 import json
 from drone_inspetor.signals.dashboard_signals import CVSignals
 from cv_bridge import CvBridge
@@ -54,7 +55,17 @@ class DashboardCVSubscriber:
             self.cv_analysis_callback,
             qos_sensor_data
         )
+
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.cv_analysis_sub.topic_name}")
+
+        # Service Client para listar modelos
+        self.cv_models_client = self.DashboardNode.create_client(
+            CVModelsSRV,
+            '/drone_inspetor/interno/cv_node/srv/list_models'
+        )
+
+        # Conecta sinal de requisição
+        self.signals.models_requested.connect(self.request_models)
 
     def cv_image_callback(self, msg: CompressedImage):
         """
@@ -102,5 +113,49 @@ class DashboardCVSubscriber:
             self.signals.analysis_data_received.emit(analysis_data)
         except json.JSONDecodeError as e:
             self.DashboardNode.get_logger().error(f"Erro ao decodificar JSON de análise CV: {e}")
+
+    def request_models(self):
+        """
+        Solicita a lista de modelos disponíveis e atuais ao cv_node.
+        Se o serviço não estiver disponível, tenta novamente após 1 segundo.
+        """
+        if not self.cv_models_client.service_is_ready():
+            self.DashboardNode.get_logger().warn("Serviço list_models não disponível, tentando novamente em 1s...")
+            # Cria um timer para tentar novamente em 1 segundo (one-shot)
+            self._retry_timer = self.DashboardNode.create_timer(1.0, self._retry_request_models)
+            return
+
+        request = CVModelsSRV.Request()
+        future = self.cv_models_client.call_async(request)
+        future.add_done_callback(self._models_response_callback)
+    
+    def _retry_request_models(self):
+        """
+        Callback do timer para tentar solicitar modelos novamente.
+        """
+        # Cancela o timer para que ele não execute novamente
+        if hasattr(self, '_retry_timer'):
+            self._retry_timer.cancel()
+            del self._retry_timer
+            
+        # Tenta solicitar novamente
+        self.request_models()
+
+    def _models_response_callback(self, future):
+        """
+        Callback para resposta do serviço de modelos.
+        """
+        try:
+            response = future.result()
+            
+            # Repassa o JSON completo e os modelos atuais para o sinal
+            models_data = {
+                'models_data_json': response.models_data_json,
+                'current_object_model': response.current_object_model,
+                'current_anomaly_model': response.current_anomaly_model
+            }
+            self.signals.models_received.emit(models_data)
+        except Exception as e:
+            self.DashboardNode.get_logger().error(f"Erro ao obter modelos do CV: {e}")
 
 

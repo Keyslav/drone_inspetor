@@ -9,6 +9,8 @@ def generate_launch_description():
     
     # Caminho do arquivo de parâmetros ROS2
     params_file = os.path.join(pkg_drone_inspetor, "config", "param_ros.yaml")
+    
+    param_use_sim_time = True
 
     # ROS-Gazebo Bridge Node
     ros_gz_bridge_node = Node(
@@ -18,7 +20,33 @@ def generate_launch_description():
         output="screen",
         parameters=[{
             "config_file": os.path.join(pkg_drone_inspetor, "config", "ros_gz_bridges.yaml"),
+            "use_sim_time": param_use_sim_time,
         }],
+    )
+
+    # ROS-Gazebo Image Bridge Node
+    ros_gz_image_node = Node(
+        package="ros_gz_image",
+        executable="image_bridge",
+        name="image_bridge",
+        output="screen",
+        parameters=[{'use_sim_time': param_use_sim_time, 'qos': 'sensor_data'}],
+        arguments=[
+            "/drone_inspetor/gz/gimbal/camera",
+            "/drone_inspetor/gz/depth_camera",
+        ],
+        remappings=[
+            ("/drone_inspetor/gz/gimbal/camera",                 "/drone_inspetor/externo/camera/image_raw"            ),
+            ("/drone_inspetor/gz/gimbal/camera/compressed",      "/drone_inspetor/externo/camera/compressed"           ),
+            ("/drone_inspetor/gz/gimbal/camera/compressedDepth", "/drone_inspetor/externo/camera/compressedDepth"      ),
+            ("/drone_inspetor/gz/gimbal/camera/theora",          "/drone_inspetor/externo/camera/theora"               ),
+            ("/drone_inspetor/gz/gimbal/camera/zstd",            "/drone_inspetor/externo/camera/zstd"                 ),
+            ("/drone_inspetor/gz/depth_camera",                  "/drone_inspetor/externo/depth_camera/image_raw"      ),
+            ("/drone_inspetor/gz/depth_camera/compressed",       "/drone_inspetor/externo/depth_camera/compressed"     ),
+            ("/drone_inspetor/gz/depth_camera/compressedDepth",  "/drone_inspetor/externo/depth_camera/compressedDepth"),
+            ("/drone_inspetor/gz/depth_camera/theora",           "/drone_inspetor/externo/depth_camera/theora"         ),
+            ("/drone_inspetor/gz/depth_camera/zstd",             "/drone_inspetor/externo/depth_camera/zstd"           ),
+        ]
     )
 
     # Nó da Câmera
@@ -28,7 +56,7 @@ def generate_launch_description():
         name="camera_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
@@ -39,7 +67,7 @@ def generate_launch_description():
         name="cv_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
@@ -50,7 +78,7 @@ def generate_launch_description():
         name="depth_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
@@ -61,7 +89,7 @@ def generate_launch_description():
         name="lidar_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
@@ -72,7 +100,7 @@ def generate_launch_description():
         name="drone_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
@@ -83,7 +111,7 @@ def generate_launch_description():
         name="fsm_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
@@ -95,13 +123,14 @@ def generate_launch_description():
         name="dashboard_node",
         output="screen",
         emulate_tty=True,
-        parameters=[params_file],
+        parameters=[params_file, {'use_sim_time': param_use_sim_time}],
         on_exit=Shutdown(reason="Dashboard GUI fechado - encerrando todos os nodes"),
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
     return LaunchDescription([
-        #ros_gz_bridge_node,
+        ros_gz_bridge_node,
+        ros_gz_image_node,
         camera_node,
         cv_node,
         depth_node,

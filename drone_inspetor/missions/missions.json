@@ -6,59 +6,63 @@
     "pontos_de_inspecao": [
       {
         "command": "GOTO",
-        "lat": -22.633930,
-        "lon": -40.092435,
+        "lat": -22.633940,
+        "lon": -40.092440,
         "alt": 99.0,
         "yaw": 0.0,
         "ponto_de_deteccao": true,
         "objeto_alvo": "flare",
         "tipos_anomalia": [
-          "Rust"
+          "Rust",
+          "Crack"
         ]
       },
       {
         "command": "GOTO_FOCUS",
         "lat": -22.633890,
-        "lon": -40.092395,
+        "lon": -40.092400,
         "alt": 99.0,
         "focus_lat": -22.633890,
-        "focus_lon": -40.092435,
+        "focus_lon": -40.092445,
         "ponto_de_deteccao": true,
         "objeto_alvo": "flare",
         "tipos_anomalia": [
-          "Rust"
+          "Rust",
+          "Crack"
         ]
       },
       {
         "command": "GOTO_FOCUS",
-        "lat": -22.633850,
-        "lon": -40.092435,
+        "lat": -22.633840,
+        "lon": -40.092440,
         "alt": 99.0,
         "focus_lat": -22.633890,
-        "focus_lon": -40.092435,
+        "focus_lon": -40.092445,
         "ponto_de_deteccao": true,
         "objeto_alvo": "flare",
         "tipos_anomalia": [
-          "Rust"
+          "Rust",
+          "Crack"
         ]
       },
       {
         "command": "GOTO_FOCUS",
         "lat": -22.633890,
-        "lon": -40.092485,
+        "lon": -40.092495,
         "alt": 99.0,
         "focus_lat": -22.633890,
-        "focus_lon": -40.092435,
+        "focus_lon": -40.092445,
         "ponto_de_deteccao": true,
         "objeto_alvo": "flare",
         "tipos_anomalia": [
-          "Rust"
+          "Rust",
+          "Crack"
         ]
       }
     ]
   },
-  "Roldanas_Perfuracao": {
-    "nome": "Roldanas_Perfuracao",
+  "Roldanas_de_Perfuracao": {
+    "nome": "Roldanas de Perfuração",
     "descricao": "Missão de inspeção visual das Roldanas da Torre de Perfuração",
     "objeto_detectavel": "roldanas",
     "pontos_de_inspecao": [
@@ -66,10 +70,10 @@
         "command": "GOTO",
         "lat": -22.633990,
         "lon": -40.093330,
-        "alt": 106.0,
+        "alt": 104.0,
         "yaw": 0.0,
         "ponto_de_deteccao": true,
-        "objeto_alvo": "roldanas",
+        "objeto_alvo": "roldanas_de_perfuracao",
         "tipos_anomalia": [
           "Rust",
           "Crack"
@@ -79,11 +83,11 @@
         "command": "GOTO_FOCUS",
         "lat": -22.633890,
         "lon": -40.093430,
-        "alt": 106.0,
+        "alt": 104.0,
         "focus_lat": -22.633890,
         "focus_lon": -40.093330,
         "ponto_de_deteccao": true,
-        "objeto_alvo": "roldanas",
+        "objeto_alvo": "roldanas_de_perfuracao",
         "tipos_anomalia": [
           "Rust",
           "Crack"
@@ -93,11 +97,11 @@
         "command": "GOTO_FOCUS",
         "lat": -22.633790,
         "lon": -40.093330,
-        "alt": 106.0,
+        "alt": 104.0,
         "focus_lat": -22.633890,
         "focus_lon": -40.093330,
         "ponto_de_deteccao": true,
-        "objeto_alvo": "roldanas",
+        "objeto_alvo": "roldanas_de_perfuracao",
         "tipos_anomalia": [
           "Rust",
           "Crack"
@@ -107,15 +111,23 @@
         "command": "GOTO_FOCUS",
         "lat": -22.633890,
         "lon": -40.093230,
-        "alt": 106.0,
+        "alt": 104.0,
         "focus_lat": -22.633890,
         "focus_lon": -40.093330,
         "ponto_de_deteccao": true,
-        "objeto_alvo": "roldanas",
+        "objeto_alvo": "roldanas_de_perfuracao",
         "tipos_anomalia": [
           "Rust",
           "Crack"
         ]
+      },
+      {
+        "command": "GOTO",
+        "lat": -22.633990,
+        "lon": -40.093330,
+        "alt": 104.0,
+        "yaw": null,
+        "ponto_de_deteccao": false
       }
     ]
   },

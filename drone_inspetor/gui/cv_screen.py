@@ -10,12 +10,17 @@ os dados de imagem e análise processados pelo DashboardNode através de sinais 
 """
 
 from PyQt6.QtWidgets import (QLabel, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QTextEdit, QScrollArea)
+                             QPushButton, QTextEdit, QScrollArea, QComboBox, QSizePolicy)
 from PyQt6.QtGui import QPixmap, QCursor, QFont
 from PyQt6.QtCore import Qt
-from .utils import ExpandedWindow, BaseScreen, ImageProcessor, COMMON_STYLES, gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
+from .utils import ExpandedWindow, BaseScreen, ImageProcessor, COMMON_STYLES, IMAGE_QUALITY, gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
 import json
 from datetime import datetime
+import os
+from .utils import ExpandedWindow, BaseScreen, ImageProcessor, COMMON_STYLES, IMAGE_QUALITY, gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
+import json
+from datetime import datetime
+import os
 
 class CVScreen(BaseScreen):
     """
@@ -31,11 +36,18 @@ class CVScreen(BaseScreen):
         Inicializa a tela de visão computacional.
 
         Args:
-            signals: Objeto de sinais PyQt6 para comunicação (não utilizado diretamente aqui)
+            signals: Objeto CVSignals PyQt6 para comunicação
             video_label (QLabel): O widget QLabel onde a imagem processada será exibida.
         """
         # Chama o construtor da classe base BaseScreen
         super().__init__(video_label, "Visão Computacional")
+        
+        # Armazena referência aos signals para publicação de comandos
+        self.signals = signals
+        if hasattr(self.signals, 'models_received'):
+            self.signals.models_received.connect(self._on_models_received)
+        
+        # Instancia o ImageProcessor para converter mensagens de imagem ROS para formatos PyQt
         
         # Instancia o ImageProcessor para converter mensagens de imagem ROS para formatos PyQt
         self.image_processor = ImageProcessor()
@@ -45,10 +57,30 @@ class CVScreen(BaseScreen):
         self.current_detections = []
         self.analysis_window = None  # Referência para a janela de logs de análise
         
+        # Listas de modelos (populadas via serviço)
+        self._equipment_models = []
+        self._anomaly_models = []
+        
+        # Modelos selecionados atualmente
+        self._selected_equipment_model = ""
+        self._selected_anomaly_model = ""
+        
+        # Widgets de dropdown (referências para atualização na janela expandida)
+        self._equipment_dropdown = None
+        self._anomaly_dropdown = None
+        self._current_equipment_label = None
+        self._current_anomaly_label = None
+        self._expanded_label = None  # Label de imagem na janela expandida
+        
         # Configura a aparência inicial do display de CV
         self.setup_cv_display()
         
-        gui_log_info("CVScreen", "CVScreen inicializada - foco em exibição de CV")
+        # Solicita lista de modelos inicial para popular cache
+        if hasattr(self.signals, 'models_requested'):
+            self.signals.models_requested.emit()
+        
+        gui_log_info("CVScreen", f"CVScreen inicializada - {len(self._equipment_models)} modelos de equipamento, {len(self._anomaly_models)} modelos de anomalia")
+    
     
     def setup_cv_display(self):
         """
@@ -72,6 +104,427 @@ class CVScreen(BaseScreen):
             self.video_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
             
             gui_log_info("CVScreen", "Display CV configurado")
+    
+    def expand_screen(self, event=None):
+        """
+        Expande a tela em janela separada com dropdowns para seleção de modelos.
+        Sobrescreve o método da classe base para adicionar controles customizados.
+        
+        Args:
+            event: Evento de clique (opcional)
+        """
+        # Limpa janelas fechadas da lista
+        self.expanded_windows = [w for w in self.expanded_windows if w.isVisible()]
+        
+        # Se já existe uma janela expandida, apenas foca nela
+        if self.expanded_windows:
+            existing_window = self.expanded_windows[0]
+            existing_window.raise_()
+            existing_window.activateWindow()
+            gui_log_info("CVScreen", f"Focando janela existente de {self.screen_name}")
+            return
+        
+        gui_log_info("CVScreen", f"Expandindo {self.screen_name} com controles de modelo")
+
+        # Solicita atualização dos modelos ao abrir
+        if hasattr(self.signals, 'models_requested'):
+            self.signals.models_requested.emit()
+        
+        
+        # Cria container principal
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Área de controles (dropdowns de modelos)
+        controls_widget = self._create_model_controls()
+        layout.addWidget(controls_widget)
+        
+        # Label para imagem expandida
+        self._expanded_label = QLabel()
+        self._expanded_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self._expanded_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._expanded_label.setStyleSheet(f"""
+            background-color: {COMMON_STYLES["dark_background"]}; 
+            color: {COMMON_STYLES["text_color"]}; 
+            border: 2px solid {COMMON_STYLES["border_color"]};
+            border-radius: 5px;
+            font-size: 20px;
+        """)
+        
+        # Copia conteúdo atual se disponível
+        if self.video_label and self.video_label.pixmap():
+            expanded_size = IMAGE_QUALITY["expanded_display_size"]
+            original_pixmap = self.video_label.pixmap()
+            self._expanded_label.setPixmap(original_pixmap.scaled(
+                expanded_size[0], expanded_size[1], 
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            self._expanded_label.setText(f"Aguardando {self.screen_name}...")
+        
+        layout.addWidget(self._expanded_label, stretch=1)
+        
+        # Estilo do container
+        container.setStyleSheet(f"""
+            QWidget {{
+                background-color: {COMMON_STYLES["dark_background"]};
+            }}
+        """)
+        
+        # Cria janela expandida
+        window = ExpandedWindow(self.screen_name, container, None)
+        self.expanded_windows.append(window)
+        window.show()
+    
+    def _create_model_controls(self):
+        """
+        Cria widget com dropdowns para seleção de modelos de detecção e exibição detalhada.
+        Layout: 3 Colunas (Detalhes Equip, Detalhes Anom, Seleção/Controles)
+        
+        Returns:
+            QWidget: Widget contendo os controles de seleção de modelos.
+        """
+        controls = QWidget()
+        main_layout = QHBoxLayout(controls)
+        main_layout.setContentsMargins(5, 5, 5, 5)
+        main_layout.setSpacing(15)
+        
+        # Estilo comum para labels
+        label_style = f"""
+            color: {COMMON_STYLES["text_color"]};
+            font-weight: bold;
+            font-size: 12px;
+        """
+        
+        # Estilo comum para dropdowns
+        dropdown_style = f"""
+            QComboBox {{
+                background-color: #2b2b2b;
+                color: #ffffff;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 5px;
+                font-size: 11px;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 20px;
+            }}
+        """
+
+        # --- Coluna 1: Detalhes Equipamento ---
+        self.equip_details_group = self._create_details_group("Equipamento Ativo")
+        main_layout.addWidget(self.equip_details_group, stretch=1)
+        
+        # --- Coluna 2: Detalhes Anomalia ---
+        self.anom_details_group = self._create_details_group("Anomalia Ativa")
+        main_layout.addWidget(self.anom_details_group, stretch=1)
+
+        # --- Coluna 3: Seleção e Controles ---
+        from PyQt6.QtWidgets import QGroupBox
+        selection_group = QGroupBox("Selecionar Modelos")
+        selection_group.setStyleSheet(f"""
+            QGroupBox {{
+                color: {COMMON_STYLES["text_color"]};
+                font-weight: bold;
+                border: 1px solid #555555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 15px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+                background-color: {COMMON_STYLES["dark_background"]};
+            }}
+        """)
+        
+        selection_layout = QVBoxLayout(selection_group)
+        selection_layout.setContentsMargins(10, 15, 10, 10)
+        selection_layout.setSpacing(10)
+
+        # Label Equipamento
+        equip_label = QLabel("Selecionar Modelo de Equipamento:")
+        equip_label.setStyleSheet(label_style)
+        selection_layout.addWidget(equip_label)
+        
+        # Dropdown Equipamento
+        self._equipment_dropdown = QComboBox()
+        self._equipment_dropdown.setStyleSheet(dropdown_style)
+        self._equipment_dropdown.currentIndexChanged.connect(self._on_equipment_model_changed)
+        selection_layout.addWidget(self._equipment_dropdown)
+        
+        # Popular dropdown de equipamentos se já houver dados
+        if self._equipment_models:
+            self._equipment_dropdown.blockSignals(True)
+            for m in self._equipment_models:
+                self._equipment_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
+            
+            # Tenta selecionar o modelo atual
+            if self._selected_equipment_model:
+                idx = self._equipment_dropdown.findData(self._selected_equipment_model)
+                if idx >= 0:
+                    self._equipment_dropdown.setCurrentIndex(idx)
+            self._equipment_dropdown.blockSignals(False)
+        
+        # Spacer pequeno
+        selection_layout.addSpacing(5)
+        
+        # Label Anomalia
+        anom_label = QLabel("Selecionar Modelo de Anomalia:")
+        anom_label.setStyleSheet(label_style)
+        selection_layout.addWidget(anom_label)
+        
+        # Dropdown Anomalia
+        self._anomaly_dropdown = QComboBox()
+        self._anomaly_dropdown.setStyleSheet(dropdown_style)
+        self._anomaly_dropdown.currentIndexChanged.connect(self._on_anomaly_model_changed)
+        selection_layout.addWidget(self._anomaly_dropdown)
+        
+        # Popular dropdown de anomalias se já houver dados
+        if self._anomaly_models:
+            self._anomaly_dropdown.blockSignals(True)
+            for m in self._anomaly_models:
+                self._anomaly_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
+            
+            # Tenta selecionar o modelo atual
+            if self._selected_anomaly_model:
+                idx = self._anomaly_dropdown.findData(self._selected_anomaly_model)
+                if idx >= 0:
+                    self._anomaly_dropdown.setCurrentIndex(idx)
+            self._anomaly_dropdown.blockSignals(False)
+        
+        # Spacer expansível para empurrar o botão para baixo (opcional, mas bom pra alinhar)
+        selection_layout.addStretch()
+        
+        # Botão Aplicar
+        apply_button = QPushButton("APLICAR NOVOS MODELOS")
+        apply_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        apply_button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COMMON_STYLES["success_color"]};
+                color: white;
+                border: 1px solid #1e8449;
+                padding: 12px 20px;
+                border-radius: 6px;
+                font-weight: bold;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{
+                background-color: #2ecc71;
+                border: 1px solid #27ae60;
+            }}
+            QPushButton:pressed {{
+                background-color: #196f3d;
+            }}
+        """)
+        apply_button.clicked.connect(self._apply_model_selection)
+        selection_layout.addWidget(apply_button)
+        
+        # Adiciona grupo de seleção ao layout principal
+        main_layout.addWidget(selection_group, stretch=1)
+        
+        return controls
+
+    def _create_details_group(self, title):
+        """Cria um grupo estilizado para exibir detalhes do modelo."""
+        from PyQt6.QtWidgets import QGroupBox, QGridLayout
+        
+        group = QGroupBox(title)
+        group.setStyleSheet(f"""
+            QGroupBox {{
+                color: {COMMON_STYLES["text_color"]};
+                font-weight: bold;
+                border: 1px solid #555555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 15px;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 3px 0 3px;
+                background-color: {COMMON_STYLES["dark_background"]};
+            }}
+        """)
+        
+        layout = QGridLayout(group)
+        layout.setContentsMargins(10, 15, 10, 10)
+        layout.setSpacing(5)
+        
+        # Labels estáticos e dinâmicos (armazenados em dict no objeto group para acesso fácil)
+        group.field_labels = {}
+        fields = [
+            ("Name", "name"),
+            ("Dataset", "dataset"),
+            ("Classes", "classes"),
+            ("Model", "model"),
+            ("File", "file_name"),
+            ("Type", "type")
+        ]
+        
+        for i, (display_name, key) in enumerate(fields):
+            lbl_key = QLabel(f"{display_name}:")
+            lbl_key.setStyleSheet("color: #aaaaaa; font-weight: bold; font-size: 11px;")
+            
+            lbl_val = QLabel("-")
+            lbl_val.setStyleSheet("color: #ffffff; font-size: 11px;")
+            lbl_val.setWordWrap(True)
+            
+            layout.addWidget(lbl_key, i, 0)
+            layout.addWidget(lbl_val, i, 1)
+            
+            group.field_labels[key] = lbl_val
+            
+        return group
+
+    def _update_details_group(self, group, model_data):
+        """Atualiza os labels de um grupo de detalhes com os dados do modelo."""
+        if not hasattr(group, 'field_labels') or not model_data:
+            return
+            
+        for key, label_widget in group.field_labels.items():
+            val = model_data.get(key, "-")
+            if isinstance(val, list):
+                val = ", ".join(val)
+            label_widget.setText(str(val))
+    
+    def _on_equipment_model_changed(self, index):
+        """Callback quando o modelo de equipamentos é alterado."""
+        if self._equipment_dropdown and index >= 0:
+            self._selected_equipment_model = self._equipment_dropdown.currentData()
+            gui_log_info("CVScreen", f"Modelo de equipamentos selecionado: {self._selected_equipment_model}")
+    
+    def _on_anomaly_model_changed(self, index):
+        """Callback quando o modelo de anomalias é alterado."""
+        if self._anomaly_dropdown and index >= 0:
+            self._selected_anomaly_model = self._anomaly_dropdown.currentData()
+            gui_log_info("CVScreen", f"Modelo de anomalias selecionado: {self._selected_anomaly_model}")
+
+    def _on_models_received(self, data):
+        """
+        Recebe a lista de modelos disponíveis e atuais do ROS.
+        Atualiza a interface gráfica.
+        """
+        try:
+            models_json_str = data.get('models_data_json', '[]')
+            all_models = json.loads(models_json_str)
+            
+            # Filtra modelos por tipo
+            self._equipment_models = [m for m in all_models if m.get("object_type") == "equipment"]
+            self._anomaly_models = [m for m in all_models if m.get("object_type") == "anomaly"]
+            
+            curr_obj = data.get('current_object_model', '')
+            curr_anom = data.get('current_anomaly_model', '')
+            
+            self._selected_equipment_model = curr_obj
+            self._selected_anomaly_model = curr_anom
+            
+            gui_log_info("CVScreen", f"Modelos recebidos via serviço: {len(self._equipment_models)} equip, {len(self._anomaly_models)} anom")
+            gui_log_info("CVScreen", f"Modelos atuais: {curr_obj} obj, {curr_anom} anom")
+            
+            # --- Atualiza displays de detalhes ---
+            # Encontra os objetos completos dos modelos atuais
+            curr_obj_data = next((m for m in self._equipment_models if m["file_name"] == curr_obj), {})
+            curr_anom_data = next((m for m in self._anomaly_models if m["file_name"] == curr_anom), {})
+
+            self._update_details_group(getattr(self, 'equip_details_group', None), curr_obj_data)
+            self._update_details_group(getattr(self, 'anom_details_group', None), curr_anom_data)
+
+            # --- Atualiza Dropdowns ---
+            if self._equipment_dropdown:
+                gui_log_debug("CVScreen", f"Atualizando Dropdown Equipamentos com {len(self._equipment_models)} itens")
+                self._equipment_dropdown.blockSignals(True)
+                self._equipment_dropdown.clear()
+                for m in self._equipment_models:
+                    # Usa 'name' para exibição e 'file_name' como dado
+                    self._equipment_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
+                
+                # Seleciona o atual
+                index = self._equipment_dropdown.findData(curr_obj)
+                if index >= 0:
+                    self._equipment_dropdown.setCurrentIndex(index)
+                self._equipment_dropdown.blockSignals(False)
+            else:
+                gui_log_warn("CVScreen", "Dropdown Equipamentos não encontrado para atualização")
+
+            # Atualiza Dropdown de Anomalias
+            if self._anomaly_dropdown:
+                gui_log_debug("CVScreen", f"Atualizando Dropdown Anomalias com {len(self._anomaly_models)} itens")
+                self._anomaly_dropdown.blockSignals(True)
+                self._anomaly_dropdown.clear()
+                for m in self._anomaly_models:
+                    self._anomaly_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
+                
+                # Seleciona o atual
+                index = self._anomaly_dropdown.findData(curr_anom)
+                if index >= 0:
+                    self._anomaly_dropdown.setCurrentIndex(index)
+                self._anomaly_dropdown.blockSignals(False)
+            else:
+                gui_log_warn("CVScreen", "Dropdown Anomalias não encontrado para atualização")
+                
+        except Exception as e:
+            gui_log_error("CVScreen", f"Erro ao atualizar modelos na GUI: {e}")
+            import traceback
+            traceback.print_exc()
+
+    
+    def _apply_model_selection(self):
+        """Aplica a seleção de modelos e envia para o cv_node via signal."""
+        gui_log_info("CVScreen", f"Aplicando modelos: equip={self._selected_equipment_model}, anom={self._selected_anomaly_model}")
+        
+        if self.signals:
+            self.signals.send_model_selection(self._selected_equipment_model, self._selected_anomaly_model)
+            
+            # Solicita atualização da tela após um breve delay para dar tempo do nó processar
+            if hasattr(self.signals, 'models_requested'):
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(1000, self.signals.models_requested.emit)
+        else:
+            gui_log_warn("CVScreen", "Signals não configurados - não foi possível enviar seleção")
+    
+    def update_expanded_windows(self, pixmap):
+        """
+        Atualiza a janela expandida customizada com novo conteúdo.
+        Sobrescreve o método base para atualizar o _expanded_label.
+        Implementa redimensionamento dinâmico.
+        
+        Args:
+            pixmap: QPixmap para exibir na janela expandida
+        """
+        if not self.expanded_windows:
+            return
+            
+        # Remove janelas fechadas da lista
+        self.expanded_windows = [w for w in self.expanded_windows if w.isVisible()]
+        
+        if not self.expanded_windows:
+            self._expanded_label = None
+            return
+        
+        try:
+            # Verifica se o label ainda é válido (não foi deletado pelo C++)
+            if self._expanded_label and self._expanded_label.isVisible():
+                # Use o tamanho atual do label para responsividade
+                target_size = self._expanded_label.size()
+                
+                # Se o tamanho for muito pequeno (ex: inicialização), usa o tamanho original da imagem
+                if target_size.width() < 10 or target_size.height() < 10:
+                    scaled_pixmap = pixmap
+                else:
+                    scaled_pixmap = pixmap.scaled(
+                        target_size, 
+                        Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                
+                self._expanded_label.setPixmap(scaled_pixmap)
+        except RuntimeError:
+            # Objeto já foi deletado
+            self._expanded_label = None
+        except Exception as e:
+            gui_log_warn(self.screen_name, f"Erro ao atualizar janela expandida: {e}")
     
     def update_processed_image(self, cv_image):
         """
@@ -339,7 +792,7 @@ class CVScreen(BaseScreen):
             content.append("")
         
         return "\n".join(content)
-    
+
     def clear_analysis_logs(self):
         """
         Limpa todos os logs de análise e detecções armazenados.

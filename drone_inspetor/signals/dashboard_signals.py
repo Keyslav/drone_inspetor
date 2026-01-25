@@ -110,6 +110,36 @@ class CVSignals(QObject):
     image_received = pyqtSignal(object)       # Imagem processada pelo CV
     analysis_data_received = pyqtSignal(dict) # Dados de análise CV
     detections_received = pyqtSignal(str)     # Detecções CV
+    model_selected = pyqtSignal(str, str)     # (object_model, anomaly_model) - seleção de modelos
+    models_received = pyqtSignal(dict)        # Recebe lista de modelos e modelos atuais
+    models_requested = pyqtSignal()           # Solicita atualização de modelos
+
+    
+    def __init__(self):
+        """Inicializa sinais de CV."""
+        super().__init__()
+        self._cv_publisher = None
+    
+    def set_cv_publisher(self, cv_publisher):
+        """
+        Configura o publisher de controle CV.
+        
+        Args:
+            cv_publisher: Instância de DashboardCVPublisher para publicação de comandos
+        """
+        self._cv_publisher = cv_publisher
+    
+    def send_model_selection(self, object_model: str, anomaly_model: str):
+        """
+        Publica a seleção de modelos para o cv_node.
+        
+        Args:
+            object_model (str): Nome do arquivo do modelo de objetos
+            anomaly_model (str): Nome do arquivo do modelo de anomalias
+        """
+        if self._cv_publisher:
+            self._cv_publisher.publish_cv_control(object_model, anomaly_model)
+            self.model_selected.emit(object_model, anomaly_model)
 
 class DepthSignals(QObject):
     """
@@ -154,7 +184,7 @@ class DashboardSignals(QObject):
         self.depth = DepthSignals()
         self.mapa = MapaSignals()
     
-    def configure_publishers(self, fsm_publisher):
+    def configure_publishers(self, fsm_publisher, cv_publisher=None):
         """
         Configura os publishers necessários para métodos de publicação de comandos.
         
@@ -162,5 +192,8 @@ class DashboardSignals(QObject):
         
         Args:
             fsm_publisher: Instância de DashboardFSMPublisher para publicação de comandos FSM
+            cv_publisher: Instância de DashboardCVPublisher para publicação de comandos CV
         """
         self.control.set_fsm_publisher(fsm_publisher)
+        if cv_publisher:
+            self.cv.set_cv_publisher(cv_publisher)

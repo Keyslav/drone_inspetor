@@ -50,8 +50,8 @@ cv_node:
   ros__parameters:
     # Intervalos e confiança
     anomaly_photo_interval_seconds: 4.0
-    object_detection_min_confidence: 0.7
-    anomaly_detection_min_confidence: 0.7
+    object_detection_min_confidence: 0.5
+    anomaly_detection_min_confidence: 0.5
     # Formato da foto: "jpg" (menor, com perdas) ou "png" (maior, sem perdas)
     photo_format: "jpg"
     # Qualidade da foto: 1-100 (jpg) ou nível de compressão invertido (png)

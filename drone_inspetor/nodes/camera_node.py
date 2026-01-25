@@ -383,18 +383,30 @@ class CameraNode(Node):
 
 def main(args=None):
     """Função principal do nó."""
+    import signal
+    
     rclpy.init(args=args)
     camera_node = CameraNode()
     
+    # Handler para SIGINT (Ctrl+C) - encerramento limpo
+    def signal_handler(sig, frame):
+        camera_node.get_logger().info("Encerrando camera_node...")
+        rclpy.shutdown()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
     try:
         rclpy.spin(camera_node)
-    except KeyboardInterrupt:
-        pass
+    except Exception:
+        pass  # Ignora exceções durante shutdown
     finally:
-        # Garante que o vídeo seja salvo se o nó for encerrado
-        if camera_node._video_writer is not None:
-            camera_node._stop_video_recording()
-        camera_node.destroy_node()
+        try:
+            # Garante que o vídeo seja salvo se o nó for encerrado
+            if camera_node._video_writer is not None:
+                camera_node._stop_video_recording()
+            camera_node.destroy_node()
+        except Exception:
+            pass
         rclpy.try_shutdown()
 
 

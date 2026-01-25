@@ -115,6 +115,9 @@ class DroneNode(Node):
         super().__init__("drone_node")
         self.get_logger().info("================ INICIALIZANDO DRONE NODE ==============")
 
+        # Flag para controle de shutdown limpo
+        self._is_shutting_down = False
+
         # --- Configuração de QoS (Qualidade de Serviço) ---
         # O PX4 usa BEST_EFFORT para a maioria dos tópicos para reduzir latência
         qos_profile = QoSProfile(
@@ -372,7 +375,7 @@ class DroneNode(Node):
         # --- Estado e Flags ---
         msg.state = self.drone_state.state
         msg.state_name = self.drone_state.state.name
-        msg.state_duration_sec = round(time.time() - self.drone_state.state_entry_time, 2)
+        msg.state_duration_sec = round((self.get_clock().now().nanoseconds / 1e9) - self.drone_state.state_entry_time, 2)
         msg.is_armed = self.drone_state.px4.is_armed
         msg.is_landed = self.drone_state.px4.is_landed
         msg.is_on_trajectory = self.drone_state.on_trajectory
@@ -1137,12 +1140,12 @@ class DroneNode(Node):
             "RTL": 180.0,
         }
         timeout = command_timeouts.get(command, 60.0)
-        start_time = time.time()
+        start_time = self.get_clock().now().nanoseconds / 1e9
         
         # Loop de feedback até o comando completar, cancelar ou timeout
         while not self._is_command_complete(command):
             # Verifica timeout
-            elapsed = time.time() - start_time
+            elapsed = (self.get_clock().now().nanoseconds / 1e9) - start_time
             if elapsed > timeout:
                 self.get_logger().warn(f"Timeout ({timeout}s) aguardando conclusão de {command}")
                 result = DroneCommand.Result()
@@ -1165,12 +1168,20 @@ class DroneNode(Node):
                 return result
             
             # Atualiza e publica feedback
-            current_state = self.drone_state.state
-            feedback_msg.current_state = int(current_state)
-            feedback_msg.state_name = current_state.name
-            feedback_msg.distance_to_target = self._calculate_distance_to_target()
-            feedback_msg.progress_percent = self._calculate_progress_percent(command)
-            goal_handle.publish_feedback(feedback_msg)
+            if self._is_shutting_down:
+                return DroneCommand.Result()
+
+            try:
+                current_state = self.drone_state.state
+                feedback_msg.current_state = int(current_state)
+                feedback_msg.state_name = current_state.name
+                feedback_msg.distance_to_target = self._calculate_distance_to_target()
+                feedback_msg.progress_percent = self._calculate_progress_percent(command)
+                goal_handle.publish_feedback(feedback_msg)
+            except Exception as e:
+                # Ignora erros de feedback se estiver encerrando ou contexto inválido
+                if not self._is_shutting_down:
+                     self.get_logger().warn(f"Erro ao publicar feedback: {e}")
             
             # Aguarda antes do próximo ciclo
             time.sleep(0.1)
@@ -2648,7 +2659,7 @@ class DroneState:
         
         # Estado da máquina de estados
         self.state = DroneStateDescription.OFFBOARD_DESATIVADO
-        self.state_entry_time = time.time()
+        self.state_entry_time = self.node.get_clock().now().nanoseconds / 1e9
         
         # --- Armazenamento de Estado Interno do Drone ---
         # Indica se o drone está publicando setpoints de trajetória de movimento (moving),
@@ -2880,7 +2891,7 @@ class DroneState:
                 # Verificar flag de takeoff
                 if cmd_takeoff_requested:
                     self.on_trajectory = True
-                    self.trajectory_start_time = time.time()
+                    self.trajectory_start_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.command_takeoff_requested = False
                     self.mudar_estado(DroneStateDescription.VOANDO_DECOLANDO)
                     return
@@ -2913,7 +2924,7 @@ class DroneState:
                         self.last_static_yaw_rad = px4_current_yaw_rad
                     
                     self.on_trajectory = True
-                    self.trajectory_start_time = time.time()
+                    self.trajectory_start_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.command_goto_requested = False
                     
                     # GOTO sempre inicia em GIRANDO_INICIO (simplificação do fluxo)
@@ -2923,7 +2934,7 @@ class DroneState:
                 # Verificar flag de goto_focus
                 if cmd_goto_focus_requested:
                     self.on_trajectory = True
-                    self.trajectory_start_time = time.time()
+                    self.trajectory_start_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.command_goto_focus_requested = False
                     # GOTO_FOCUS inicia com rotação para apontar ao focus
                     self.mudar_estado(DroneStateDescription.VOANDO_GIRANDO_COM_FOCO)
@@ -2952,7 +2963,7 @@ class DroneState:
                 # Verificar flag de RTL
                 if cmd_rtl_requested:
                     self.on_trajectory = True
-                    self.trajectory_start_time = time.time()
+                    self.trajectory_start_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.command_rtl_requested = False
                     self.mudar_estado(DroneStateDescription.RETORNANDO_GIRANDO_INICIO)
                     return
@@ -2970,7 +2981,6 @@ class DroneState:
                     self.node.get_logger().info(
                         f"Decolagem completa! Altitude atual: {current_alt:.2f}m"
                     )
-                    self.reseta_variaveis_estado()
                     self.mudar_estado(DroneStateDescription.VOANDO_PRONTO)
             
             case DroneStateDescription.VOANDO_GIRANDO_INICIO:
@@ -2996,7 +3006,7 @@ class DroneState:
                 
                 # Se já está em período de estabilização, apenas verifica tempo
                 if self.yaw_aligned_time is not None:
-                    if (time.time() - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
+                    if ((self.node.get_clock().now().nanoseconds / 1e9) - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
                         # Passou o tempo de estabilização - inicia movimento
                         self.yaw_aligned_time = None  # Reseta para próximo uso
                         self.node.get_logger().info(
@@ -3012,7 +3022,7 @@ class DroneState:
 
                 if abs(yaw_diff) <= self.yaw_tolerance_deg:
                     # Yaw alinhado - inicia período de estabilização
-                    self.yaw_aligned_time = time.time()
+                    self.yaw_aligned_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.node.get_logger().info(
                         f"Yaw de direção alcançado ({local_target_direction_yaw_deg:.1f}°). Aguardando estabilização..."
                     )
@@ -3072,7 +3082,7 @@ class DroneState:
                 
                 # Se já está em período de estabilização, apenas verifica tempo
                 if self.yaw_aligned_time is not None:
-                    if (time.time() - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
+                    if ((self.node.get_clock().now().nanoseconds / 1e9) - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
                         # Passou o tempo de estabilização - inicia movimento
                         self.yaw_aligned_time = None  # Reseta para próximo uso
                         self.node.get_logger().info(
@@ -3095,7 +3105,7 @@ class DroneState:
                 
                 if abs(yaw_diff) <= self.yaw_tolerance_deg:
                     # Yaw alinhado - inicia período de estabilização
-                    self.yaw_aligned_time = time.time()
+                    self.yaw_aligned_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.node.get_logger().info(
                         f"GOTO_FOCUS: Yaw para focus alcançado ({focus_yaw:.1f}°). Aguardando estabilização..."
                     )
@@ -3120,7 +3130,7 @@ class DroneState:
                 if distance_to_target <= self.position_tolerance:
                     # Se já está em período de estabilização, apenas verifica tempo
                     if self.yaw_aligned_time is not None:
-                        if (time.time() - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
+                        if ((self.node.get_clock().now().nanoseconds / 1e9) - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
                             # Passou o tempo de estabilização - trajetória completa
                             self.yaw_aligned_time = None  # Reseta para próximo uso
                             self.node.get_logger().info(
@@ -3136,7 +3146,7 @@ class DroneState:
                         return
                     
                     # Chegou ao destino - inicia período de estabilização
-                    self.yaw_aligned_time = time.time()
+                    self.yaw_aligned_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.node.get_logger().info(
                         f"GOTO_FOCUS: Posição alvo alcançada. Aguardando estabilização..."
                     )
@@ -3151,7 +3161,7 @@ class DroneState:
                 
                 # Se já está em período de estabilização, apenas verifica tempo
                 if self.yaw_aligned_time is not None:
-                    if (time.time() - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
+                    if ((self.node.get_clock().now().nanoseconds / 1e9) - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
                         # Passou o tempo de estabilização - trajetória completa
                         self.yaw_aligned_time = None  # Reseta para próximo uso
                         self.node.get_logger().info(
@@ -3172,7 +3182,7 @@ class DroneState:
                     self.node.get_logger().info(
                         f"Yaw alvo alcançado ({local_target_final_yaw_deg:.1f}°). Aguardando estabilização..."
                     )
-                    self.yaw_aligned_time = time.time()
+                    self.yaw_aligned_time = self.node.get_clock().now().nanoseconds / 1e9
             
             # ============== ESTADOS RTL (Return To Launch) ==============
             
@@ -3184,7 +3194,7 @@ class DroneState:
                 
                 # Se já está em período de estabilização, apenas verifica tempo
                 if self.yaw_aligned_time is not None:
-                    if (time.time() - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
+                    if ((self.node.get_clock().now().nanoseconds / 1e9) - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
                         # Passou o tempo de estabilização - inicia movimento para HOME
                         self.yaw_aligned_time = None  # Reseta para próximo uso
                         self.node.get_logger().info(
@@ -3202,7 +3212,7 @@ class DroneState:
                 
                 if abs(yaw_diff) <= self.yaw_tolerance_deg:
                     # Yaw alinhado - inicia período de estabilização
-                    self.yaw_aligned_time = time.time()
+                    self.yaw_aligned_time = self.node.get_clock().now().nanoseconds / 1e9
                     self.node.get_logger().info(
                         f"RTL: Yaw de direção alcançado ({local_target_direction_yaw_deg:.1f}°). Aguardando estabilização..."
                     )
@@ -3257,7 +3267,7 @@ class DroneState:
                 
                 # Se já está em período de estabilização, apenas verifica tempo
                 if self.yaw_aligned_time is not None:
-                    if (time.time() - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
+                    if ((self.node.get_clock().now().nanoseconds / 1e9) - self.yaw_aligned_time) >= self.yaw_stabilization_delay:
                         # Passou o tempo de estabilização - inicia pouso
                         self.yaw_aligned_time = None  # Reseta para próximo uso
                         self.node.get_logger().info(
@@ -3285,7 +3295,7 @@ class DroneState:
                     self.node.get_logger().info(
                         f"RTL: Yaw HOME alcançado ({self.px4.home_yaw_deg:.1f}°). Aguardando estabilização..."
                     )
-                    self.yaw_aligned_time = time.time()
+                    self.yaw_aligned_time = self.node.get_clock().now().nanoseconds / 1e9
             
             case DroneStateDescription.POUSANDO:
                 
@@ -3314,7 +3324,7 @@ class DroneState:
         old_state = self.state
         if self.state != new_state:
             self.state = new_state
-            self.state_entry_time = time.time()
+            self.state_entry_time = self.node.get_clock().now().nanoseconds / 1e9
 
             # Log da transição
             self.node.get_logger().info("-----------------------------------------------------------------------------------")
@@ -3373,6 +3383,16 @@ class DroneState:
 
 
 
+
+
+
+    def destroy_node(self):
+        """
+        Override do método destroy_node para garantir shutdown seguro.
+        """
+        self._is_shutting_down = True
+        self.get_logger().info("Encerrando drone_node... (Flag _is_shutting_down=True)")
+        super().destroy_node()
 
 
 def main(args=None):

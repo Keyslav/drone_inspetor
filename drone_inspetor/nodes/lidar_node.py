@@ -155,7 +155,7 @@ class LidarNode(Node):
     # ==================== MÉTODOS DE FLAGS COM COOLDOWN ====================
     def _set_flag(self, name: str, value: bool):
         """Seta uma flag com cooldown de 3 segundos."""
-        current_time = time.time()
+        current_time = self.get_clock().now().nanoseconds / 1e9
         
         if value:
             # Setando para True - atualiza timestamp
@@ -311,15 +311,27 @@ class LidarNode(Node):
 
 def main(args=None):
     """Função principal do nó."""
+    import signal
+    
     rclpy.init(args=args)
     lidar_node = LidarNode()
     
+    # Handler para SIGINT (Ctrl+C) - encerramento limpo
+    def signal_handler(sig, frame):
+        lidar_node.get_logger().info("Encerrando lidar_node...")
+        rclpy.shutdown()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
     try:
         rclpy.spin(lidar_node)
-    except KeyboardInterrupt:
-        pass
+    except Exception:
+        pass  # Ignora exceções durante shutdown
     finally:
-        lidar_node.destroy_node()
+        try:
+            lidar_node.destroy_node()
+        except Exception:
+            pass
         rclpy.try_shutdown()
 
 

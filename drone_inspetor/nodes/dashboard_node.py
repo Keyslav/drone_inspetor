@@ -129,7 +129,7 @@ class DashboardNode(Node):
         
         # Configura os publishers nos signals para permitir publicação de comandos
         # Isso permite que a GUI publique comandos através dos signals
-        self.signals.configure_publishers(self.fsm_publisher)
+        self.signals.configure_publishers(self.fsm_publisher, self.cv_publisher)
 
         self.get_logger().info("Nó do Dashboard inicializado com subscribers e publishers modulares.")
 

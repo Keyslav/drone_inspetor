@@ -32,6 +32,7 @@ ALGORITMO:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 from std_msgs.msg import String
@@ -44,8 +45,9 @@ import time
 from ament_index_python.packages import get_package_share_directory
 
 # Importação das mensagens ROS customizadas
-from drone_inspetor_msgs.msg import CVDetectionMSG, CVDetectionItemMSG, FSMStateMSG
-from drone_inspetor_msgs.srv import CVDetectionSRV, RecordDetectionsSRV, EnableAnomalyDetectionSRV
+from drone_inspetor_msgs.msg import CVDetectionMSG, CVDetectionItemMSG, FSMStateMSG, CVControlMSG
+from drone_inspetor_msgs.srv import CVDetectionSRV, RecordDetectionsSRV, EnableAnomalyDetectionSRV, CVModelsSRV
+import json
 
 
 class CVNode(Node):
@@ -72,6 +74,15 @@ class CVNode(Node):
         """
         super().__init__("cv_node")
         self.get_logger().info("Nó CVNode iniciado.")
+        
+        # Flag para controle de shutdown limpo
+        self._is_shutting_down = False
+        
+        # ==================== GRUPOS DE CALLBACK (CONCORRÊNCIA) ====================
+        # Grupos separados para evitar que serviços longos (com loops de espera)
+        # bloqueiem o processamento de imagens (deadlock).
+        self.camera_cb_group = MutuallyExclusiveCallbackGroup()
+        self.service_cb_group = MutuallyExclusiveCallbackGroup()
         
         # ==================== INICIALIZAÇÃO ============================================================
         # Cria instância do CvBridge para conversão entre formatos ROS e OpenCV
@@ -136,13 +147,35 @@ class CVNode(Node):
         
         # ==================== CARREGAMENTO DOS MODELOS YOLO ===============================================
         # Obtém o caminho do diretório de instalação do pacote
-        pkg_share_dir = get_package_share_directory('drone_inspetor')
+        self._pkg_share_dir = get_package_share_directory('drone_inspetor')
+        
+        # Carrega configuração de modelos disponíveis do models.json
+        self._available_models = self._load_models_json()
+        
+        # Nomes dos arquivos dos modelos atualmente carregados
+        self._current_object_model_file = ""
+        self._current_anomaly_model_file = ""
+        
+        # Define modelos iniciais baseados no primeiro disponível de cada tipo
+        for model in self._available_models:
+            filename = model.get('file_name', '')
+            obj_type = model.get('object_type', '')
+            
+            if not self._current_object_model_file and obj_type == 'equipment':
+                self._current_object_model_file = filename
+            
+            if not self._current_anomaly_model_file and obj_type == 'anomaly':
+                self._current_anomaly_model_file = filename
+            
+            # Se já encontrou ambos, para
+            if self._current_object_model_file and self._current_anomaly_model_file:
+                break
         
         # Modelo 1: Detecção de objetos da plataforma (Flare, roldanas, etc.)
-        objects_model_path = os.path.join(pkg_share_dir, 'redes_treinadas', 'plataform_objects_yolo8x_detection.pt')
+        objects_model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', self._current_object_model_file)
         
         # Modelo 2: Detecção de anomalias (corrosão) - usado em crops dos objetos detectados
-        anomalies_model_path = os.path.join(pkg_share_dir, 'redes_treinadas', 'corrosion_yolo8n_detection.pt')
+        anomalies_model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', self._current_anomaly_model_file)
         
         import torch
         if torch.cuda.is_available():
@@ -187,7 +220,8 @@ class CVNode(Node):
             CompressedImage,
             "/drone_inspetor/externo/camera/compressed",
             self.image_callback,
-            qos_sensor_data
+            qos_sensor_data,
+            callback_group=self.camera_cb_group
         )
         self.get_logger().info(f"Assinado tópico externo: {self.compressed_image_subscription.topic_name}")
         
@@ -234,7 +268,8 @@ class CVNode(Node):
         self.detection_service = self.create_service(
             CVDetectionSRV,
             '/drone_inspetor/interno/cv_node/srv/detection',
-            self.detection_service_callback
+            self.detection_service_callback,
+            callback_group=self.service_cb_group
         )
         self.get_logger().info("Service de detecção criado: /drone_inspetor/interno/cv_node/srv/detection")
         
@@ -242,7 +277,8 @@ class CVNode(Node):
         self.record_service = self.create_service(
             RecordDetectionsSRV,
             '/drone_inspetor/interno/cv_node/srv/record_detections',
-            self.record_service_callback
+            self.record_service_callback,
+            callback_group=self.service_cb_group
         )
         self.get_logger().info("Service de gravação criado: /drone_inspetor/interno/cv_node/srv/record_detections")
         
@@ -250,11 +286,159 @@ class CVNode(Node):
         self.anomaly_detection_service = self.create_service(
             EnableAnomalyDetectionSRV,
             '/drone_inspetor/interno/cv_node/srv/enable_anomaly_detection',
-            self.enable_anomaly_detection_callback
+            self.enable_anomaly_detection_callback,
+            callback_group=self.service_cb_group
         )
         self.get_logger().info("Service de anomalias criado: /drone_inspetor/interno/cv_node/srv/enable_anomaly_detection")
+        
+        # Service para listar modelos disponíveis
+        self.cv_models_service = self.create_service(
+            CVModelsSRV,
+            '/drone_inspetor/interno/cv_node/srv/list_models',
+            self.cv_models_service_callback,
+            callback_group=self.service_cb_group
+        )
+        self.get_logger().info("Service de modelos criado: /drone_inspetor/interno/cv_node/srv/list_models")
+
+        # ==================== SUBSCRIBER PARA CONTROLE DE MODELOS ====================
+        # QoS para comandos (RELIABLE para garantir entrega)
+        qos_commands = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
+        
+        # Subscriber para receber seleção de modelos do dashboard
+        self.cv_control_sub = self.create_subscription(
+            CVControlMSG,
+            "/drone_inspetor/interno/dashboard_node/cv_node/cv_control",
+            self._cv_control_callback,
+            qos_commands
+        )
+        self.get_logger().info(f"Subscriber CVControlMSG criado: {self.cv_control_sub.topic_name}")
 
         self.get_logger().info("CVNode inicializado com sucesso.")
+
+    def destroy_node(self):
+        """
+        Override do método destroy_node para garantir shutdown limpo.
+        """
+        self._is_shutting_down = True
+        self.get_logger().info("Encerrando cv_node... (Flag _is_shutting_down=True)")
+        
+        # Libera recursos de vídeo se estiver gravando
+        if self._video_writer:
+            self._video_writer.release()
+            self._video_writer = None
+            
+        super().destroy_node()
+
+    
+    # ==================== MÉTODOS DE GERENCIAMENTO DE MODELOS ====================
+    
+    def _load_models_json(self):
+        """
+        Carrega a lista de modelos disponíveis do arquivo models.json.
+        Adapta a nova estrutura hierárquica (equipment/anomaly) para uma lista plana
+        com o campo 'object_type' injetado, mantendo compatibilidade com o restante do sistema.
+        
+        Returns:
+            list: Lista de dicionários com informações dos modelos.
+        """
+        try:
+            models_json_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', 'models.json')
+            
+            with open(models_json_path, 'r') as f:
+                data = json.load(f)
+            
+            # Suporta tanto a estrutura antiga (lista) quanto a nova (dict)
+            raw_models = data.get('models', {})
+            
+            flat_models = []
+            
+            if isinstance(raw_models, list):
+                # Estrutura antiga: já é uma lista plana
+                flat_models = raw_models
+            elif isinstance(raw_models, dict):
+                # Nova estrutura: chaves 'equipment' e 'anomaly'
+                equipment_list = raw_models.get('equipment', [])
+                anomaly_list = raw_models.get('anomaly', [])
+                
+                # Injeta object_type e adiciona à lista plana
+                for m in equipment_list:
+                    m['object_type'] = 'equipment'
+                    flat_models.append(m)
+                
+                for m in anomaly_list:
+                    m['object_type'] = 'anomaly'
+                    flat_models.append(m)
+            
+            self.get_logger().info(f"Models.json carregado: {len(flat_models)} modelos disponíveis")
+            return flat_models
+        except Exception as e:
+            self.get_logger().error(f"Erro ao carregar models.json: {e}")
+            return []
+    
+    def _cv_control_callback(self, msg: CVControlMSG):
+        """
+        Callback para receber comandos de controle de modelos do dashboard.
+        
+        Args:
+            msg (CVControlMSG): Mensagem com modelos selecionados
+        """
+        self.get_logger().info(f"CVControlMSG recebido: obj={msg.object_detection_model}, anom={msg.anomaly_detection_model}")
+        
+        # Recarrega modelo de objetos se diferente do atual
+        if msg.object_detection_model and msg.object_detection_model != self._current_object_model_file:
+            self._load_object_model(msg.object_detection_model)
+        
+        # Recarrega modelo de anomalias se diferente do atual
+        if msg.anomaly_detection_model and msg.anomaly_detection_model != self._current_anomaly_model_file:
+            self._load_anomaly_model(msg.anomaly_detection_model)
+    
+    def _load_object_model(self, model_filename: str):
+        """
+        Carrega um novo modelo de detecção de objetos.
+        
+        Args:
+            model_filename (str): Nome do arquivo do modelo (ex: 'plataform_objects_yolo8n_detection.pt')
+        """
+        model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', model_filename)
+        
+        if not os.path.exists(model_path):
+            self.get_logger().error(f"Modelo de objetos não encontrado: {model_path}")
+            return
+        
+        try:
+            self.get_logger().info(f"🔄 Carregando modelo de objetos: {model_filename}...")
+            self.yolo_model_objects = YOLO(model_path)
+            self._current_object_model_file = model_filename
+            self.get_logger().info(f"✅ Modelo de objetos atualizado: {model_filename}")
+            self.get_logger().info(f"   Classes disponíveis: {self.yolo_model_objects.names}")
+        except Exception as e:
+            self.get_logger().error(f"Erro ao carregar modelo de objetos {model_filename}: {e}")
+    
+    def _load_anomaly_model(self, model_filename: str):
+        """
+        Carrega um novo modelo de detecção de anomalias.
+        
+        Args:
+            model_filename (str): Nome do arquivo do modelo (ex: 'corrosion_yolo8x_detection.pt')
+        """
+        model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', model_filename)
+        
+        if not os.path.exists(model_path):
+            self.get_logger().error(f"Modelo de anomalias não encontrado: {model_path}")
+            return
+        
+        try:
+            self.get_logger().info(f"🔄 Carregando modelo de anomalias: {model_filename}...")
+            self.yolo_model_anomalies = YOLO(model_path)
+            self._current_anomaly_model_file = model_filename
+            self.get_logger().info(f"✅ Modelo de anomalias atualizado: {model_filename}")
+        except Exception as e:
+            self.get_logger().error(f"Erro ao carregar modelo de anomalias {model_filename}: {e}")
 
     # ==================== CALLBACKS INTERNOS (PROCESSAMENTO DE IMAGENS DA CÂMERA) ====================
 
@@ -272,6 +456,10 @@ class CVNode(Node):
             msg (sensor_msgs.msg.CompressedImage): Mensagem de imagem comprimida recebida.
         """
         try:
+            # Verifica se o nó está encerrando antes de processar
+            if self._is_shutting_down:
+                return
+
             # Converte mensagem CompressedImage ROS para imagem OpenCV no formato BGR8
             cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
             
@@ -285,7 +473,10 @@ class CVNode(Node):
                 processed_msg = self.bridge.cv2_to_compressed_imgmsg(annotated_image, dst_format="jpeg")
                 # Preserva o header original (timestamp, frame_id, etc.)
                 processed_msg.header = msg.header
-                self.processed_image_publisher.publish(processed_msg)
+                
+                # Double-check antes de publicar
+                if not self._is_shutting_down:
+                    self.processed_image_publisher.publish(processed_msg)
             except Exception as e:
                 self.get_logger().error(f"Erro ao publicar imagem processada: {e}")
             
@@ -308,7 +499,12 @@ class CVNode(Node):
                 detection_items.append(item)
             
             detection_msg.detections = detection_items
-            self.detection_publisher.publish(detection_msg)
+            detection_msg.detections = detection_items
+            
+            # Double-check antes de publicar
+            if not self._is_shutting_down:
+                self.detection_publisher.publish(detection_msg)
+
             
             # Armazena as últimas detecções para o service
             self._last_detections = detections
@@ -433,14 +629,14 @@ class CVNode(Node):
         current_time = time.time()
         
         # Só salva se passou o intervalo configurado desde a última foto
-        if current_time - self._last_anomaly_photo_time < self._anomaly_photo_interval:
+        if (self.get_clock().now().nanoseconds / 1e9) - self._last_anomaly_photo_time < self._anomaly_photo_interval:
             return
         
         if not self._photos_folder or not os.path.exists(self._photos_folder):
             return
         
         try:
-            self._last_anomaly_photo_time = current_time
+            self._last_anomaly_photo_time = self.get_clock().now().nanoseconds / 1e9
             self._photo_counter += 1
             seq_momento = self._photo_counter
             
@@ -500,7 +696,7 @@ class CVNode(Node):
         self.get_logger().info(f"Service de detecção chamado: buscando '{object_name}' por {timeout}s")
         
         import time
-        start_time = time.time()
+        start_time = self.get_clock().now().nanoseconds / 1e9
         found = False
         best_detection = None
 
@@ -508,7 +704,7 @@ class CVNode(Node):
         self.get_logger().info(f"Requested: {object_name}")
         
         # Monitora detecções por timeout segundos
-        while time.time() - start_time < timeout:
+        while (self.get_clock().now().nanoseconds / 1e9) - start_time < timeout:
             # Faz cópia para evitar erro se lista for modificada durante iteração
             detections_snapshot = self._last_detections.copy()
             for det in detections_snapshot:
@@ -654,6 +850,27 @@ class CVNode(Node):
         
         return response
 
+    def cv_models_service_callback(self, request, response):
+        """
+        Callback do service para listar modelos disponíveis e atuais.
+        
+        Args:
+            request: CVModelsSRV.Request (vazio)
+            response: CVModelsSRV.Response com listas de modelos e modelos atuais
+        """
+        try:
+            # Retorna a lista completa de modelos como JSON string
+            response.models_data_json = json.dumps(self._available_models)
+            response.current_object_model = self._current_object_model_file
+            response.current_anomaly_model = self._current_anomaly_model_file
+        except Exception as e:
+            self.get_logger().error(f"Erro ao serializar modelos: {e}")
+            response.models_data_json = "[]"
+            response.current_object_model = ""
+            response.current_anomaly_model = ""
+        
+        return response
+
     # ==================== MÉTODOS DE PROCESSAMENTO (ALGORITMOS DE VISÃO COMPUTACIONAL) ================
 
     def detect_objects(self, image):
@@ -772,7 +989,11 @@ class CVNode(Node):
                                 anom_conf = anom_boxes.conf.cpu().numpy()
                                 anom_cls = anom_boxes.cls.cpu().numpy().astype(int)
                                 
-                                for (ax1, ay1, ax2, ay2), anom_confidence, anom_class_id in zip(anom_xyxy, anom_conf, anom_cls):
+                                anom_segments = None
+                                if anomaly_results[0].masks is not None:
+                                    anom_segments = anomaly_results[0].masks.xy
+
+                                for idx, ((ax1, ay1, ax2, ay2), anom_confidence, anom_class_id) in enumerate(zip(anom_xyxy, anom_conf, anom_cls)):
                                     if anom_confidence <= self._anomaly_min_confidence:
                                         continue
                                     
@@ -784,11 +1005,33 @@ class CVNode(Node):
                                     ax2_abs = int(ax2) + x1i
                                     ay2_abs = int(ay2) + y1i
                                     
-                                    # Desenha bounding box da anomalia (VERMELHO)
-                                    cv2.rectangle(annotated_image, (ax1_abs, ay1_abs), (ax2_abs, ay2_abs), (0, 0, 255), 2)
-                                    anom_label = f"{anom_class_name}: {float(anom_confidence):.2f}"
-                                    cv2.putText(annotated_image, anom_label, (ax1_abs, ay1_abs - 5),
-                                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+                                    has_mask = False
+                                    # Se houver máscaras de segmentação, desenha elas
+                                    if anom_segments is not None and len(anom_segments) > idx:
+                                        segment = anom_segments[idx]
+                                        if segment.size > 0:
+                                            has_mask = True
+                                            # Copia para não alterar o original se for reusado (embora aqui seja novo por frame)
+                                            seg_global = segment.copy()
+                                            # Ajusta coordenadas (x += x1i, y += y1i)
+                                            seg_global[:, 0] += x1i
+                                            seg_global[:, 1] += y1i
+                                            seg_global = seg_global.astype(np.int32)
+                                            
+                                            # Desenha contorno preenchido com transparência
+                                            overlay = annotated_image.copy()
+                                            cv2.fillPoly(overlay, [seg_global], (0, 0, 255))
+                                            cv2.addWeighted(overlay, 0.4, annotated_image, 0.6, 0, annotated_image)
+                                            # Desenha borda sólida
+                                            cv2.drawContours(annotated_image, [seg_global], -1, (0, 0, 255), 2)
+                                    
+                                    # Se NÃO tiver máscara, desenha bounding box e texto (fallback)
+                                    if not has_mask:
+                                        # Desenha bounding box da anomalia (VERMELHO)
+                                        cv2.rectangle(annotated_image, (ax1_abs, ay1_abs), (ax2_abs, ay2_abs), (0, 0, 255), 2)
+                                        anom_label = f"{anom_class_name}: {float(anom_confidence):.2f}"
+                                        cv2.putText(annotated_image, anom_label, (ax1_abs, ay1_abs - 5),
+                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                                     
                                     # Adiciona anomalia à lista do objeto
                                     detection["anomalies"].append({
@@ -818,15 +1061,34 @@ class CVNode(Node):
 
 def main(args=None):
     """Função principal do nó."""
+    import signal
+    from rclpy.executors import MultiThreadedExecutor, ExternalShutdownException
+    
     rclpy.init(args=args)
     cv_node = CVNode()
     
-    try:
-        rclpy.spin(cv_node)
-    except KeyboardInterrupt:
+    # Usa MultiThreadedExecutor para evitar deadlock entre serviços e callbacks
+    executor = MultiThreadedExecutor()
+    executor.add_node(cv_node)
+    
+    # Handler para SIGINT (Ctrl+C) - encerramento limpo
+    def signal_handler(sig, frame):
+        cv_node.get_logger().info("Encerrando cv_node...")
+        # Encerramento forçado se necessário, mas o executor normalmente cuida disso
+        # rclpy.shutdown() deve ser chamado no final
         pass
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    try:
+        executor.spin()
+    except (KeyboardInterrupt, ExternalShutdownException, Exception):
+        pass  # Ignora exceções durante shutdown
     finally:
-        cv_node.destroy_node()
+        try:
+            cv_node.destroy_node()
+        except Exception:
+            pass
         rclpy.try_shutdown()
 
 if __name__ == "__main__":

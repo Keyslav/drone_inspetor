@@ -553,6 +553,12 @@ class FSMState:
         # Variáveis do drone usadas para decisões críticas
         drone_state = self._node.drone.state
         drone_current_yaw_deg = self._node.drone.current_yaw_deg
+        
+        # === BLOCKER: AGUARDA PRIMEIRO CONTATO COM DRONE_NODE ===
+        # Se nunca recebeu mensagem do drone_state, não faz nada (nem health check, nem lógica)
+        if self._node.essencial_topics["drone_state"]["last_received"] == 0.0:
+            self._node.get_logger().info("Aguardando conexão com drone_node...", throttle_duration_sec=5.0)
+            return
 
         # Verifica se o drone saiu do modo OFFBOARD (via estado do drone)
         if current_state != FSMStateDescription.DESATIVADO:
@@ -727,14 +733,18 @@ class FSMState:
                 else:
                     # Se não estamos esperando action E arrival_time é 0, precisamos ir para o ponto.
                     # (Ou falhou anteriormente, e vamos tentar de novo)
-                    
                     cmd = ponto_atual.get('command', 'GOTO')
                     self._node.get_logger().info(f"Navegando para ponto {self.ponto_de_inspecao_indice_atual + 1}/{len(pontos)} ({cmd})...")
                     
                     if cmd == 'GOTO':
+                        # Trata yaw: se for None (null no JSON), envia NaN para manter yaw atual
+                        yaw_value = ponto_atual.get('yaw')
+                        if yaw_value is None:
+                            yaw_value = float('nan')
+                        
                         self._node.send_drone_action(
                             {"command": "GOTO", "lat": ponto_atual['lat'], "lon": ponto_atual['lon'], 
-                             "alt": ponto_atual['alt'], "yaw": ponto_atual.get('yaw', 0.0)}
+                             "alt": ponto_atual['alt'], "yaw": yaw_value}
                         )
                     elif cmd == 'GOTO_FOCUS':
                         self._node.send_drone_action(
@@ -770,7 +780,7 @@ class FSMState:
                 if not self._detection_started:
                     # Marca que a detecção foi iniciada
                     self._detection_started = True
-                    self._detection_start_time = time.time()
+                    self._detection_start_time = self._node.get_clock().now().nanoseconds / 1e9
                     
                     # Solicita detecção via service
                     if objeto_alvo and self._node._cv_detection_client.wait_for_service(timeout_sec=1.0):
@@ -785,7 +795,7 @@ class FSMState:
                     return
                 
                 # === FASE 2: Aguardar resposta da detecção ===
-                elapsed = time.time() - self._detection_start_time
+                elapsed = (self._node.get_clock().now().nanoseconds / 1e9) - self._detection_start_time
                 if elapsed < 10.0 and self._node._detection_bbox_center is None:  # Aguarda até 10s para resposta
                     self._node.get_logger().info(f"Aguardando detecção... {elapsed:.1f}s", throttle_duration_sec=1)
                     return
@@ -826,7 +836,7 @@ class FSMState:
                 # === FASE 1: Iniciar escaneamento (uma vez ao entrar no estado) ===
                 if not self._scanning_started:
                     self._scanning_started = True
-                    self._scanning_start_time = time.time()
+                    self._scanning_start_time = self._node.get_clock().now().nanoseconds / 1e9
                     self._node.get_logger().info("🔍 Iniciando escaneamento (5 segundos)...")
                     
                     # Inicia gravação via service
@@ -845,7 +855,7 @@ class FSMState:
                     return
                 
                 # === FASE 2: Aguarda 5 segundos ===
-                elapsed = time.time() - self._scanning_start_time
+                elapsed = (self._node.get_clock().now().nanoseconds / 1e9) - self._scanning_start_time
                 if elapsed < 5.0:
                     self._node.get_logger().info(
                         f"🔍 Escaneando... {5.0 - elapsed:.1f}s restantes", 
@@ -1025,7 +1035,7 @@ class FSMNode(Node):
         self.essencial_topics = {
             "drone_state": {"last_received": 0.0, "description": "Estado do drone_node"},
         }
-        self.topic_health_timeout = 2.0
+        self.topic_health_timeout = 5.0
 
         # ==================================================================
         # PUBLISHERS
@@ -1152,16 +1162,15 @@ class FSMNode(Node):
         Returns:
             bool: True se todos os tópicos essenciais estão saudáveis, False caso contrário.
         """
-        current_time = time.time()
+        current_time = self.get_clock().now().nanoseconds / 1e9
         unhealthy_topics = []
         
         for topic_name, topic_info in self.essencial_topics.items():
             time_since_last = current_time - topic_info["last_received"]
             
-            # Verifica se nunca recebeu ou está desatualizado
-            if topic_info["last_received"] == 0.0:
-                unhealthy_topics.append((topic_name, "nunca recebeu dados"))
-            elif time_since_last > self.topic_health_timeout:
+            # Se nunca recebeu (0.0), ignoramos na verificação de saúde por timeout
+            # (O bloqueio de inicialização deve ser feito no verifica_mudanca_de_estado)
+            if topic_info["last_received"] > 0.0 and time_since_last > self.topic_health_timeout:
                 unhealthy_topics.append((topic_name, f"sem dados há {time_since_last:.1f}s"))
         
         if unhealthy_topics:
@@ -1206,7 +1215,7 @@ class FSMNode(Node):
         
         # Marca a ação como em progresso
         self._action_in_progress = True
-        self._action_start_time = time.time()
+        self._action_start_time = self.get_clock().now().nanoseconds / 1e9
         
         # Verifica se o action server está disponível
         if not self._action_client.wait_for_server(timeout_sec=1.0):
@@ -1282,7 +1291,7 @@ class FSMNode(Node):
         self._last_action_feedback = feedback
         
         # Atualiza o tempo do último feedback (usado para timeout)
-        self._last_action_feedback_time = time.time()
+        self._last_action_feedback_time = self.get_clock().now().nanoseconds / 1e9
         
         self.get_logger().debug(
             f"Feedback Action: estado = {feedback.state_name}, "
@@ -1311,7 +1320,7 @@ class FSMNode(Node):
             # Se o comando foi bem sucedido e estamos inspecionando, assumimos chegada ao waypoint
             if self.fsm_state.state == FSMStateDescription.EXECUTANDO_INSPECIONANDO:
                 self.get_logger().info("Waypoint alcançado (Action Success)! Iniciando contagem de tempo.")
-                self.fsm_state.ponto_de_inspecao_tempo_de_chegada = time.time()
+                self.fsm_state.ponto_de_inspecao_tempo_de_chegada = self.get_clock().now().nanoseconds / 1e9
                 
         else:
             self.get_logger().warn(f"Action falhou: {result.message}")
@@ -1389,7 +1398,7 @@ class FSMNode(Node):
         # Usa o tempo do último feedback para calcular o timeout
         # Se ainda não recebeu feedback, usa o tempo de início da action
         reference_time = self._last_action_feedback_time if self._last_action_feedback_time > 0 else self._action_start_time
-        elapsed = time.time() - reference_time
+        elapsed = (self.get_clock().now().nanoseconds / 1e9) - reference_time
         
         if elapsed > self._action_timeout:
             self.get_logger().error(
@@ -1494,7 +1503,7 @@ class FSMNode(Node):
             msg: Mensagem DroneStateMSG do drone_node
         """
         # Atualiza timestamp do tópico essencial
-        self.essencial_topics["drone_state"]["last_received"] = time.time()
+        self.essencial_topics["drone_state"]["last_received"] = self.get_clock().now().nanoseconds / 1e9
         
         # Atualiza dados do drone através da classe
         self.drone.update_from_msg(msg)
@@ -1513,15 +1522,27 @@ class FSMNode(Node):
 
 def main(args=None):
     """Função principal do nó."""
+    import signal
+    
     rclpy.init(args=args)
     fsm_node = FSMNode()
     
+    # Handler para SIGINT (Ctrl+C) - encerramento limpo
+    def signal_handler(sig, frame):
+        fsm_node.get_logger().info("Encerrando fsm_node...")
+        rclpy.shutdown()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    
     try:
         rclpy.spin(fsm_node)
-    except KeyboardInterrupt:
-        pass
+    except Exception:
+        pass  # Ignora exceções durante shutdown
     finally:
-        fsm_node.destroy_node()
+        try:
+            fsm_node.destroy_node()
+        except Exception:
+            pass
         rclpy.try_shutdown()
 
 if __name__ == "__main__":
