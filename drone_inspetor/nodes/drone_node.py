@@ -628,13 +628,13 @@ class DroneNode(Node):
         )
         
         # Só chama ajuste de trajetória se tiver obstáculo próximo (1m lados OU 0.5m abaixo)
-        """ if self.drone_state.obstacles.have_obstacles_1 or self.drone_state.obstacles.have_down_obstacles_05:
+        if self.drone_state.obstacles.have_obstacles_1 or self.drone_state.obstacles.have_down_obstacles_05:
             next_x, next_y, next_z = self.drone_state.obstacles.calculate_trajectory_adjustment(
                 self.drone_state.px4.local_position.x,
                 self.drone_state.px4.local_position.y,
                 self.drone_state.px4.local_position.z,
                 next_x, next_y, next_z
-            ) """
+            )
 
         # Cria mensagem de trajetória
         trajectory_msg = TrajectorySetpoint()

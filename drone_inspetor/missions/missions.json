@@ -122,11 +122,12 @@
         ]
       },
       {
-        "command": "GOTO",
+        "command": "GOTO_FOCUS",
         "lat": -22.633990,
         "lon": -40.093330,
         "alt": 104.0,
-        "yaw": null,
+        "focus_lat": -22.633890,
+        "focus_lon": -40.093330,
         "ponto_de_deteccao": false
       }
     ]
