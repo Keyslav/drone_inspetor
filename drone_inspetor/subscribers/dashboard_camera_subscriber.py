@@ -1,8 +1,7 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool
 from drone_inspetor.signals.dashboard_signals import CameraSignals
+from drone_inspetor.ros_interfaces import Topics, create_subscription_from
 
 from cv_bridge import CvBridge
 
@@ -16,38 +15,15 @@ class DashboardCameraSubscriber:
         self.signals = signals
         self.bridge = CvBridge()
 
-        # ==================== CONFIGURAÇÃO DE QoS ========================
-        # QoS para dados de sensores (imagens)
-        qos_sensor_data = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
-        
-        # QoS para status (RELIABLE para garantir entrega)
-        qos_status = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
-
         # Subscriber para imagens da câmera
-        self.camera_image_sub = self.DashboardNode.create_subscription(
-            CompressedImage,
-            "/drone_inspetor/interno/camera_node/compressed",
-            self.camera_image_callback,
-            qos_sensor_data
+        self.camera_image_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.CAMERA_COMPRESSED, self.camera_image_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.camera_image_sub.topic_name}")
-        
+
         # Subscriber para status de gravação
-        self.recording_status_sub = self.DashboardNode.create_subscription(
-            Bool,
-            "/drone_inspetor/interno/camera_node/recording",
-            self.recording_status_callback,
-            qos_status
+        self.recording_status_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.CAMERA_RECORDING, self.recording_status_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.recording_status_sub.topic_name}")
 

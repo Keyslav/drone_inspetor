@@ -104,11 +104,11 @@ def generate_launch_description():
         #arguments=["--ros-args", "--log-level", "DEBUG"]
     )
 
-    # Nó da Máquina de Estados Finita (FSM)
-    fsm_node = Node(
+    # Nó da Máquina de Estados de Missão
+    mission_node = Node(
         package="drone_inspetor",
-        executable="fsm_node",
-        name="fsm_node",
+        executable="mission_node",
+        name="mission_node",
         output="screen",
         emulate_tty=True,
         parameters=[params_file, {'use_sim_time': param_use_sim_time}],
@@ -131,11 +131,11 @@ def generate_launch_description():
     return LaunchDescription([
         ros_gz_bridge_node,
         ros_gz_image_node,
-        camera_node,
-        cv_node,
-        depth_node,
-        lidar_node,
+        #camera_node,
+        #cv_node,
+        #depth_node,
+        #lidar_node,
         drone_node,
-        fsm_node,
-        dashboard_node,
+        #mission_node,
+        #dashboard_node,
     ])

@@ -2,7 +2,7 @@
 <package format="3">
   <name>drone_inspetor</name>
   <version>0.0.0</version>
-  <description>Pacote ROS2 para o dashboard de monitoramento do drone, com arquitetura modular e integração de controles, FSM e mapa.</description>
+  <description>Pacote ROS2 para o dashboard de monitoramento do drone, com arquitetura modular e integração de controles, missão e mapa.</description>
   <maintainer email="user@todo.todo">user</maintainer>
   <license>Apache-2.0</license>
 

@@ -9,17 +9,17 @@ do sistema. A GUI é organizada em uma arquitetura modular com telas dedicadas p
 cada sensor e gerenciadores para funcionalidades específicas.
 
 ARQUITETURA:
-- Layout principal dividido em duas áreas: sensores (grid 2x2) e controles (mapa, FSM, controles)
+- Layout principal dividido em duas áreas: sensores (grid 2x2) e controles (mapa, missão, controles)
 - Comunicação com ROS2 através de sinais PyQt6 e interface de comandos
 - Telas modulares para cada sensor (CameraScreen, CVScreen, DepthScreen, LidarScreen)
-- Gerenciadores modulares para funcionalidades (MapaManager, FSMManager, ControlesManager)
+- Gerenciadores modulares para funcionalidades (MapaManager, MissionManager, ControlesManager)
 - Tema escuro personalizado para melhor experiência visual
 - Separação completa entre GUI e nó ROS2 através de sinais e interface de comandos
 
 COMPONENTES:
 - Grid 2x2 de telas de sensores (câmera, CV, profundidade, LiDAR)
 - Área de controles com mapa GPS interativo
-- Visualização hierárquica da máquina de estados finitos (FSM)
+- Visualização hierárquica da máquina de estados de missão
 - Painel de controles de missão e simulação
 =================================================================================================
 """
@@ -40,11 +40,11 @@ from .depth_screen import DepthScreen
 from .lidar_screen import LidarScreen
 
 # Importações de utilitários e gerenciadores
-# Utilitários: estilos comuns, tópicos ROS
-from .utils import COMMON_STYLES, ROS_TOPICS
+# Utilitários: estilos comuns
+from .utils import COMMON_STYLES
 # Gerenciadores: controlam funcionalidades específicas do dashboard
 from .controles import ControlesManager
-from .fsm import FSMManager
+from .mission import MissionManager
 from .mapa import MapaManager
 
 # Importação de sinais PyQt6 para comunicação assíncrona com ROS2
@@ -105,8 +105,8 @@ class DashboardGUI(QWidget):
         # Gerenciador do mapa GPS interativo
         self.mapa_manager = MapaManager(signals=self.signals.mapa)
         
-        # Gerenciador da máquina de estados finitos (FSM)
-        self.fsm_manager = FSMManager(signals=self.signals.fsm)
+        # Gerenciador da máquina de estados de missão
+        self.mission_manager = MissionManager(signals=self.signals.mission)
         
         # Gerenciador de controles de missão e simulação
         # Os sinais já contêm métodos de publicação de comandos incorporados
@@ -261,7 +261,7 @@ class DashboardGUI(QWidget):
         area_a = self.setup_sensor_grid()
         main_splitter.addWidget(area_a)
         
-        # Área B: Controles, FSM e Mapa.
+        # Área B: Controles, Missão e Mapa.
         area_b = self.setup_control_area()
         main_splitter.addWidget(area_b)
         
@@ -408,16 +408,14 @@ class DashboardGUI(QWidget):
         self.signals.depth.statistics_received.connect(self.depth_statistics_update)
         self.signals.depth.proximity_alert_received.connect(self.proximity_alert_update)
 
-        # Conexões para LiDAR: Atualiza os dados consolidados do LiDAR (novo sinal)
+        # Conexões para LiDAR: Atualiza os dados consolidados do LiDAR
         self.signals.lidar.lidar_data_received.connect(self.lidar_data_update)
-        # Conexões legadas (mantidas para compatibilidade, mas não usadas com a nova mensagem)
-        # self.signals.lidar.point_vector_received.connect(self.lidar_point_vector_update)
         self.signals.lidar.statistics_received.connect(self.lidar_statistics_update)
         self.signals.lidar.obstacle_detections_received.connect(self.lidar_obstacle_detections_update)
 
-        # Conexões para FSM: Atualiza o estado da Máquina de Estados Finitos.
-        self.signals.fsm.fsm_state_updated.connect(self.fsm_manager.update_state)
-        self.signals.fsm.fsm_state_updated.connect(self.handle_fsm_state_for_map)
+        # Conexões para Missão: Atualiza o estado da Máquina de Estados de Missão.
+        self.signals.mission.mission_state_updated.connect(self.mission_manager.update_state)
+        self.signals.mission.mission_state_updated.connect(self.handle_mission_state_for_map)
 
         # Conexão única para estado do drone no mapa
         # O sinal drone_state_updated contém todos os campos de DroneStateMSG
@@ -500,12 +498,6 @@ class DashboardGUI(QWidget):
         if 'ground_distance' in lidar_data:
             self.lidar_screen.update_ground_distance(lidar_data['ground_distance'])
 
-    def lidar_point_vector_update(self, point_vector_list):
-        """
-        Atualiza o vetor de pontos do LiDAR na GUI (legado).
-        """
-        self.lidar_screen.update_point_vector(point_vector_list)
-
     def lidar_statistics_update(self, statistics):
         """
         Atualiza as estatísticas do LiDAR na GUI.
@@ -520,12 +512,12 @@ class DashboardGUI(QWidget):
 
     # ==================== HANDLERS PARA MAPA E MISSÃO ====================
     
-    def handle_fsm_state_for_map(self, state_data: dict):
+    def handle_mission_state_for_map(self, state_data: dict):
         """
-        Processa o estado da FSM para exibir/limpar pontos de inspeção no mapa.
-        
+        Processa o estado da missão para exibir/limpar pontos de inspeção no mapa.
+
         Args:
-            state_data (dict): Dados do estado FSM contendo 'on_mission' e 'mission_name'.
+            state_data (dict): Dados do estado de missão contendo 'on_mission' e 'mission_name'.
         """
         on_mission = state_data.get("on_mission", False)
         mission_name = state_data.get("mission_name", "")
@@ -613,7 +605,7 @@ class DashboardGUI(QWidget):
 
     def setup_control_area(self):
         """
-        Configura a área de controles, FSM e mapa com proporções definidas e separadores.
+        Configura a área de controles, Missão e mapa com proporções definidas e separadores.
         """
         control_area_widget = QWidget()
         control_layout = QVBoxLayout()
@@ -622,7 +614,7 @@ class DashboardGUI(QWidget):
 
         # --- Cria os painéis ---
         lidar_panel = self.setup_lidar_panel()
-        fsm_panel = self.fsm_manager.setup_b2_fsm()
+        mission_panel = self.mission_manager.setup_b2_mission()
         controls_panel = self.controles_manager.setup_b3_controls()
 
         # --- Adiciona os painéis ao layout ---
@@ -635,7 +627,7 @@ class DashboardGUI(QWidget):
         separator1.setStyleSheet(f"background-color: {COMMON_STYLES['border_color']};") # Usa a cor da borda do tema
         control_layout.addWidget(separator1)
 
-        control_layout.addWidget(fsm_panel)
+        control_layout.addWidget(mission_panel)
 
         # --- Adiciona a segunda linha separadora ---
         separator2 = QFrame()
@@ -647,12 +639,12 @@ class DashboardGUI(QWidget):
         # --- Define as proporções de espaço (Stretch Factors) ---
         # Esta é a parte mais importante. A soma total é 10 (4+3+3).
         # O LiDAR receberá 4/10 (40%) do espaço vertical.
-        # O FSM e os Controles receberão 3/10 (30%) cada.
+        # A Missão e os Controles receberão 3/10 (30%) cada.
         # Os separadores e o stretch final terão um fator de 0, ou seja, não crescerão.
         
         control_layout.setStretch(0, 4)  # Índice 0 (lidar_panel) recebe 40% do espaço
         # O índice 1 é o separator1, não precisa de stretch
-        control_layout.setStretch(2, 3)  # Índice 2 (fsm_panel) recebe 30% do espaço
+        control_layout.setStretch(2, 3)  # Índice 2 (mission_panel) recebe 30% do espaço
         # O índice 3 é o separator2, não precisa de stretch
         control_layout.setStretch(4, 3)  # Índice 4 (controls_panel) recebe 30% do espaço
 

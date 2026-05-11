@@ -1,6 +1,6 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
+from drone_inspetor.ros_interfaces import Topics, create_publisher_from
 import json
 
 class DashboardLidarPublisher:
@@ -10,21 +10,7 @@ class DashboardLidarPublisher:
     def __init__(self, DashboardNode: Node):
         self.DashboardNode = DashboardNode
 
-        # QoS para comandos simples: VOLATILE + RELIABLE (garantir entrega de comandos)
-        qos_commands = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
-
-        # Publisher para comandos de controle do LiDAR (tópico interno do dashboard)
-        # Tópicos publicados pelo Dashboard para nodes: /drone_inspetor/dashboard/<topico>
-        self.lidar_control_pub = self.DashboardNode.create_publisher(
-            String,
-            "/drone_inspetor/dashboard/lidar/control",
-            qos_commands
-        )
+        self.lidar_control_pub = create_publisher_from(self.DashboardNode, Topics.Dashboard.LIDAR_CONTROL)
         self.DashboardNode.get_logger().info(f"Publicador para {self.lidar_control_pub.topic_name} criado.")
 
     def send_lidar_control_command(self, command_dict):

@@ -8,7 +8,7 @@ e o DashboardGUI. Os sinais permitem que dados sejam transmitidos de forma assí
 threads, mantendo a GUI responsiva enquanto processa mensagens ROS2.
 
 ARQUITETURA:
-- Sinais modulares por componente (Camera, CV, Depth, LiDAR, FSM, Drone, Mapa)
+- Sinais modulares por componente (Camera, CV, Depth, LiDAR, Mission, Drone, Mapa)
 - Métodos de publicação de comandos incorporados aos signals
 - Separação clara entre recepção de dados (sinais) e envio de comandos (métodos)
 =================================================================================================
@@ -33,18 +33,17 @@ class LidarSignals(QObject):
     Emite sinais quando novos dados de varredura laser, estatísticas ou detecções são recebidos.
     """
     lidar_data_received = pyqtSignal(dict)          # Dados consolidados do LiDAR (point_vector + ground_distance)
-    point_vector_received = pyqtSignal(object)      # Recebe o vetor de pontos do LiDAR (legado)
     statistics_received = pyqtSignal(dict)          # Estatísticas do LiDAR
-    obstacle_detections_received = pyqtSignal(list) # Detecções de obstáculos do LiDAR
+    obstacle_detections_received = pyqtSignal(dict) # Detecções de obstáculos do LiDAR
 
-class FSMSignals(QObject):
+class MissionSignals(QObject):
     """
-    Sinais relacionados à Máquina de Estados Finita (FSM).
-    
-    Emite sinais quando o estado da FSM muda.
-    O sinal emite um dict com todos os campos de FSMStateMSG.
+    Sinais relacionados à Máquina de Estados de Missão.
+
+    Emite sinais quando o estado do mission_node muda.
+    O sinal emite um dict com todos os campos de MissionStateMSG.
     """
-    fsm_state_updated = pyqtSignal(dict)    # Estado completo da FSM (dict)
+    mission_state_updated = pyqtSignal(dict)    # Estado completo da missão (dict)
 
 class DroneSignals(QObject):
     """
@@ -59,32 +58,32 @@ class DroneSignals(QObject):
     def __init__(self):
         """
         Inicializa os sinais de controle.
-        
+
         Os publishers serão configurados posteriormente pelo DashboardNode.
         """
         super().__init__()
         # Publishers serão atribuídos pelo DashboardNode após criação
-        self._fsm_publisher = None
-    
-    def set_fsm_publisher(self, fsm_publisher):
+        self._mission_publisher = None
+
+    def set_mission_publisher(self, mission_publisher):
         """
-        Configura o publisher de comandos FSM.
-        
+        Configura o publisher de comandos de missão.
+
         Args:
-            fsm_publisher: Instância de DashboardFSMPublisher para publicação de comandos
+            mission_publisher: Instância de DashboardMissionPublisher para publicação de comandos
         """
-        self._fsm_publisher = fsm_publisher
-    
+        self._mission_publisher = mission_publisher
+
     def send_mission_command(self, command_json):
         """
-        Publica um comando de missão para a FSM.
-        
+        Publica um comando de missão para o Mission Node.
+
         Formato esperado: JSON string contendo:
         {
             "command": "<nome_do_comando>",
             ... outras variáveis específicas do comando ...
         }
-        
+
         Comandos suportados:
         - "start_inspection": Inicia uma missão de inspeção
             Variáveis opcionais:
@@ -92,12 +91,12 @@ class DroneSignals(QObject):
         - "stop_inspection": Pausa a missão atual
         - "cancel_inspection": Cancela completamente a missão
         - "return_to_base": Comanda o drone a retornar à base
-        
+
         Args:
             command_json (str): String JSON contendo o comando de missão e suas variáveis
         """
-        if self._fsm_publisher:
-            self._fsm_publisher.send_mission_command(command_json)
+        if self._mission_publisher:
+            self._mission_publisher.send_mission_command(command_json)
             # Emite sinal para notificar que o comando foi enviado
             self.mission_command_sent.emit(command_json)
 
@@ -178,22 +177,22 @@ class DashboardSignals(QObject):
         super().__init__()
         self.camera = CameraSignals()
         self.lidar = LidarSignals()
-        self.fsm = FSMSignals()
+        self.mission = MissionSignals()
         self.control = DroneSignals()
         self.cv = CVSignals()
         self.depth = DepthSignals()
         self.mapa = MapaSignals()
-    
-    def configure_publishers(self, fsm_publisher, cv_publisher=None):
+
+    def configure_publishers(self, mission_publisher, cv_publisher=None):
         """
         Configura os publishers necessários para métodos de publicação de comandos.
-        
+
         Este método deve ser chamado pelo DashboardNode após criar os publishers.
-        
+
         Args:
-            fsm_publisher: Instância de DashboardFSMPublisher para publicação de comandos FSM
+            mission_publisher: Instância de DashboardMissionPublisher para publicação de comandos de missão
             cv_publisher: Instância de DashboardCVPublisher para publicação de comandos CV
         """
-        self.control.set_fsm_publisher(fsm_publisher)
+        self.control.set_mission_publisher(mission_publisher)
         if cv_publisher:
             self.cv.set_cv_publisher(cv_publisher)

@@ -1,7 +1,7 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from drone_inspetor_msgs.msg import CVControlMSG
+from drone_inspetor.ros_interfaces import Topics, create_publisher_from
 import json
 
 class DashboardCVPublisher:
@@ -11,28 +11,12 @@ class DashboardCVPublisher:
     def __init__(self, DashboardNode: Node):
         self.DashboardNode = DashboardNode
 
-        # QoS para comandos simples: VOLATILE + RELIABLE (garantir entrega de comandos)
-        qos_commands = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
-
-        # Publisher para comandos de controle de CV (tópico interno do dashboard) - legado
-        self.cv_control_pub = self.DashboardNode.create_publisher(
-            String,
-            "/drone_inspetor/dashboard/cv/control",
-            qos_commands
-        )
+        # Publisher para comandos de controle de CV (legado)
+        self.cv_control_pub = create_publisher_from(self.DashboardNode, Topics.Dashboard.CV_CONTROL_LEGACY)
         self.DashboardNode.get_logger().info(f"Publicador para {self.cv_control_pub.topic_name} criado.")
-        
-        # Publisher para controle de modelos CV (nova mensagem CVControlMSG)
-        self.cv_model_control_pub = self.DashboardNode.create_publisher(
-            CVControlMSG,
-            "/drone_inspetor/interno/dashboard_node/cv_node/cv_control",
-            qos_commands
-        )
+
+        # Publisher para controle de modelos CV (CVControlMSG)
+        self.cv_model_control_pub = create_publisher_from(self.DashboardNode, Topics.Dashboard.CV_CONTROL)
         self.DashboardNode.get_logger().info(f"Publisher CVControlMSG criado: {self.cv_model_control_pub.topic_name}")
 
     def send_cv_control_command(self, command_dict):

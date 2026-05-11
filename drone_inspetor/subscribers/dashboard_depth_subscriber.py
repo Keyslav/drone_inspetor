@@ -1,9 +1,7 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
-from std_msgs.msg import String
 import json
 from drone_inspetor.signals.dashboard_signals import DepthSignals
+from drone_inspetor.ros_interfaces import Topics, create_subscription_from
 
 class DashboardDepthSubscriber:
     """
@@ -13,38 +11,21 @@ class DashboardDepthSubscriber:
         self.DashboardNode = DashboardNode
         self.signals = signals
 
-        # QoS para dados de sensores (imagens): VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
-        qos_sensor_data = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
-
         # Subscriber para imagem de profundidade
-        self.depth_image_sub = self.DashboardNode.create_subscription(
-            Image,
-            "/drone_inspetor/interno/depth_node/image_processed",
-            self.depth_image_callback,
-            qos_sensor_data
+        self.depth_image_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.DEPTH_IMAGE_PROCESSED, self.depth_image_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.depth_image_sub.topic_name}")
 
         # Subscriber para estatísticas de profundidade
-        self.depth_stats_sub = self.DashboardNode.create_subscription(
-            String,
-            "/drone_inspetor/interno/depth_node/statistics",
-            self.depth_statistics_callback,
-            qos_sensor_data
+        self.depth_stats_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.DEPTH_STATISTICS, self.depth_statistics_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.depth_stats_sub.topic_name}")
 
         # Subscriber para alertas de proximidade
-        self.depth_alerts_sub = self.DashboardNode.create_subscription(
-            String,
-            "/drone_inspetor/interno/depth_node/proximity_alerts",
-            self.proximity_alert_callback,
-            qos_sensor_data
+        self.depth_alerts_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.DEPTH_PROXIMITY_ALERTS, self.proximity_alert_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.depth_alerts_sub.topic_name}")
 

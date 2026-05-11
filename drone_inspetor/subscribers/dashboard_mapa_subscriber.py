@@ -1,9 +1,7 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from std_msgs.msg import String
-from geometry_msgs.msg import PoseStamped
 import json
 from drone_inspetor.signals.dashboard_signals import MapaSignals
+from drone_inspetor.ros_interfaces import Topics, create_subscription_from
 
 class DashboardMapaSubscriber:
     """
@@ -13,31 +11,17 @@ class DashboardMapaSubscriber:
         self.DashboardNode = DashboardNode
         self.signals = signals
 
-        # QoS para dados de sensores: VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
-        qos_sensor_data = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
+        # Subscriber para posição atualizada no mapa
+        self.mapa_position_sub = create_subscription_from(
+            self.DashboardNode, Topics.Dashboard.MAPA_POSITION, self.mapa_position_callback,
         )
+        self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.mapa_position_sub.topic_name}")
 
-        # Subscriber para posição atualizada no mapa (tópico interno do dashboard)
-        self.mapa_position_sub = self.DashboardNode.create_subscription(
-            PoseStamped,
-            "/drone_inspetor/dashboard/mapa/position",
-            self.mapa_position_callback,
-            qos_sensor_data
+        # Subscriber para atitude atualizada no mapa
+        self.mapa_attitude_sub = create_subscription_from(
+            self.DashboardNode, Topics.Dashboard.MAPA_ATTITUDE, self.mapa_attitude_callback,
         )
-        self.DashboardNode.get_logger().info("Inscrito no tópico: /drone_inspetor/dashboard/mapa/position")
-
-        # Subscriber para atitude atualizada no mapa (tópico interno do dashboard)
-        self.mapa_attitude_sub = self.DashboardNode.create_subscription(
-            String,
-            "/drone_inspetor/dashboard/mapa/attitude",
-            self.mapa_attitude_callback,
-            qos_sensor_data
-        )
-        self.DashboardNode.get_logger().info("Inscrito no tópico: /drone_inspetor/dashboard/mapa/attitude")
+        self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.mapa_attitude_sub.topic_name}")
 
     def mapa_position_callback(self, msg):
         """

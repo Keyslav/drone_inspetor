@@ -33,8 +33,8 @@ def generate_launch_description():
         ),
         Node(
             package='drone_inspetor',
-            executable='fsm_node',
-            name='fsm_node',
+            executable='mission_node',
+            name='mission_node',
             output='screen',
             emulate_tty=True,
         ),

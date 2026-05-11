@@ -1,6 +1,6 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
+from drone_inspetor.ros_interfaces import Topics, create_publisher_from
 import json
 
 class DashboardDronePublisher:
@@ -10,20 +10,7 @@ class DashboardDronePublisher:
     def __init__(self, DashboardNode: Node):
         self.DashboardNode = DashboardNode
 
-        # QoS para comandos simples: VOLATILE + RELIABLE (garantir entrega de comandos)
-        qos_commands = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
-
-        # Publisher para enviar comandos de missão para o drone_node
-        self.drone_command_pub = self.DashboardNode.create_publisher(
-            String,
-            "/drone_inspetor/interno/dashboard_node/drone_commands",
-            qos_commands
-        )
+        self.drone_command_pub = create_publisher_from(self.DashboardNode, Topics.Dashboard.DRONE_COMMANDS)
         self.DashboardNode.get_logger().info(f"Publicador para {self.drone_command_pub.topic_name} criado.")
 
     def send_mission_command(self, command_str):

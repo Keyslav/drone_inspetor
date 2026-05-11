@@ -89,9 +89,7 @@
                 "name": "Corrosion YOLOv8x (Detection)",
                 "dataset": "Corrosion_Dataset_v1",
                 "classes": [
-                    "mild_corrosion",
-                    "moderate_corrosion",
-                    "severe_corrosion"
+                    "Rust"
                 ],
                 "model": "YOLOv8x",
                 "file_name": "corrosion_yolo8x_detection.pt",
@@ -101,9 +99,7 @@
                 "name": "Corrosion YOLOv8n (Lightweight, Detection)",
                 "dataset": "Corrosion_Dataset_v1",
                 "classes": [
-                    "mild_corrosion",
-                    "moderate_corrosion",
-                    "severe_corrosion"
+                    "Rust"
                 ],
                 "model": "YOLOv8n",
                 "file_name": "corrosion_yolo8n_detection.pt",

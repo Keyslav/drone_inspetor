@@ -506,15 +506,3 @@ COMMON_STYLES = {
     "success_color": "#27ae60"
 }
 
-# Configurações de tópicos ROS2
-ROS_TOPICS = {
-    "camera_raw": "/camera/image_raw",
-    "camera_processed": "/camera/image_processed",
-    "depth_camera": "/depth_camera/image_raw",
-    "lidar_image": "/lidar/image",
-    "lidar_pointcloud": "/lidar/pointcloud",
-    "fsm_state": "/drone_inspetor/fsm_state",
-    "vehicle_position": "/fmu/out/vehicle_global_position",
-    "vehicle_attitude": "/fmu/out/vehicle_attitude"
-}
-

@@ -1,11 +1,10 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import CompressedImage
-from std_msgs.msg import String
 from drone_inspetor_msgs.msg import CVDetectionMSG
 from drone_inspetor_msgs.srv import CVModelsSRV
 import json
 from drone_inspetor.signals.dashboard_signals import CVSignals
+from drone_inspetor.ros_interfaces import Topics, create_client_from, create_subscription_from
 from cv_bridge import CvBridge
 
 class DashboardCVSubscriber:
@@ -15,54 +14,28 @@ class DashboardCVSubscriber:
     def __init__(self, DashboardNode: Node, signals: CVSignals):
         self.DashboardNode = DashboardNode
         self.signals = signals
-        self.bridge = CvBridge()  # Para conversão de imagens comprimidas para OpenCV
-
-        # ==================== CONFIGURAÇÃO DE QoS ========================
-        # QoS para dados de sensores (imagens) - equivalente ao "sensor_data":
-        # - BEST_EFFORT: menor latência, evita retransmissões; adequado para vídeo/imagem
-        # - VOLATILE: não mantém amostras antigas
-        # - KEEP_LAST: mantém somente as últimas N amostras
-        # - DEPTH=1: evita fila e reduz lag no dashboard/YOLO (processa sempre o frame mais recente)
-        qos_sensor_data = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
+        self.bridge = CvBridge()
 
         # Subscriber para imagem processada por CV (comprimida)
-        self.cv_image_sub = self.DashboardNode.create_subscription(
-            CompressedImage,
-            "/drone_inspetor/interno/cv_node/compressed",
-            self.cv_image_callback,
-            qos_sensor_data
+        self.cv_image_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.CV_COMPRESSED, self.cv_image_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.cv_image_sub.topic_name}")
 
         # Subscriber para detecções de objetos
-        self.cv_detections_sub = self.DashboardNode.create_subscription(
-            CVDetectionMSG,
-            "/drone_inspetor/interno/cv_node/object_detections",
-            self.cv_detections_callback,
-            qos_sensor_data
+        self.cv_detections_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.CV_OBJECT_DETECTIONS, self.cv_detections_callback,
         )
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.cv_detections_sub.topic_name}")
 
         # Subscriber para dados de análise
-        self.cv_analysis_sub = self.DashboardNode.create_subscription(
-            String,
-            "/drone_inspetor/interno/cv_node/analysis_report",
-            self.cv_analysis_callback,
-            qos_sensor_data
+        self.cv_analysis_sub = create_subscription_from(
+            self.DashboardNode, Topics.Interno.CV_ANALYSIS_REPORT, self.cv_analysis_callback,
         )
-
         self.DashboardNode.get_logger().info(f"Inscrito no tópico: {self.cv_analysis_sub.topic_name}")
 
         # Service Client para listar modelos
-        self.cv_models_client = self.DashboardNode.create_client(
-            CVModelsSRV,
-            '/drone_inspetor/interno/cv_node/srv/list_models'
-        )
+        self.cv_models_client = create_client_from(self.DashboardNode, Topics.Service.CV_LIST_MODELS)
 
         # Conecta sinal de requisição
         self.signals.models_requested.connect(self.request_models)

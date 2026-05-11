@@ -1,0 +1,9 @@
+# voando_a_caminho_com_foco_obstaculo_girando_inicio.py
+# Estado: VOANDO_A_CAMINHO_COM_FOCO_OBSTACULO_GIRANDO_INICIO
+
+from drone_inspetor.common.enums import DroneStateDescription as DS
+from drone_inspetor.nodes.drone_node.fsm.states._obstaculo_base import BaseObstaculoGirandoInicioState
+
+
+class VoandoACaminhoComFocoObstaculoGirandoInicioState(BaseObstaculoGirandoInicioState):
+    NEXT_DESVIANDO_ID = DS.VOANDO_A_CAMINHO_COM_FOCO_OBSTACULO_DESVIANDO

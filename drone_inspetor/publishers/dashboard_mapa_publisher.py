@@ -1,7 +1,7 @@
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from geometry_msgs.msg import PoseStamped
+from drone_inspetor.ros_interfaces import Topics, create_publisher_from
 import json
 
 class DashboardMapaPublisher:
@@ -11,28 +11,10 @@ class DashboardMapaPublisher:
     def __init__(self, DashboardNode: Node):
         self.DashboardNode = DashboardNode
 
-        # QoS para comandos simples: VOLATILE + RELIABLE (garantir entrega de comandos)
-        qos_commands = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10
-        )
-
-        # Publisher para comandos de atualização de posição no mapa (tópico interno do dashboard)
-        self.mapa_position_pub = self.DashboardNode.create_publisher(
-            PoseStamped,
-            "/drone_inspetor/dashboard/mapa/position_command",
-            qos_commands
-        )
+        self.mapa_position_pub = create_publisher_from(self.DashboardNode, Topics.Dashboard.MAPA_POSITION_CMD)
         self.DashboardNode.get_logger().info(f"Publicador para {self.mapa_position_pub.topic_name} criado.")
 
-        # Publisher para comandos de atualização de atitude no mapa (tópico interno do dashboard)
-        self.mapa_attitude_pub = self.DashboardNode.create_publisher(
-            String,
-            "/drone_inspetor/dashboard/mapa/attitude_command",
-            qos_commands
-        )
+        self.mapa_attitude_pub = create_publisher_from(self.DashboardNode, Topics.Dashboard.MAPA_ATTITUDE_CMD)
         self.DashboardNode.get_logger().info(f"Publicador para {self.mapa_attitude_pub.topic_name} criado.")
 
     def send_mapa_position_command(self, lat, lon, alt):

@@ -44,7 +44,7 @@ setup(
     zip_safe=True,
     maintainer='user',
     maintainer_email='user@todo.todo',
-    description='Pacote ROS2 para o dashboard de monitoramento do drone, com arquitetura modular e integração de controles, FSM e mapa.',
+    description='Pacote ROS2 para o dashboard de monitoramento do drone, com arquitetura modular e integração de controles, missão e mapa.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
@@ -55,7 +55,8 @@ setup(
             'depth_node = drone_inspetor.nodes.depth_node:main',
             'lidar_node = drone_inspetor.nodes.lidar_node:main',
             'drone_node = drone_inspetor.nodes.drone_node:main',
-            'fsm_node = drone_inspetor.nodes.fsm_node:main',
+            'mission_node = drone_inspetor.nodes.mission_node:main',
+            'teste_drone_node = drone_inspetor.scripts.teste_drone_node:main',
         ],
     },
 )

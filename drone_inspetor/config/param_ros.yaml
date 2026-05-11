@@ -36,9 +36,9 @@ camera_node:
 
 
 # =================================================================================================
-# FSM NODE - Parâmetros do nó da máquina de estados
+# MISSION NODE - Parâmetros do nó da máquina de estados de missão
 # =================================================================================================
-fsm_node:
+mission_node:
   ros__parameters:
     missions_file: "missions.json"
 
@@ -80,7 +80,12 @@ lidar_node:
 drone_node:
   ros__parameters:
     command_timeout: 30.0
-    step_distance: 5.0
+    # Perfil trapezoidal de velocidade no GOTO/RTL
+    cruise_velocity: 3.0          # vc — velocidade de cruzeiro (m/s)
+    travel_acceleration: 1.0      # ad — aceleração/desaceleração nominal (m/s²)
+    obstacle_deceleration: 2.0    # ao — desaceleração quando obstáculo próximo (m/s², deve ser > ad)
+    arrival_position_tol: 0.2     # distância (m) para considerar destino alcançado
+    arrival_velocity_tol: 0.1     # velocidade (m/s) abaixo da qual a chegada se estabiliza
 
 
 # =================================================================================================
