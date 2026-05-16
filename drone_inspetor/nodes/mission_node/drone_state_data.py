@@ -7,12 +7,12 @@
 # =================================================================================================
 
 from drone_inspetor_msgs.msg import DroneStateMSG
-from drone_inspetor.common.enums import DroneStateDescription
+from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription
 
 
 # Campos que possuem defaults especiais (diferentes de 0.0 / False / "")
 _SPECIAL_DEFAULTS = {
-    'state': int(DroneStateDescription.OFFBOARD_DESATIVADO),
+    'state': int(DroneFSMDescription.OFFBOARD_DESATIVADO),
 }
 
 # Mapeamento tipo ROS → default Python
@@ -39,7 +39,7 @@ class DroneStateData:
                 default = _TYPE_DEFAULTS.get(ftype, 0.0)
             setattr(self, field, default)
         # Propriedade derivada: enum tipado do state (atualizado em update_from_msg)
-        self.state = DroneStateDescription.OFFBOARD_DESATIVADO
+        self.state = DroneFSMDescription.OFFBOARD_DESATIVADO
 
     def update_from_msg(self, msg: DroneStateMSG):
         """Atualiza todos os campos a partir de uma mensagem DroneStateMSG."""
@@ -47,6 +47,6 @@ class DroneStateData:
             setattr(self, field, getattr(msg, field))
         # Converte state int → enum tipado
         try:
-            self.state = DroneStateDescription(msg.state)
+            self.state = DroneFSMDescription(msg.state)
         except ValueError:
             pass

@@ -87,6 +87,15 @@ drone_node:
     arrival_position_tol: 0.2     # distância (m) para considerar destino alcançado
     arrival_velocity_tol: 0.1     # velocidade (m/s) abaixo da qual a chegada se estabiliza
 
+    # Períodos dos timers (segundos). Loops independentes:
+    #   trajectory_timer_period: TrajectorySetpoint a 50 Hz (PX4 exige p/ OFFBOARD)
+    #   offboard_control_mode_timer_period: OffboardControlMode a 50 Hz
+    #   fsm_timer_period: tick da FSM (transições). Mais baixo = mais reativo a
+    #     obstáculos/yaw, mais alto = menos CPU.
+    trajectory_timer_period: 0.02              # 50 Hz
+    offboard_control_mode_timer_period: 0.02   # 50 Hz
+    fsm_timer_period: 0.5                      # 2 Hz (ajuste conforme reatividade desejada)
+
 
 # =================================================================================================
 # DASHBOARD NODE - Parâmetros do dashboard

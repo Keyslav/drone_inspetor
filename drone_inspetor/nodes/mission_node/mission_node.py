@@ -23,18 +23,10 @@ from drone_inspetor_msgs.msg import (
 )
 from drone_inspetor_msgs.action import DroneCommand
 
-# Importações centralizadas (fonte única de verdade)
-from drone_inspetor.common.enums import (
-    DroneStateDescription,
-    MissionStateDescription,
-    DashboardMissionCommandDescription,
-    DRONE_STATES_GOTO,
-    DRONE_STATES_GOTO_COM_FOCO,
-    DRONE_STATES_RTL,
-    DRONE_STATES_POUSANDO,
-    DRONE_STATES_POUSADO,
-    DRONE_STATES_EM_MOVIMENTO,
-)
+# Importações dos enums (cada FSM mantém seu próprio Description no pacote da FSM).
+from drone_inspetor.common.enums import DashboardMissionCommandDescription
+from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription
+from drone_inspetor.nodes.mission_node.fsm.mission.description import MissionFSMDescription
 from drone_inspetor.common.log_colors import LogPrefix
 from drone_inspetor.ros_interfaces import (
     Topics,
@@ -47,8 +39,8 @@ from drone_inspetor.ros_interfaces import (
 
 # Importações internas do mission_node
 from drone_inspetor.nodes.mission_node.drone_state_data import DroneStateData
-from drone_inspetor.nodes.mission_node.fsm.context import MissionFSMContext
-from drone_inspetor.nodes.mission_node.fsm.machine import MissionFSMachine
+from drone_inspetor.nodes.mission_node.fsm.mission.context import MissionFSMContext
+from drone_inspetor.nodes.mission_node.fsm.mission.machine import MissionFSM
 
 
 # ==================================================================================================
@@ -74,17 +66,17 @@ class MissionNode(Node):
     # Mapeamento de comandos do dashboard para estados permitidos
     VALID_DASHBOARD_COMMANDS = {
         DashboardMissionCommandDescription.INICIAR_MISSAO: [
-            MissionStateDescription.PRONTO,
+            MissionFSMDescription.PRONTO,
         ],
         DashboardMissionCommandDescription.CANCELAR_MISSAO: [
-            MissionStateDescription.EXECUTANDO_ARMANDO,
-            MissionStateDescription.EXECUTANDO_DECOLANDO,
-            MissionStateDescription.EXECUTANDO_INSPECIONANDO,
-            MissionStateDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO,
-            MissionStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
-            MissionStateDescription.EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO,
-            MissionStateDescription.EXECUTANDO_INSPECIONANDO_FALHA,
-            MissionStateDescription.INSPECAO_FINALIZADA,
+            MissionFSMDescription.EXECUTANDO_ARMANDO,
+            MissionFSMDescription.EXECUTANDO_DECOLANDO,
+            MissionFSMDescription.EXECUTANDO_INSPECIONANDO,
+            MissionFSMDescription.EXECUTANDO_INSPECIONANDO_DETECTANDO,
+            MissionFSMDescription.EXECUTANDO_INSPECIONANDO_ESCANEANDO,
+            MissionFSMDescription.EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO,
+            MissionFSMDescription.EXECUTANDO_INSPECIONANDO_FALHA,
+            MissionFSMDescription.INSPECAO_FINALIZADA,
         ],
     }
     
@@ -96,9 +88,9 @@ class MissionNode(Node):
         # --- Instâncias das Classes de Estado ---
         self.drone = DroneStateData()
         self.mission_ctx = MissionFSMContext(self)
-        self.mission_machine = MissionFSMachine(self.mission_ctx, self)
+        self.mission_machine = MissionFSM(self.mission_ctx, self)
         self.mission_machine.register_all_states()
-        self.mission_machine.transition_to(MissionStateDescription.DESATIVADO)
+        self.mission_machine.transition_to(MissionFSMDescription.DESATIVADO)
 
         # --- Verificação de Saúde dos Tópicos Essenciais ---
         self.essencial_topics = {
@@ -360,7 +352,7 @@ class MissionNode(Node):
             self.get_logger().info(f"Action completada com sucesso: {result.message}")
             
             # Se o comando foi bem sucedido e estamos inspecionando, assumimos chegada ao waypoint
-            if self.mission_ctx.state == MissionStateDescription.EXECUTANDO_INSPECIONANDO:
+            if self.mission_ctx.state == MissionFSMDescription.EXECUTANDO_INSPECIONANDO:
                 self.get_logger().info("Waypoint alcançado (Action Success)! Iniciando contagem de tempo.")
                 self.mission_ctx.ponto_de_inspecao_tempo_de_chegada = self.get_clock().now().nanoseconds / 1e9
                 

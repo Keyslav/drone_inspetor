@@ -1,9 +1,0 @@
-# retornando_a_caminho_obstaculo_girando_inicio.py
-# Estado: RETORNANDO_A_CAMINHO_OBSTACULO_GIRANDO_INICIO
-
-from drone_inspetor.common.enums import DroneStateDescription as DS
-from drone_inspetor.nodes.drone_node.fsm.states._obstaculo_base import BaseObstaculoGirandoInicioState
-
-
-class RetornandoACaminhoObstaculoGirandoInicioState(BaseObstaculoGirandoInicioState):
-    NEXT_DESVIANDO_ID = DS.RETORNANDO_A_CAMINHO_OBSTACULO_DESVIANDO
