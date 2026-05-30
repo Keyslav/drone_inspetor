@@ -324,7 +324,7 @@ class DepthNode(Node):
                         alert_level = "MÉDIO"
                     
                     alert = {
-                        "id": f"proximity_{datetime.now().strftime("%H%M%S")}",
+                        "id": f"proximity_{datetime.now().strftime('%H%M%S')}",
                         "type": "proximity",
                         "level": alert_level,
                         "min_distance": min_distance,

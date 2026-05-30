@@ -345,7 +345,7 @@ class DashboardGUI(QWidget):
                 border-radius: 5px;
                 font-size: 16px;
             """)
-            video_label.setText(f"Aguardando {config["name"]}...")
+            video_label.setText(f"Aguardando {config['name']}...")
             video_label.setCursor(QCursor(Qt.CursorShape.PointingHandCursor)) # Cursor de mão para indicar clicável.
             
             self.video_labels.append(video_label)

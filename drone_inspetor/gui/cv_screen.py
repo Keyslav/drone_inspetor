@@ -747,7 +747,7 @@ class CVScreen(BaseScreen):
         content.append("=" * 80)
         content.append("LOGS DE ANÁLISE DE VISÃO COMPUTACIONAL")
         content.append("=" * 80)
-        content.append(f"Última atualização: {datetime.now().strftime("%H:%M:%S")}")
+        content.append(f"Última atualização: {datetime.now().strftime('%H:%M:%S')}")
         content.append(f"Total de análises: {len(self.analysis_logs)}")
         content.append(f"Detecções atuais: {len(self.current_detections)}")
         content.append("")
