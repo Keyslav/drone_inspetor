@@ -75,7 +75,7 @@ class MissionControl(Node):
         self.publish_fsm_state("Executando Inspeção")
         self.get_logger().info("Starting inspection mission...")
         self.get_logger().info("Creating log directory.")
-        self.log_dir = os.path.join("logs", f"missao_{datetime.now().strftime("%Y%m%d_%H%M%S")}")
+        self.log_dir = os.path.join("logs", f"missao_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
         os.makedirs(self.log_dir, exist_ok=True)
         self.detected_objects = []
 
@@ -148,14 +148,14 @@ class MissionControl(Node):
                     "altitude": self.current_pose.pose.position.z
                 }
                 self.detected_objects.append(detection_data)
-                self.get_logger().info(f"Detected object: {detection_data.get("label")} at {detection_data.get("gps_location")}")
-                self.get_logger().info(f"Detection added to list: {detection_data.get("label")}")
+                self.get_logger().info(f"Detected object: {detection_data.get('label')} at {detection_data.get('gps_location')}")
+                self.get_logger().info(f"Detection added to list: {detection_data.get('label')}")
 
                 # Save image if available in detection_data
                 image_base64 = detection_data.get("image_base64", None)
                 if image_base64:
                     self.get_logger().info("Saving detection image.")
-                    image_filename = os.path.join(self.log_dir, f"detection_{len(self.detected_objects)}_{detection_data.get("label")}.png")
+                    image_filename = os.path.join(self.log_dir, f"detection_{len(self.detected_objects)}_{detection_data.get('label')}.png")
                     with open(image_filename, "wb") as f:
                         f.write(base64.b64decode(image_base64))
                     self.get_logger().info(f"Saved detection image: {image_filename}")
