@@ -1,6 +1,6 @@
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 import json
 from drone_inspetor.signals.dashboard_signals import DepthSignals
@@ -21,10 +21,10 @@ class DashboardDepthSubscriber:
             depth=10
         )
 
-        # Subscriber para imagem de profundidade
+        # Subscriber para imagem de profundidade (visualização comprimida em JPEG)
         self.depth_image_sub = self.DashboardNode.create_subscription(
-            Image,
-            "/drone_inspetor/interno/depth_node/image_processed",
+            CompressedImage,
+            "/drone_inspetor/interno/depth_node/compressed",
             self.depth_image_callback,
             qos_sensor_data
         )

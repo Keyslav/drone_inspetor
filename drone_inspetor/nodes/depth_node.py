@@ -9,7 +9,7 @@ e gera visualizações processadas para exibição no dashboard.
 
 ARQUITETURA:
 - Assina: /drone_inspetor/externo/depth_camera/image_raw (imagens de profundidade externas)
-- Publica: /drone_inspetor/interno/depth_node/image_processed (imagens processadas)
+- Publica: /drone_inspetor/interno/depth_node/compressed (visualização processada, JPEG)
 - Publica: /drone_inspetor/interno/depth_node/statistics (estatísticas em JSON)
 - Publica: /drone_inspetor/interno/depth_node/proximity_alerts (alertas de proximidade em JSON)
 
@@ -26,7 +26,7 @@ FUNCIONALIDADES:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from cv_bridge import CvBridge
 from std_msgs.msg import String
 import cv2
@@ -110,10 +110,12 @@ class DepthNode(Node):
 
         # ==================== PUBLISHERS INTERNOS (SAÍDA DE DADOS PARA O DASHBOARD) ====================
 
-        # Imagem de profundidade processada (para visualização) no tópico padronizado
+        # Imagem de profundidade processada (visualização) comprimida em JPEG.
+        # É uma imagem de exibição (mono8/bgr8), então comprimir não afeta a
+        # precisão usada em estatísticas/alertas (essas vêm da depth raw de entrada).
         self.processed_depth_publisher = self.create_publisher(
-            Image,
-            "/drone_inspetor/interno/depth_node/image_processed",
+            CompressedImage,
+            "/drone_inspetor/interno/depth_node/compressed",
             qos_sensor_data
         )
         self.get_logger().info(f"Publicando no tópico: {self.processed_depth_publisher.topic_name}")
@@ -174,14 +176,12 @@ class DepthNode(Node):
             # ==================== PUBLICAÇÃO DE IMAGEM PROCESSADA ====================
             if processed_image is not None:
                 try:
-                    # Converte para formato adequado para publicação
-                    if len(processed_image.shape) == 2:
-                        processed_msg = self.bridge.cv2_to_imgmsg(processed_image, "mono8")
-                    else:
-                        processed_msg = self.bridge.cv2_to_imgmsg(processed_image, "bgr8")
-                    
+                    # Visualização (mono8 ou bgr8) -> JPEG comprimido. O cv2_to_compressed_imgmsg
+                    # lida com 1 ou 3 canais; reduz a banda Jetson->PC de ~0,9-2,7 MB/frame
+                    # para dezenas de KB, sem impacto na precisão (essa vem da depth raw).
+                    processed_msg = self.bridge.cv2_to_compressed_imgmsg(processed_image, dst_format="jpeg")
                     self.processed_depth_publisher.publish(processed_msg)
-                    
+
                     self.get_logger().debug("Imagem de profundidade processada publicada")
                 except Exception as e:
                     self.get_logger().error(f"Erro ao publicar imagem de profundidade: {e}")

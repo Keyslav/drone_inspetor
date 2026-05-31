@@ -141,6 +141,14 @@ class BaseScreen:
         self.video_label = video_label
         self.screen_name = screen_name
         self.expanded_windows = []  # Lista de janelas expandidas
+
+        # ========== INDICADOR DE TAXA DE FRAMES (FR) ==========
+        # Quando habilitado (set_fps + _fps_overlay_enabled), desenha sobre a
+        # imagem a taxa de frames recebidos do tópico (FR_Received) e a taxa de
+        # frames realmente exibidos na tela (FR_Displayed).
+        self._fps_overlay_enabled = False
+        self._fps_received = 0.0    # frames/s recebidos do tópico ROS2
+        self._fps_displayed = 0.0   # frames/s desenhados na tela
         
         # ========== CORREÇÕES PARA ESTABILIZAR REDIMENSIONAMENTO ==========
         self._cached_size = None  # Cache das dimensões do widget
@@ -238,12 +246,19 @@ class BaseScreen:
                     target_width, target_height = self._target_size
             
             # Cria pixmap redimensionado
+            # FastTransformation no feed ao vivo: o redimensionamento por frame
+            # é o passo mais caro do desenho; "Fast" reduz o custo de CPU/GPU e
+            # ajuda a GUI a acompanhar a taxa de chegada dos frames.
             pixmap = QPixmap.fromImage(q_image).scaled(
                 target_width, target_height,
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                Qt.TransformationMode.FastTransformation
             )
-            
+
+            # Desenha o indicador de FR (FR_Received / FR_Displayed) se habilitado
+            if self._fps_overlay_enabled:
+                self._draw_fps_overlay(pixmap)
+
             # SEMPRE atualiza a imagem (removido o bloqueio de pixmap igual)
             self.video_label.setPixmap(pixmap)
             
@@ -281,6 +296,53 @@ class BaseScreen:
                     central_widget.setPixmap(scaled_pixmap)
             except Exception as e:
                 gui_log_warn(self.screen_name, f"Erro ao atualizar janela expandida: {e}")
+
+    def set_fps(self, received, displayed):
+        """
+        Atualiza os valores de taxa de frames exibidos no overlay.
+
+        Args:
+            received (float): FR_Received - frames/s recebidos do tópico ROS2.
+            displayed (float): FR_Displayed - frames/s desenhados na tela.
+        """
+        self._fps_received = received
+        self._fps_displayed = displayed
+
+    def _draw_fps_overlay(self, pixmap):
+        """
+        Desenha o indicador de taxa de frames no canto superior esquerdo do pixmap.
+        Linha de cima: FR_Received. Linha de baixo: FR_Displayed.
+
+        Args:
+            pixmap (QPixmap): Pixmap já redimensionado sobre o qual o texto é desenhado.
+        """
+        from PyQt6.QtGui import QPainter, QColor, QFont
+        try:
+            painter = QPainter(pixmap)
+            font = QFont("Monospace", 10, QFont.Weight.Bold)
+            painter.setFont(font)
+
+            lines = [
+                f"FR_Received:  {self._fps_received:5.1f} fps",
+                f"FR_Displayed: {self._fps_displayed:5.1f} fps",
+            ]
+
+            metrics = painter.fontMetrics()
+            text_w = max(metrics.horizontalAdvance(line) for line in lines)
+            line_h = metrics.height()
+
+            # Fundo semitransparente para legibilidade sobre a imagem
+            painter.fillRect(6, 6, text_w + 12, line_h * 2 + 8, QColor(0, 0, 0, 150))
+
+            painter.setPen(QColor(0, 255, 0))
+            y = 6 + line_h
+            for line in lines:
+                painter.drawText(10, y, line)
+                y += line_h
+
+            painter.end()
+        except Exception as e:
+            gui_log_warn(self.screen_name, f"Erro ao desenhar overlay de FR: {e}")
 
 # ==================== CONFIGURAÇÕES ATUALIZADAS ====================
 
@@ -506,15 +568,4 @@ COMMON_STYLES = {
     "success_color": "#27ae60"
 }
 
-# Configurações de tópicos ROS2
-ROS_TOPICS = {
-    "camera_raw": "/camera/image_raw",
-    "camera_processed": "/camera/image_processed",
-    "depth_camera": "/depth_camera/image_raw",
-    "lidar_image": "/lidar/image",
-    "lidar_pointcloud": "/lidar/pointcloud",
-    "fsm_state": "/drone_inspetor/fsm_state",
-    "vehicle_position": "/fmu/out/vehicle_global_position",
-    "vehicle_attitude": "/fmu/out/vehicle_attitude"
-}
 

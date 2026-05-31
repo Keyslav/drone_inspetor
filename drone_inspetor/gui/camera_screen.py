@@ -34,7 +34,10 @@ class CameraScreen(BaseScreen):
         """
         # Chama o construtor da classe base BaseScreen
         super().__init__(video_label, "Câmera Principal")
-        
+
+        # Habilita o overlay de taxa de frames (FR_Received / FR_Displayed)
+        self._fps_overlay_enabled = True
+
         # Armazena referência ao título para indicador de gravação
         self.title_label = title_label
         self._is_recording = False

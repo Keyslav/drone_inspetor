@@ -26,7 +26,7 @@ ARQUITETURA:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, CompressedImage
+from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import Bool
 from cv_bridge import CvBridge
 import cv2

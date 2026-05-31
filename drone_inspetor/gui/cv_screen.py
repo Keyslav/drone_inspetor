@@ -41,7 +41,10 @@ class CVScreen(BaseScreen):
         """
         # Chama o construtor da classe base BaseScreen
         super().__init__(video_label, "Visão Computacional")
-        
+
+        # Habilita o overlay de taxa de frames (FR_Received / FR_Displayed)
+        self._fps_overlay_enabled = True
+
         # Armazena referência aos signals para publicação de comandos
         self.signals = signals
         if hasattr(self.signals, 'models_received'):

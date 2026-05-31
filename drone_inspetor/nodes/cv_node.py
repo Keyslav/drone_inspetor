@@ -9,8 +9,8 @@ imagens recebidas da câmera principal, detecta objetos de interesse (como flare
 e publica tanto imagens anotadas quanto dados estruturados de detecção.
 
 ARQUITETURA:
-- Assina: /drone_inspetor/interno/camera_node/image_raw (imagens da câmera)
-- Publica: /drone_inspetor/interno/cv_node/image_processed (imagens anotadas)
+- Assina: /drone_inspetor/externo/camera/compressed (imagens comprimidas da câmera)
+- Publica: /drone_inspetor/interno/cv_node/compressed (imagens anotadas comprimidas)
 - Publica: /drone_inspetor/interno/cv_node/object_detections (dados de detecção em JSON)
 
 PARÂMETROS ROS2 (definidos em param_ros.yaml):

@@ -27,8 +27,9 @@ COMPONENTES:
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QGridLayout, QSplitter, QFrame)
 from PyQt6.QtGui import QPixmap, QImage, QCursor
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 
+import time
 import cv2
 from cv_bridge import CvBridge
 
@@ -41,7 +42,7 @@ from .lidar_screen import LidarScreen
 
 # Importações de utilitários e gerenciadores
 # Utilitários: estilos comuns, tópicos ROS
-from .utils import COMMON_STYLES, ROS_TOPICS
+from .utils import COMMON_STYLES
 # Gerenciadores: controlam funcionalidades específicas do dashboard
 from .controles import ControlesManager
 from .fsm import FSMManager
@@ -151,6 +152,11 @@ class DashboardGUI(QWidget):
         # Conecta sinais PyQt6 aos slots da GUI
         # Isso permite que a GUI seja atualizada automaticamente quando novos dados chegam
         self.connect_signals()
+
+        # Configura o pipeline de frames (buffer de último frame + medição de FR)
+        # Desacopla a recepção (thread ROS) da exibição (thread GUI), evitando
+        # acúmulo ilimitado de frames atrasados ao longo da missão.
+        self._setup_frame_pipeline()
 
     def _load_missions(self):
         """
@@ -428,27 +434,113 @@ class DashboardGUI(QWidget):
         self.signals.mapa.mission_started.connect(self.handle_mission_started)
         self.signals.mapa.mission_ended.connect(self.handle_mission_ended)
 
+    # ==================== PIPELINE DE FRAMES (ANTI-ATRASO + MEDIÇÃO DE FR) ====================
+    def _setup_frame_pipeline(self):
+        """
+        Configura o pipeline de exibição de frames das câmeras (raw e CV).
+
+        Problema resolvido: os callbacks ROS rodam na thread do executor e emitem
+        sinais Qt para a thread da GUI. Como é uma conexão entre threads
+        (QueuedConnection), cada frame vira um evento numa fila ILIMITADA. Se a GUI
+        desenha mais devagar do que os frames chegam, a fila cresce sem limite e o
+        vídeo fica cada vez mais atrasado ao longo da missão.
+
+        Solução: o slot apenas guarda o frame MAIS RECENTE (O(1), descartando o
+        anterior) e um QTimer desenha esse frame a uma taxa fixa. Assim a latência
+        e a memória ficam limitadas (sempre exibe o frame mais novo disponível).
+
+        Também mede, 1x/s:
+        - FR_Received: frames/s recebidos do tópico ROS2 de cada câmera.
+        - FR_Displayed: frames/s efetivamente desenhados na tela.
+        """
+        # Buffers de "último frame" (None = nada novo desde o último desenho)
+        self._latest_camera_frame = None
+        self._latest_cv_frame = None
+
+        # Contadores para cálculo de FR (zerados a cada janela de medição)
+        self._camera_recv_count = 0   # recebidos do tópico (câmera raw)
+        self._camera_disp_count = 0   # exibidos na tela (câmera raw)
+        self._cv_recv_count = 0       # recebidos do tópico (CV)
+        self._cv_disp_count = 0       # exibidos na tela (CV)
+        self._fps_last_time = time.monotonic()
+
+        # Timer de renderização: desenha sempre só o frame mais recente (~30 Hz).
+        self._render_timer = QTimer(self)
+        self._render_timer.timeout.connect(self._render_latest_frames)
+        self._render_timer.start(33)
+
+        # Timer de medição de FR: atualiza os indicadores das telas 1x/s.
+        self._fps_timer = QTimer(self)
+        self._fps_timer.timeout.connect(self._update_fps_indicators)
+        self._fps_timer.start(1000)
+
+    def _render_latest_frames(self):
+        """
+        Desenha na tela apenas o frame mais recente de cada câmera (se houver novo).
+        Executa na thread da GUI a uma taxa fixa, colapsando qualquer backlog.
+        """
+        if self._latest_camera_frame is not None:
+            frame, self._latest_camera_frame = self._latest_camera_frame, None
+            try:
+                self.camera_screen.update_camera_feed(frame)
+                self._camera_disp_count += 1
+            except Exception as e:
+                from .utils import gui_log_error
+                gui_log_error("DashboardGUI", f"Erro ao exibir imagem da câmera: {e}")
+
+        if self._latest_cv_frame is not None:
+            frame, self._latest_cv_frame = self._latest_cv_frame, None
+            try:
+                self.cv_screen.update_processed_image(frame)
+                self._cv_disp_count += 1
+            except Exception as e:
+                from .utils import gui_log_error
+                gui_log_error("DashboardGUI", f"Erro ao exibir imagem CV: {e}")
+
+    def _update_fps_indicators(self):
+        """
+        Calcula FR_Received e FR_Displayed (frames/s) na última janela e envia
+        os valores para as telas da câmera e de CV.
+        """
+        now = time.monotonic()
+        elapsed = now - self._fps_last_time
+        if elapsed <= 0:
+            return
+        self._fps_last_time = now
+
+        camera_received = self._camera_recv_count / elapsed
+        camera_displayed = self._camera_disp_count / elapsed
+        cv_received = self._cv_recv_count / elapsed
+        cv_displayed = self._cv_disp_count / elapsed
+
+        self._camera_recv_count = 0
+        self._camera_disp_count = 0
+        self._cv_recv_count = 0
+        self._cv_disp_count = 0
+
+        if self.camera_screen:
+            self.camera_screen.set_fps(camera_received, camera_displayed)
+        if self.cv_screen:
+            self.cv_screen.set_fps(cv_received, cv_displayed)
+
     # Métodos de atualização da GUI (slots) que serão conectados aos sinais.
     def camera_image_update(self, cv_image):
         """
-        Atualiza o feed da câmera principal na GUI.
+        Slot do tópico da câmera principal. Chamado 1x por frame recebido do ROS2.
+        Apenas guarda o frame mais recente (descartando o anterior) e contabiliza
+        a recepção; o desenho ocorre em _render_latest_frames (taxa fixa).
         """
-        try:
-            self.camera_screen.update_camera_feed(cv_image)
-        except Exception as e:
-            from .utils import gui_log_error
-            gui_log_error("DashboardGUI", f"Erro ao processar imagem da câmera: {e}")
+        self._latest_camera_frame = cv_image
+        self._camera_recv_count += 1
 
     def cv_image_update(self, cv_image):
         """
-        Atualiza a imagem processada por Visão Computacional na GUI.
-        Recebe diretamente uma imagem OpenCV (numpy array) do subscriber.
+        Slot do tópico de Visão Computacional. Chamado 1x por frame recebido do ROS2.
+        Apenas guarda o frame mais recente (descartando o anterior) e contabiliza
+        a recepção; o desenho ocorre em _render_latest_frames (taxa fixa).
         """
-        try:
-            self.cv_screen.update_processed_image(cv_image)
-        except Exception as e:
-            from .utils import gui_log_error
-            gui_log_error("DashboardGUI", f"Erro ao processar imagem CV: {e}")
+        self._latest_cv_frame = cv_image
+        self._cv_recv_count += 1
 
     def cv_analysis_data_update(self, data):
         """
@@ -467,7 +559,7 @@ class DashboardGUI(QWidget):
         Atualiza a imagem da câmera de profundidade na GUI.
         """
         try:
-            cv_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
             self.depth_screen.update_depth_image(cv_image)
         except Exception as e:
             from .utils import gui_log_error
