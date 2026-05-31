@@ -4,6 +4,7 @@ from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
 import json
 from drone_inspetor.signals.dashboard_signals import DepthSignals
+from cv_bridge import CvBridge
 
 class DashboardDepthSubscriber:
     """
@@ -12,13 +13,15 @@ class DashboardDepthSubscriber:
     def __init__(self, DashboardNode: Node, signals: DepthSignals):
         self.DashboardNode = DashboardNode
         self.signals = signals
+        self.bridge = CvBridge()
 
-        # QoS para dados de sensores (imagens): VOLATILE + BEST_EFFORT (alta frequência, não crítico perder algumas)
+        # QoS para dados de sensores (imagens): BEST_EFFORT + KEEP_LAST + depth=1
+        # (sempre o frame mais recente; o pipeline de render da GUI descarta atrasados)
         qos_sensor_data = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
-            depth=10
+            depth=1
         )
 
         # Subscriber para imagem de profundidade (visualização comprimida em JPEG)
@@ -51,9 +54,13 @@ class DashboardDepthSubscriber:
     def depth_image_callback(self, msg):
         """
         Callback para mensagens de imagem da câmera de profundidade.
-        Emite o sinal image_received da subclasse Depth.
+        Decodifica a CompressedImage para OpenCV e emite o sinal image_received.
         """
-        self.signals.image_received.emit(msg)
+        try:
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            self.signals.image_received.emit(cv_image)
+        except Exception as e:
+            self.DashboardNode.get_logger().error(f"Erro ao converter imagem de profundidade comprimida: {e}")
 
     def depth_statistics_callback(self, msg):
         """

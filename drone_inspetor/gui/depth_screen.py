@@ -37,6 +37,9 @@ class DepthScreen(BaseScreen):
         # Chama o construtor da classe base BaseScreen
         super().__init__(video_label, "Câmera de Profundidade")
 
+        # Habilita o overlay de taxa de frames (FR_Received / FR_Displayed)
+        self._fps_overlay_enabled = True
+
         # Instancia o ImageProcessor para converter mensagens de imagem ROS para formatos PyQt
         self.image_processor = ImageProcessor()
 

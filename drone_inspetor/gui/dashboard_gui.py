@@ -30,8 +30,6 @@ from PyQt6.QtGui import QPixmap, QImage, QCursor
 from PyQt6.QtCore import Qt, QTimer
 
 import time
-import cv2
-from cv_bridge import CvBridge
 
 # Importações das telas de sensores
 # Cada tela gerencia a exibição de dados de um sensor específico
@@ -83,10 +81,6 @@ class DashboardGUI(QWidget):
         # Os sinais permitem comunicação assíncrona entre threads (ROS2 e GUI)
         # Os sinais também contêm métodos de publicação de comandos incorporados
         self.signals = signals
-        
-        # Cria instância do CvBridge para conversão entre formatos ROS e OpenCV/PyQt
-        # Necessário para processar imagens recebidas via ROS2 e exibi-las na GUI
-        self.bridge = CvBridge()
 
         # ==================== CONFIGURAÇÕES BÁSICAS DA JANELA =========================================
         # Define título da janela principal
@@ -456,12 +450,15 @@ class DashboardGUI(QWidget):
         # Buffers de "último frame" (None = nada novo desde o último desenho)
         self._latest_camera_frame = None
         self._latest_cv_frame = None
+        self._latest_depth_frame = None
 
         # Contadores para cálculo de FR (zerados a cada janela de medição)
         self._camera_recv_count = 0   # recebidos do tópico (câmera raw)
         self._camera_disp_count = 0   # exibidos na tela (câmera raw)
         self._cv_recv_count = 0       # recebidos do tópico (CV)
         self._cv_disp_count = 0       # exibidos na tela (CV)
+        self._depth_recv_count = 0    # recebidos do tópico (profundidade)
+        self._depth_disp_count = 0    # exibidos na tela (profundidade)
         self._fps_last_time = time.monotonic()
 
         # Timer de renderização: desenha sempre só o frame mais recente (~30 Hz).
@@ -497,10 +494,19 @@ class DashboardGUI(QWidget):
                 from .utils import gui_log_error
                 gui_log_error("DashboardGUI", f"Erro ao exibir imagem CV: {e}")
 
+        if self._latest_depth_frame is not None:
+            frame, self._latest_depth_frame = self._latest_depth_frame, None
+            try:
+                self.depth_screen.update_depth_image(frame)
+                self._depth_disp_count += 1
+            except Exception as e:
+                from .utils import gui_log_error
+                gui_log_error("DashboardGUI", f"Erro ao exibir imagem de profundidade: {e}")
+
     def _update_fps_indicators(self):
         """
         Calcula FR_Received e FR_Displayed (frames/s) na última janela e envia
-        os valores para as telas da câmera e de CV.
+        os valores para as telas da câmera, de CV e de profundidade.
         """
         now = time.monotonic()
         elapsed = now - self._fps_last_time
@@ -512,16 +518,22 @@ class DashboardGUI(QWidget):
         camera_displayed = self._camera_disp_count / elapsed
         cv_received = self._cv_recv_count / elapsed
         cv_displayed = self._cv_disp_count / elapsed
+        depth_received = self._depth_recv_count / elapsed
+        depth_displayed = self._depth_disp_count / elapsed
 
         self._camera_recv_count = 0
         self._camera_disp_count = 0
         self._cv_recv_count = 0
         self._cv_disp_count = 0
+        self._depth_recv_count = 0
+        self._depth_disp_count = 0
 
         if self.camera_screen:
             self.camera_screen.set_fps(camera_received, camera_displayed)
         if self.cv_screen:
             self.cv_screen.set_fps(cv_received, cv_displayed)
+        if self.depth_screen:
+            self.depth_screen.set_fps(depth_received, depth_displayed)
 
     # Métodos de atualização da GUI (slots) que serão conectados aos sinais.
     def camera_image_update(self, cv_image):
@@ -554,16 +566,14 @@ class DashboardGUI(QWidget):
         """
         self.cv_screen.update_detections(detections)
 
-    def depth_image_update(self, msg):
+    def depth_image_update(self, cv_image):
         """
-        Atualiza a imagem da câmera de profundidade na GUI.
+        Slot do tópico de profundidade. Chamado 1x por frame recebido do ROS2.
+        Apenas guarda o frame mais recente (descartando o anterior) e contabiliza
+        a recepção; o desenho ocorre em _render_latest_frames (taxa fixa).
         """
-        try:
-            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
-            self.depth_screen.update_depth_image(cv_image)
-        except Exception as e:
-            from .utils import gui_log_error
-            gui_log_error("DashboardGUI", f"Erro ao processar imagem de profundidade: {e}")
+        self._latest_depth_frame = cv_image
+        self._depth_recv_count += 1
 
     def depth_statistics_update(self, statistics):
         """
