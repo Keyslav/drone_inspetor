@@ -39,7 +39,8 @@ setup(
         'opencv-python',
         'numpy',
         'pillow',
-        'pyyaml'
+        'pyyaml',
+        'psutil'
     ],
     zip_safe=True,
     maintainer='user',

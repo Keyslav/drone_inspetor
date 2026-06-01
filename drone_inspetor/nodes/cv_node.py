@@ -49,6 +49,9 @@ from drone_inspetor_msgs.msg import CVDetectionMSG, CVDetectionItemMSG, FSMState
 from drone_inspetor_msgs.srv import CVDetectionSRV, RecordDetectionsSRV, EnableAnomalyDetectionSRV, CVModelsSRV
 import json
 
+# Gerador do relatório da missão (relatorio_da_missao.md)
+from drone_inspetor.reports.mission_report import MissionReport
+
 
 class CVNode(Node):
     """
@@ -92,6 +95,11 @@ class CVNode(Node):
         self._current_fsm_state = ""
         self._on_mission = False
         self._last_annotated_image = None  # Última imagem com anotações
+
+        # === Relatório da missão (relatorio_da_missao.md) ===
+        self._report = None            # Instância de MissionReport (criada no início da missão)
+        self._mission_name = ""        # Nome da missão atual (para o relatório)
+        self._last_milestone_label = ""  # Último rótulo de marco (waypoint) registrado
         
         # Controle de fotos
         self._photos_folder = ""
@@ -144,6 +152,14 @@ class CVNode(Node):
         
         self.get_logger().info(f"CV Foto: formato={self._photo_format}, qualidade={self._photo_quality}")
         self.get_logger().info(f"CV Vídeo: fps={self._video_fps}, codec={self._video_codec}")
+
+        # ==================== PARÂMETRO DE IDENTIFICAÇÃO DO DISPOSITIVO ===========================
+        # Rótulo do dispositivo usado no relatório da missão para diferenciar as plataformas
+        # na comparação (ex.: "RPI5", "Jetson Orin Nano", "PC"). "auto" deduz de
+        # /proc/device-tree/model (Raspberry Pi / Jetson) ou do hostname.
+        self.declare_parameter("device_label", "auto")
+        self._device_label = self.get_parameter("device_label").get_parameter_value().string_value
+        self.get_logger().info(f"Relatório de missão: dispositivo='{self._device_label}'")
         
         # ==================== CARREGAMENTO DOS MODELOS YOLO ===============================================
         # Obtém o caminho do diretório de instalação do pacote
@@ -326,12 +342,20 @@ class CVNode(Node):
         """
         self._is_shutting_down = True
         self.get_logger().info("Encerrando cv_node... (Flag _is_shutting_down=True)")
-        
+
+        # Finaliza o relatório da missão se ainda estiver ativo (encerramento no meio da missão)
+        if self._report is not None:
+            try:
+                self._report.finish("INTERROMPIDA (cv_node encerrado)")
+            except Exception as e:
+                self.get_logger().error(f"Erro ao finalizar relatório no shutdown: {e}")
+            self._report = None
+
         # Libera recursos de vídeo se estiver gravando
         if self._video_writer:
             self._video_writer.release()
             self._video_writer = None
-            
+
         super().destroy_node()
 
     
@@ -410,12 +434,16 @@ class CVNode(Node):
             self.get_logger().error(f"Modelo de objetos não encontrado: {model_path}")
             return
         
+        old_model_file = self._current_object_model_file
         try:
             self.get_logger().info(f"🔄 Carregando modelo de objetos: {model_filename}...")
             self.yolo_model_objects = YOLO(model_path)
             self._current_object_model_file = model_filename
             self.get_logger().info(f"✅ Modelo de objetos atualizado: {model_filename}")
             self.get_logger().info(f"   Classes disponíveis: {self.yolo_model_objects.names}")
+            # Registra a troca de modelo no relatório da missão (se houver missão ativa)
+            if self._report is not None:
+                self._report.note_model_change("objetos", old_model_file, model_filename)
         except Exception as e:
             self.get_logger().error(f"Erro ao carregar modelo de objetos {model_filename}: {e}")
     
@@ -432,11 +460,15 @@ class CVNode(Node):
             self.get_logger().error(f"Modelo de anomalias não encontrado: {model_path}")
             return
         
+        old_model_file = self._current_anomaly_model_file
         try:
             self.get_logger().info(f"🔄 Carregando modelo de anomalias: {model_filename}...")
             self.yolo_model_anomalies = YOLO(model_path)
             self._current_anomaly_model_file = model_filename
             self.get_logger().info(f"✅ Modelo de anomalias atualizado: {model_filename}")
+            # Registra a troca de modelo no relatório da missão (se houver missão ativa)
+            if self._report is not None:
+                self._report.note_model_change("anomalias", old_model_file, model_filename)
         except Exception as e:
             self.get_logger().error(f"Erro ao carregar modelo de anomalias {model_filename}: {e}")
 
@@ -460,12 +492,30 @@ class CVNode(Node):
             if self._is_shutting_down:
                 return
 
+            # Marca o frame que CHEGOU ao cv_node (FR de imagens recebidas no relatório)
+            if self._report is not None:
+                self._report.mark_frame_received()
+
             # Converte mensagem CompressedImage ROS para imagem OpenCV no formato BGR8
             cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            
-            # Aplica detecção de objetos usando YOLO
-            # Retorna imagem anotada e lista de detecções
-            annotated_image, detections = self.detect_objects(cv_image)
+
+            # Aplica detecção de objetos usando YOLO. As latências de inferência (objetos e
+            # anomalias) são medidas DENTRO de detect_objects em TEMPO DE PAREDE real
+            # (perf_counter), independente de use_sim_time — essencial para comparar o
+            # desempenho entre RPI5, Jetson e PC.
+            annotated_image, detections, timing = self.detect_objects(cv_image)
+
+            # Registra latências e nº de bounding boxes do frame no relatório da missão
+            if self._report is not None:
+                n_obj_bboxes = len(detections)
+                n_anom_bboxes = sum(len(d.get("anomalies", [])) for d in detections)
+                self._report.record_frame(
+                    obj_ms=timing.get("obj_ms"),
+                    anom_ms=timing.get("anom_ms"),
+                    n_obj_bboxes=n_obj_bboxes,
+                    n_anom_bboxes=n_anom_bboxes,
+                    anomaly_active=timing.get("anomaly_active", False),
+                )
             
             # Publica imagem processada com anotações como CompressedImage
             try:
@@ -546,7 +596,11 @@ class CVNode(Node):
                     self.get_logger().info(f"📷 Pasta de fotos CV criada: {self._photos_folder}")
                 except Exception as e:
                     self.get_logger().error(f"Erro ao criar pasta de fotos CV: {e}")
-        
+
+            # === Cria o relatório da missão (relatorio_da_missao.md na raiz da pasta) ===
+            self._mission_name = msg.mission_name
+            self._start_mission_report(new_mission_folder, msg)
+
         # ========== ATUALIZAÇÃO DE INFORMAÇÕES DO PONTO ==========
         if new_on_mission:
             self._ponto_indice_atual = msg.ponto_de_inspecao_indice_atual
@@ -557,18 +611,127 @@ class CVNode(Node):
             self.get_logger().info(f"Missão finalizada. Fotos CV: {self._photo_counter}")
             self._photos_folder = ""
             self._videos_folder = ""
-        
+            # Finaliza e grava a versão final do relatório da missão
+            self._finish_mission_report("CONCLUÍDA")
+
         # ========== CAPTURA DE FOTO ==========
         # Tira foto sempre que FSM transicionar de INSPECIONANDO para DETECTANDO
         # IMPORTANTE: verificar ANTES de atualizar _current_fsm_state
         if new_on_mission and new_state == "EXECUTANDO_INSPECIONANDO_DETECTANDO":
             if self._current_fsm_state == "EXECUTANDO_INSPECIONANDO":
                 self._capture_photo(new_state)
-        
+
+        # ========== REGISTRO DE EVENTOS E MARCOS DA MISSÃO NO RELATÓRIO ==========
+        if self._report is not None and new_on_mission:
+            # Marco (trecho): muda em Decolagem → Ponto Pk → RTL e quando o índice
+            # do ponto avança (mesmo sem mudar o estado da FSM).
+            self._update_mission_milestone(new_state, msg.ponto_de_inspecao_indice_atual)
+
+            # Transição de estado da FSM (linha do tempo de eventos)
+            if new_state != self._current_fsm_state:
+                self._report.note_state_transition(
+                    self._current_fsm_state or "(início)", new_state,
+                    ponto_idx=msg.ponto_de_inspecao_indice_atual,
+                    objeto_alvo=msg.objeto_alvo,
+                )
+                # A transição para ESCANEANDO indica que o objeto-alvo foi confirmado/detectado
+                if new_state == "EXECUTANDO_INSPECIONANDO_ESCANEANDO":
+                    self._report.note_target_detected(
+                        msg.objeto_alvo, ponto_idx=msg.ponto_de_inspecao_indice_atual
+                    )
+            self._report.set_mission_info(points_total=msg.total_pontos_de_inspecao)
+            self._report.note_point_reached(msg.ponto_de_inspecao_indice_atual)
+
         # Atualiza estado (APÓS verificação de captura de foto)
         self._on_mission = new_on_mission
         self._current_fsm_state = new_state
-    
+
+    def _start_mission_report(self, mission_folder: str, msg: FSMStateMSG):
+        """
+        Cria e inicia o relatório da missão (relatorio_da_missao.md).
+
+        O relatório é criado na RAIZ da pasta da missão (ao lado de fotos/, videos/,
+        fotos_cv/ e videos_cv/) e é preenchido continuamente durante a execução.
+        """
+        # Fecha qualquer relatório anterior que tenha ficado aberto
+        if self._report is not None:
+            try:
+                self._report.finish("INTERROMPIDA (nova missão iniciada)")
+            except Exception:
+                pass
+            self._report = None
+
+        if not mission_folder:
+            self.get_logger().warn("Pasta da missão vazia: relatório da missão não será gerado.")
+            return
+
+        try:
+            self._report = MissionReport(
+                mission_folder=mission_folder,
+                mission_name=msg.mission_name,
+                device_label=self._device_label,
+                available_models=self._available_models,
+                logger=self.get_logger(),
+            )
+            # Modelos de CV ativos no início da missão
+            self._report.set_initial_models(
+                self._current_object_model_file, self._current_anomaly_model_file
+            )
+            self._report.set_mission_info(points_total=msg.total_pontos_de_inspecao)
+            self._report.start()
+            # Abre o primeiro trecho já com o rótulo do marco correspondente ao estado atual
+            self._last_milestone_label = ""
+            self._update_mission_milestone(msg.state_name, msg.ponto_de_inspecao_indice_atual)
+            self.get_logger().info(f"📝 Relatório da missão iniciado: {self._report.report_path}")
+        except Exception as e:
+            self.get_logger().error(f"Erro ao iniciar relatório da missão: {e}")
+            self._report = None
+
+    def _finish_mission_report(self, status: str):
+        """Finaliza e grava a versão final do relatório da missão atual, se houver."""
+        if self._report is None:
+            return
+        try:
+            self._report.finish(status)
+            self.get_logger().info(f"📝 Relatório da missão finalizado: {self._report.report_path}")
+        except Exception as e:
+            self.get_logger().error(f"Erro ao finalizar relatório da missão: {e}")
+        finally:
+            self._report = None
+            self._last_milestone_label = ""
+
+    def _milestone_label(self, state_name: str, ponto_idx: int):
+        """
+        Deriva o rótulo do MARCO (trecho da missão) a partir do estado da FSM.
+
+        Marcos: 'Decolagem' (armando/decolando), 'Ponto Pkk' (navegação + inspeção de
+        cada ponto de inspeção) e 'RTL (retorno)'. Retorna None para estados que não
+        delimitam um trecho (PRONTO/DESATIVADO), mantendo o trecho anterior aberto.
+        """
+        if not state_name:
+            return None
+        if state_name in ("EXECUTANDO_ARMANDO", "EXECUTANDO_DECOLANDO"):
+            return "Decolagem"
+        if state_name.startswith("EXECUTANDO_INSPECIONANDO"):
+            return f"Ponto P{ponto_idx + 1:02d}"
+        if state_name == "RETORNANDO":
+            return "RTL (retorno)"
+        return None
+
+    def _update_mission_milestone(self, state_name: str, ponto_idx: int):
+        """
+        Fecha o trecho atual e abre um novo no relatório quando o marco muda.
+
+        O marco muda na transição Decolagem → Ponto Pk → RTL e também quando o índice
+        do ponto de inspeção avança (P01 → P02), mesmo sem mudança de estado da FSM.
+        """
+        if self._report is None:
+            return
+        label = self._milestone_label(state_name, ponto_idx)
+        if label and label != self._last_milestone_label:
+            self._last_milestone_label = label
+            self._report.mark_waypoint(label)
+
     def _capture_photo(self, state_name: str):
         """
         Captura e salva uma foto anotada (com bounding boxes) na pasta fotos_cv da missão.
@@ -605,13 +768,17 @@ class CVNode(Node):
             # Salva a imagem anotada
             cv2.imwrite(photo_path, self._last_annotated_image, encode_params)
             self.get_logger().info(f"🔍 Foto CV capturada: {os.path.basename(photo_path)}")
-            
+
+            # Registra a foto no relatório da missão
+            if self._report is not None:
+                self._report.note_photo("cv")
+
         except Exception as e:
             self.get_logger().error(f"Erro ao capturar foto CV: {e}")
 
-    def _capture_anomaly_photos(self, img_original: np.ndarray, img_objeto: np.ndarray, 
+    def _capture_anomaly_photos(self, img_original: np.ndarray, img_objeto: np.ndarray,
                                   img_anomalias: np.ndarray, crop_original: np.ndarray,
-                                  crop_anomalias: np.ndarray, object_name: str):
+                                  crop_anomalias: np.ndarray, object_name: str, n_anomalias: int = 0):
         """
         Salva 5 fotos do MESMO momento quando anomalias são detectadas.
         Só salva se passou pelo menos 1 segundo desde a última captura.
@@ -673,9 +840,15 @@ class CVNode(Node):
             cv2.imwrite(os.path.join(self._photos_folder, f3), img_anomalias, encode_params)
             cv2.imwrite(os.path.join(self._photos_folder, f4), crop_original_resized, encode_params)
             cv2.imwrite(os.path.join(self._photos_folder, f5), crop_anomalias_resized, encode_params)
-            
+
             self.get_logger().info(f"📷 5 fotos anomalias: seq={seq_momento}, ts={timestamp}")
-            
+
+            # Registra o momento de anomalia e as 5 fotos no relatório da missão
+            if self._report is not None:
+                self._report.note_anomaly_moment(object_name, n_anomalias, ponto_idx=self._ponto_indice_atual)
+                for _ in range(5):
+                    self._report.note_photo("anomalia")
+
         except Exception as e:
             self.get_logger().error(f"Erro ao salvar fotos de anomalias: {e}")
 
@@ -820,6 +993,10 @@ class CVNode(Node):
                 response.message = f"Gravação finalizada: {os.path.basename(self._video_path)}"
                 response.video_path = self._video_path
                 self.get_logger().info(f"⬛ {response.message}")
+
+                # Registra o vídeo salvo no relatório da missão
+                if self._report is not None and self._video_path:
+                    self._report.note_video(self._video_path)
                 
             except Exception as e:
                 response.success = False
@@ -888,17 +1065,25 @@ class CVNode(Node):
             image (numpy.ndarray): Imagem OpenCV no formato BGR (numpy array)
             
         Returns:
-            tuple: (imagem_anotada, lista_deteccoes)
+            tuple: (imagem_anotada, lista_deteccoes, timing)
                 - imagem_anotada: Imagem com bounding boxes e labels desenhados
                 - lista_deteccoes: Lista de dicionários com informações das detecções
+                - timing: dict com tempos de inferência em ms ('obj_ms', 'anom_ms',
+                  'anomaly_active') usados pelo relatório da missão para calcular a FR.
         """
+        # Tempos de inferência (ms) deste frame, para o relatório de FR.
+        timing = {"obj_ms": None, "anom_ms": None,
+                  "anomaly_active": bool(self._anomaly_detection_enabled)}
+
         if self.yolo_model_objects is None:
-            return image, []
+            return image, [], timing
 
         try:
             annotated_image = image.copy()
             detections = []
-            
+            anom_ms_total = 0.0   # soma do tempo de inferência de anomalias neste frame
+            anom_ran = False      # True se o modelo de anomalias rodou ao menos uma vez
+
             # ==================== ESTÁGIO 1: Detecção de objetos da plataforma ====================
             target_class_id = None
             
@@ -923,18 +1108,22 @@ class CVNode(Node):
                     results = None
                 else:
                     # Executa predição filtrando apenas pela classe do objeto alvo
+                    t_obj = time.perf_counter()
                     results = self.yolo_model_objects.predict(image, verbose=False, device=0, classes=target_class_id)
+                    timing["obj_ms"] = (time.perf_counter() - t_obj) * 1000.0
             else:
                 # Modo geral: detecta qualquer objeto conhecido pelo modelo
+                t_obj = time.perf_counter()
                 results = self.yolo_model_objects.predict(image, verbose=False, device=0, classes=None)
-            
+                timing["obj_ms"] = (time.perf_counter() - t_obj) * 1000.0
+
             if not results:
-                return image, []
+                return image, [], timing
 
             result = results[0]
             boxes = result.boxes
             if boxes is None or len(boxes) == 0:
-                return image, []
+                return image, [], timing
 
             # Converte UMA vez por frame (GPU -> CPU)
             xyxy = boxes.xyxy.cpu().numpy()              # (N, 4)
@@ -980,7 +1169,10 @@ class CVNode(Node):
                     crop = image[y1i:y2i, x1i:x2i]
                     
                     if crop.size > 0:  # Verifica se crop é válido
+                        t_anom = time.perf_counter()
                         anomaly_results = self.yolo_model_anomalies.predict(crop, verbose=False, device=0)
+                        anom_ms_total += (time.perf_counter() - t_anom) * 1000.0
+                        anom_ran = True
                         
                         if anomaly_results and anomaly_results[0].boxes is not None:
                             anom_boxes = anomaly_results[0].boxes
@@ -1048,16 +1240,21 @@ class CVNode(Node):
                                     crop_anomalias = annotated_image[y1i:y2i, x1i:x2i].copy()
                                     self._capture_anomaly_photos(
                                         img_original, img_objeto, img_anomalias,
-                                        crop.copy(), crop_anomalias, class_name
+                                        crop.copy(), crop_anomalias, class_name,
+                                        n_anomalias=len(detection["anomalies"])
                                     )
                 
                 detections.append(detection)
 
-            return annotated_image, detections
+            # Consolida o tempo total de inferência de anomalias deste frame
+            if anom_ran:
+                timing["anom_ms"] = anom_ms_total
+
+            return annotated_image, detections, timing
 
         except Exception as e:
             self.get_logger().error(f"Erro na detecção de objetos: {e}")
-            return image, []
+            return image, [], timing
 
 def main(args=None):
     """Função principal do nó."""

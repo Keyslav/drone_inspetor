@@ -63,6 +63,13 @@ cv_node:
     # - "XVID": médio CPU, boa qualidade
     # - "mp4v": compatível com browsers
     video_codec: "MJPG"
+    # --- Relatório da missão (relatorio_da_missao.md) ---
+    # Rótulo do dispositivo usado no relatório para diferenciar as plataformas na
+    # comparação. "auto" deduz de /proc/device-tree/model (RPI5/Jetson) ou do hostname.
+    # Exemplos manuais: "RPI5", "Jetson Orin Nano", "PC-Desktop".
+    # O relatório é segmentado por marco de waypoint (Decolagem, Ponto Pk, RTL),
+    # não por intervalo de tempo fixo.
+    device_label: "auto"
 
 
 # =================================================================================================
