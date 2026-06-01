@@ -32,12 +32,10 @@ def generate_launch_description():
             "/drone_inspetor/gz/depth_camera",
         ],
         remappings=[
-            ("/drone_inspetor/gz/gimbal/camera",                 "/drone_inspetor/externo/camera/image_raw"            ),
             ("/drone_inspetor/gz/gimbal/camera/compressed",      "/drone_inspetor/externo/camera/compressed"           ),
             ("/drone_inspetor/gz/gimbal/camera/compressedDepth", "/drone_inspetor/externo/camera/compressedDepth"      ),
             ("/drone_inspetor/gz/gimbal/camera/theora",          "/drone_inspetor/externo/camera/theora"               ),
             ("/drone_inspetor/gz/gimbal/camera/zstd",            "/drone_inspetor/externo/camera/zstd"                 ),
-            ("/drone_inspetor/gz/depth_camera",                  "/drone_inspetor/externo/depth_camera/image_raw"      ),
             ("/drone_inspetor/gz/depth_camera/compressed",       "/drone_inspetor/externo/depth_camera/compressed"     ),
             ("/drone_inspetor/gz/depth_camera/compressedDepth",  "/drone_inspetor/externo/depth_camera/compressedDepth"),
             ("/drone_inspetor/gz/depth_camera/theora",           "/drone_inspetor/externo/depth_camera/theora"         ),

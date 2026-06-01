@@ -8,7 +8,7 @@ Kinect, ou simulador). Realiza análise estatística dos dados, detecta alertas 
 e gera visualizações processadas para exibição no dashboard.
 
 ARQUITETURA:
-- Assina: /drone_inspetor/externo/depth_camera/image_raw (imagens de profundidade externas)
+- Assina: /drone_inspetor/externo/depth_camera/compressedDepth (profundidade comprimida, preserva métrica)
 - Publica: /drone_inspetor/interno/depth_node/compressed (visualização processada, JPEG)
 - Publica: /drone_inspetor/interno/depth_node/statistics (estatísticas em JSON)
 - Publica: /drone_inspetor/interno/depth_node/proximity_alerts (alertas de proximidade em JSON)
@@ -26,12 +26,13 @@ FUNCIONALIDADES:
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-from sensor_msgs.msg import Image, CompressedImage
+from sensor_msgs.msg import CompressedImage
 from cv_bridge import CvBridge
 from std_msgs.msg import String
 import cv2
 import numpy as np
 import json
+import struct
 from datetime import datetime
 
 class DepthNode(Node):
@@ -96,10 +97,13 @@ class DepthNode(Node):
         
         # ==================== SUBSCRIBERS EXTERNOS (ENTRADA DE DADOS DO DRONE) =========================
 
-        # Imagem de profundidade raw do tópico externo
+        # Imagem de profundidade comprimida do tópico externo.
+        # Usa o transporte "compressedDepth" (PNG quantizado) em vez de "image_raw":
+        # ele preserva os valores métricos de profundidade (32FC1/16UC1), ao contrário
+        # do "compressed" (JPEG), que destruiria a precisão usada em estatísticas/alertas.
         self.depth_subscription = self.create_subscription(
-            Image,
-            "/drone_inspetor/externo/depth_camera/image_raw",
+            CompressedImage,
+            "/drone_inspetor/externo/depth_camera/compressedDepth",
             self.depth_image_callback,
             qos_sensor_data
         )
@@ -148,26 +152,19 @@ class DepthNode(Node):
     def depth_image_callback(self, msg):
         """
         Callback para processar imagens de profundidade.
-        
+
         Args:
-            msg: Mensagem sensor_msgs/Image com dados de profundidade
+            msg: Mensagem sensor_msgs/CompressedImage (transporte compressedDepth)
         """
         self.get_logger().debug("Processando imagem de profundidade")
-        
+
         try:
-            # ==================== CONVERSÃO PARA OPENCV ====================
-            # Depth images podem ser float32 ou uint16
-            match msg.encoding:
-                case "32FC1":
-                    depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
-                case "16UC1":
-                    depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="16UC1")
-                    # Converte para metros se necessário (assumindo mm)
-                    depth_image = depth_image.astype(np.float32) / 1000.0
-                case _:
-                    depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-                    depth_image = depth_image.astype(np.float32)
-            
+            # ==================== DESCOMPRESSÃO PARA OPENCV ====================
+            # Decodifica o transporte "compressedDepth" preservando a métrica (em metros)
+            depth_image = self.decompress_depth(msg)
+            if depth_image is None:
+                return
+
             self.get_logger().debug(f"Imagem de profundidade convertida: {depth_image.shape}, dtype: {depth_image.dtype}")
             
             # ==================== PROCESSAMENTO DE PROFUNDIDADE ====================
@@ -197,6 +194,61 @@ class DepthNode(Node):
         except Exception as e:
             self.get_logger().error(f"Erro no processamento de profundidade: {e}")
     
+
+    def decompress_depth(self, msg):
+        """
+        Decodifica uma mensagem CompressedImage do transporte "compressedDepth"
+        para um array de profundidade em metros (float32).
+
+        O formato compressedDepth (image_transport) prefixa o PNG com um cabeçalho
+        de 12 bytes: um enum de formato (int, 4 bytes) seguido de dois parâmetros de
+        quantização (float, 8 bytes). Para imagens 32FC1 a profundidade é armazenada
+        como inverso quantizado em 16 bits; para 16UC1 o PNG guarda a distância em mm.
+
+        Args:
+            msg: Mensagem sensor_msgs/CompressedImage (formato "<enc>; compressedDepth <comp>")
+
+        Returns:
+            numpy.ndarray (float32, metros) ou None em caso de falha.
+        """
+        try:
+            raw_encoding = msg.format.split(";")[0].strip()
+
+            # Remove o cabeçalho de 12 bytes e decodifica o PNG (imagem 16 bits)
+            header_size = 12
+            if len(msg.data) <= header_size:
+                self.get_logger().warn("CompressedImage de profundidade sem dados suficientes")
+                return None
+
+            depth_quant_a, depth_quant_b = struct.unpack("ff", bytes(msg.data[4:header_size]))
+            png_buffer = np.frombuffer(bytes(msg.data[header_size:]), dtype=np.uint8)
+            depth_raw = cv2.imdecode(png_buffer, cv2.IMREAD_UNCHANGED)
+
+            if depth_raw is None:
+                self.get_logger().warn(f"Falha ao decodificar compressedDepth (formato '{msg.format}')")
+                return None
+
+            if raw_encoding == "32FC1":
+                # Inverso quantizado -> metros: depth = a / (q - b) para q > 0
+                depth_image = np.zeros(depth_raw.shape, dtype=np.float32)
+                valid = depth_raw > 0
+                denom = depth_raw[valid].astype(np.float32) - depth_quant_b
+                # Evita divisão por zero
+                safe = denom != 0
+                idx = np.where(valid)
+                depth_image[idx[0][safe], idx[1][safe]] = depth_quant_a / denom[safe]
+                return depth_image
+
+            if raw_encoding == "16UC1":
+                # Profundidade direta em milímetros -> metros
+                return depth_raw.astype(np.float32) / 1000.0
+
+            # Fallback: assume já estar em unidade compatível
+            return depth_raw.astype(np.float32)
+
+        except Exception as e:
+            self.get_logger().error(f"Erro ao descomprimir profundidade: {e}")
+            return None
 
     def process_depth_image(self, depth_image):
         """

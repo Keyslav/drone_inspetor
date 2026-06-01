@@ -6,21 +6,9 @@
   gz_type_name: "gz.msgs.Clock"
   direction: GZ_TO_ROS
 
-# Bridge for camera data
-#- ros_topic_name: "/drone_inspetor/externo/camera/image_raw"
-#  gz_topic_name: "/drone_inspetor/gz/gimbal/camera"
-#  ros_type_name: "sensor_msgs/msg/Image"
-#  gz_type_name: "gz.msgs.Image"
-#  direction: GZ_TO_ROS
-#  qos_profile: SENSOR_DATA
-
-# Bridge for depth camera data
-#- ros_topic_name: "/drone_inspetor/externo/depth_camera/image_raw"
-#  gz_topic_name: "/drone_inspetor/gz/depth_camera"
-#  ros_type_name: "sensor_msgs/msg/Image"
-#  gz_type_name: "gz.msgs.Image"
-#  direction: GZ_TO_ROS
-#  qos_profile: SENSOR_DATA
+# Câmera e câmera de profundidade são feitas pelo image_bridge (ros_gz_image),
+# que publica diretamente os transportes comprimidos (compressed / compressedDepth).
+# Ver bridges_launch.py / ground_station_launch.py. Não usamos image_raw.
 
 # Bridge for LIDAR data
 - ros_topic_name: "/drone_inspetor/externo/lidar/scan"
