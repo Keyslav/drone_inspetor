@@ -38,6 +38,7 @@ from cv_bridge import CvBridge
 from std_msgs.msg import String
 import cv2
 import numpy as np
+import threading
 from datetime import datetime
 from ultralytics import YOLO
 import os
@@ -111,6 +112,11 @@ class CVNode(Node):
         self._last_detections = []  # Últimas detecções encontradas
         
         # === Variáveis para gravação de vídeo ===
+        # Lock protege o _video_writer: image_callback (camera_cb_group) e
+        # record_service_callback (service_cb_group) rodam em threads paralelas no
+        # MultiThreadedExecutor; escrever um frame durante o release() corrompe o
+        # muxer (warnings "Invalid pts ... <= last ...") e o vídeo.
+        self._video_lock = threading.Lock()
         self._is_recording = False
         self._video_writer = None
         self._video_path = ""
@@ -352,9 +358,11 @@ class CVNode(Node):
             self._report = None
 
         # Libera recursos de vídeo se estiver gravando
-        if self._video_writer:
-            self._video_writer.release()
-            self._video_writer = None
+        with self._video_lock:
+            self._is_recording = False
+            if self._video_writer:
+                self._video_writer.release()
+                self._video_writer = None
 
         super().destroy_node()
 
@@ -562,14 +570,17 @@ class CVNode(Node):
             # Armazena a última imagem anotada para captura de foto
             self._last_annotated_image = annotated_image
             
-            # Grava frame se gravação estiver ativa
-            if self._is_recording and self._video_writer is not None:
-                try:
-                    # Redimensiona para tamanho padrão do vídeo
-                    frame_resized = cv2.resize(annotated_image, self._video_frame_size)
-                    self._video_writer.write(frame_resized)
-                except Exception as e:
-                    self.get_logger().error(f"Erro ao gravar frame: {e}")
+            # Grava frame se gravação estiver ativa.
+            # O lock garante que o writer não seja liberado por outra thread
+            # (record_service_callback) entre o teste e o write().
+            with self._video_lock:
+                if self._is_recording and self._video_writer is not None:
+                    try:
+                        # Redimensiona para tamanho padrão do vídeo
+                        frame_resized = cv2.resize(annotated_image, self._video_frame_size)
+                        self._video_writer.write(frame_resized)
+                    except Exception as e:
+                        self.get_logger().error(f"Erro ao gravar frame: {e}")
             
         except Exception as e:
             self.get_logger().error(f"Erro no processamento da imagem: {e}")
@@ -984,11 +995,14 @@ class CVNode(Node):
                 return response
             
             try:
-                if self._video_writer:
-                    self._video_writer.release()
-                    self._video_writer = None
-                
-                self._is_recording = False
+                # Para de aceitar novos frames antes de liberar o writer e faz ambos
+                # sob o lock, para que image_callback não escreva durante o release().
+                with self._video_lock:
+                    self._is_recording = False
+                    if self._video_writer:
+                        self._video_writer.release()
+                        self._video_writer = None
+
                 response.success = True
                 response.message = f"Gravação finalizada: {os.path.basename(self._video_path)}"
                 response.video_path = self._video_path

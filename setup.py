@@ -40,7 +40,8 @@ setup(
         'numpy',
         'pillow',
         'pyyaml',
-        'psutil'
+        'psutil',
+        'matplotlib'
     ],
     zip_safe=True,
     maintainer='user',

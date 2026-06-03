@@ -421,10 +421,7 @@ class CVScreen(BaseScreen):
             
             curr_obj = data.get('current_object_model', '')
             curr_anom = data.get('current_anomaly_model', '')
-            
-            self._selected_equipment_model = curr_obj
-            self._selected_anomaly_model = curr_anom
-            
+
             gui_log_info("CVScreen", f"Modelos recebidos via serviço: {len(self._equipment_models)} equip, {len(self._anomaly_models)} anom")
             gui_log_info("CVScreen", f"Modelos atuais: {curr_obj} obj, {curr_anom} anom")
             
@@ -437,37 +434,48 @@ class CVScreen(BaseScreen):
             self._update_details_group(getattr(self, 'anom_details_group', None), curr_anom_data)
 
             # --- Atualiza Dropdowns ---
+            # Preserva a seleção em andamento do usuário: o refresh atualiza a LISTA de
+            # modelos, mas não deve descartar uma escolha ainda não aplicada. Só cai no
+            # modelo atual do nó (curr_*) quando a seleção anterior não existe mais.
             if self._equipment_dropdown:
                 gui_log_debug("CVScreen", f"Atualizando Dropdown Equipamentos com {len(self._equipment_models)} itens")
                 self._equipment_dropdown.blockSignals(True)
+                prev = self._equipment_dropdown.currentData()
                 self._equipment_dropdown.clear()
                 for m in self._equipment_models:
                     # Usa 'name' para exibição e 'file_name' como dado
                     self._equipment_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
-                
-                # Seleciona o atual
-                index = self._equipment_dropdown.findData(curr_obj)
+
+                # Mantém a escolha do usuário se ainda existir; senão usa o atual do nó
+                target = prev if (prev and self._equipment_dropdown.findData(prev) >= 0) else curr_obj
+                index = self._equipment_dropdown.findData(target)
                 if index >= 0:
                     self._equipment_dropdown.setCurrentIndex(index)
+                self._selected_equipment_model = self._equipment_dropdown.currentData()
                 self._equipment_dropdown.blockSignals(False)
             else:
                 gui_log_warn("CVScreen", "Dropdown Equipamentos não encontrado para atualização")
+                self._selected_equipment_model = curr_obj
 
             # Atualiza Dropdown de Anomalias
             if self._anomaly_dropdown:
                 gui_log_debug("CVScreen", f"Atualizando Dropdown Anomalias com {len(self._anomaly_models)} itens")
                 self._anomaly_dropdown.blockSignals(True)
+                prev = self._anomaly_dropdown.currentData()
                 self._anomaly_dropdown.clear()
                 for m in self._anomaly_models:
                     self._anomaly_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
-                
-                # Seleciona o atual
-                index = self._anomaly_dropdown.findData(curr_anom)
+
+                # Mantém a escolha do usuário se ainda existir; senão usa o atual do nó
+                target = prev if (prev and self._anomaly_dropdown.findData(prev) >= 0) else curr_anom
+                index = self._anomaly_dropdown.findData(target)
                 if index >= 0:
                     self._anomaly_dropdown.setCurrentIndex(index)
+                self._selected_anomaly_model = self._anomaly_dropdown.currentData()
                 self._anomaly_dropdown.blockSignals(False)
             else:
                 gui_log_warn("CVScreen", "Dropdown Anomalias não encontrado para atualização")
+                self._selected_anomaly_model = curr_anom
                 
         except Exception as e:
             gui_log_error("CVScreen", f"Erro ao atualizar modelos na GUI: {e}")

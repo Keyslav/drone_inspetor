@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QTextBrowser, QListWidget, QListWidgetItem, QSplitter,
     QPushButton, QFrame, QScrollArea, QGridLayout, QMessageBox
 )
-from PyQt6.QtGui import QPixmap, QCursor, QIcon
+from PyQt6.QtGui import QPixmap, QCursor, QIcon, QImage
 from PyQt6.QtCore import Qt, QSize
 from datetime import datetime
 from typing import Optional, List, Dict
@@ -224,6 +224,227 @@ def open_video_with_system_player(video_path: str, parent=None):
         if parent:
             QMessageBox.warning(parent, "Erro", f"Erro ao abrir vídeo:\n{e}")
         return False
+
+
+# =============================================================================
+# RELATÓRIO DA MISSÃO (.md) — LEITURA, PARSING E GRÁFICOS
+# =============================================================================
+
+REPORT_MD_NAME = "relatorio_da_missao.md"
+
+
+def _md_num(text: Optional[str]):
+    """Converte uma célula da tabela Markdown em float; '—'/vazio viram None."""
+    if text is None:
+        return None
+    s = text.strip().replace("*", "").replace("`", "")
+    if s in ("—", "-", ""):
+        return None
+    # Mantém apenas dígitos, sinal e separador decimal (remove unidades coladas).
+    cleaned = "".join(ch for ch in s if ch.isdigit() or ch in ".-+")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def _parse_md_table_after(md_text: str, heading: str):
+    """
+    Extrai a primeira tabela Markdown que aparece após uma linha de cabeçalho.
+
+    Args:
+        md_text: conteúdo completo do .md.
+        heading: texto do cabeçalho (ex.: '## 4.' ou '### Modelos de objetos').
+
+    Returns:
+        (header: List[str], rows: List[List[str]]) ou None se não encontrar.
+    """
+    lines = md_text.splitlines()
+    start = None
+    for i, ln in enumerate(lines):
+        if ln.strip().startswith(heading):
+            start = i + 1
+            break
+    if start is None:
+        return None
+
+    # Avança até a primeira linha de tabela, parando se topar outro cabeçalho.
+    i = start
+    while i < len(lines) and not lines[i].lstrip().startswith("|"):
+        if lines[i].lstrip().startswith("#"):
+            return None
+        i += 1
+
+    table = []
+    while i < len(lines) and lines[i].lstrip().startswith("|"):
+        cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+        # Ignora a linha separadora (|---|---|).
+        if not all(set(c) <= set("-: ") and c != "" for c in cells):
+            table.append(cells)
+        i += 1
+
+    if len(table) < 2:
+        return None
+    return table[0], table[1:]
+
+
+def _fig_to_pixmap(fig) -> QPixmap:
+    """Renderiza uma figura matplotlib (backend Agg) para um QPixmap."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    w, h = canvas.get_width_height()
+    image = QImage(bytes(canvas.buffer_rgba()), w, h, QImage.Format.Format_RGBA8888)
+    return QPixmap.fromImage(image.copy())
+
+
+# Paleta alinhada ao tema escuro da janela.
+_CHART_BG = "#1a1a2e"
+_CHART_FG = "#ecf0f1"
+_CHART_GRID = "#2c3e6b"
+_CHART_COLORS = ["#e94560", "#00d9ff", "#f5a623", "#7ed957", "#a78bfa"]
+
+
+def _style_axes(ax, title: str):
+    """Aplica o tema escuro a um eixo matplotlib."""
+    ax.set_title(title, color=_CHART_FG, fontsize=11, fontweight="bold", pad=10)
+    ax.set_facecolor(_CHART_BG)
+    ax.tick_params(colors=_CHART_FG, labelsize=8)
+    for spine in ax.spines.values():
+        spine.set_color(_CHART_GRID)
+    ax.grid(axis="y", color=_CHART_GRID, linewidth=0.6, alpha=0.6)
+    ax.set_axisbelow(True)
+
+
+def build_report_charts(md_text: str) -> List[QPixmap]:
+    """
+    Gera gráficos analíticos a partir das tabelas do relatório .md.
+
+    - Por marco (seção 4): FR recebida × processada e latências (obj/anom/total).
+    - Por modelo (seção 5): latência média e FR média comparadas entre modelos.
+
+    Retorna lista de QPixmap (vazia se matplotlib indisponível ou sem dados).
+    """
+    try:
+        from matplotlib.figure import Figure
+    except Exception:
+        return []
+
+    pixmaps: List[QPixmap] = []
+
+    # ---- Seção 4: desempenho por marco ----
+    seg = _parse_md_table_after(md_text, "## 4.")
+    if seg:
+        _, rows = seg
+        labels, fr_rec, fr_proc = [], [], []
+        lat_obj, lat_anom, lat_total = [], [], []
+        for r in rows:
+            if len(r) < 8:
+                continue
+            labels.append(r[0].replace("*(em andamento)*", "").strip())
+            fr_rec.append(_md_num(r[3]) or 0.0)
+            fr_proc.append(_md_num(r[4]) or 0.0)
+            lat_obj.append(_md_num(r[5]) or 0.0)
+            lat_anom.append(_md_num(r[6]) or 0.0)
+            lat_total.append(_md_num(r[7]) or 0.0)
+
+        if labels:
+            x = range(len(labels))
+
+            # Gráfico FR rec × proc
+            fig = Figure(figsize=(7.6, 3.2), dpi=100, facecolor=_CHART_BG)
+            ax = fig.add_subplot(111)
+            _style_axes(ax, "Frequência de quadros por marco (Hz)")
+            width = 0.4
+            ax.bar([i - width / 2 for i in x], fr_rec, width, label="FR recebida", color=_CHART_COLORS[1])
+            ax.bar([i + width / 2 for i in x], fr_proc, width, label="FR processada", color=_CHART_COLORS[0])
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(labels, rotation=30, ha="right")
+            ax.set_ylabel("Hz", color=_CHART_FG, fontsize=9)
+            leg = ax.legend(facecolor=_CHART_BG, edgecolor=_CHART_GRID, labelcolor=_CHART_FG, fontsize=8)
+            fig.tight_layout()
+            pixmaps.append(_fig_to_pixmap(fig))
+
+            # Gráfico de latências por marco (apenas se houver algum valor)
+            if any(lat_total) or any(lat_obj) or any(lat_anom):
+                fig = Figure(figsize=(7.6, 3.2), dpi=100, facecolor=_CHART_BG)
+                ax = fig.add_subplot(111)
+                _style_axes(ax, "Latência de processamento por marco (ms)")
+                w3 = 0.27
+                ax.bar([i - w3 for i in x], lat_obj, w3, label="Lat. objeto", color=_CHART_COLORS[2])
+                ax.bar(list(x), lat_anom, w3, label="Lat. anomalia", color=_CHART_COLORS[3])
+                ax.bar([i + w3 for i in x], lat_total, w3, label="Lat. total", color=_CHART_COLORS[0])
+                ax.set_xticks(list(x))
+                ax.set_xticklabels(labels, rotation=30, ha="right")
+                ax.set_ylabel("ms", color=_CHART_FG, fontsize=9)
+                ax.legend(facecolor=_CHART_BG, edgecolor=_CHART_GRID, labelcolor=_CHART_FG, fontsize=8)
+                fig.tight_layout()
+                pixmaps.append(_fig_to_pixmap(fig))
+
+    # ---- Seção 5: comparação por modelo ----
+    model_names, model_lat, model_fps = [], [], []
+    for sub in ("### Modelos de objetos", "### Modelos de anomalias"):
+        tbl = _parse_md_table_after(md_text, sub)
+        if not tbl:
+            continue
+        _, rows = tbl
+        kind = "obj" if "objetos" in sub else "anom"
+        for r in rows:
+            if len(r) < 7:
+                continue
+            name = r[0].replace("`", "").strip()
+            lat = _md_num(r[3])
+            fps = _md_num(r[6])
+            if name and lat is not None:
+                model_names.append(f"{name}\n({kind})")
+                model_lat.append(lat)
+                model_fps.append(fps or 0.0)
+
+    if model_names:
+        fig = Figure(figsize=(7.6, 3.4), dpi=100, facecolor=_CHART_BG)
+        ax1 = fig.add_subplot(111)
+        _style_axes(ax1, "Comparação por modelo YOLO — latência × FR")
+        xm = range(len(model_names))
+        bars = ax1.bar(list(xm), model_lat, 0.5, color=_CHART_COLORS[0], label="Latência média (ms)")
+        ax1.set_ylabel("ms", color=_CHART_COLORS[0], fontsize=9)
+        ax1.set_xticks(list(xm))
+        ax1.set_xticklabels(model_names, fontsize=8)
+        for b, v in zip(bars, model_lat):
+            ax1.text(b.get_x() + b.get_width() / 2, b.get_height(), f"{v:.0f}",
+                     ha="center", va="bottom", color=_CHART_FG, fontsize=8)
+
+        ax2 = ax1.twinx()
+        ax2.plot(list(xm), model_fps, "o-", color=_CHART_COLORS[1], label="FR média (Hz)", linewidth=2)
+        ax2.set_ylabel("Hz", color=_CHART_COLORS[1], fontsize=9)
+        ax2.tick_params(colors=_CHART_FG, labelsize=8)
+        for spine in ax2.spines.values():
+            spine.set_color(_CHART_GRID)
+        fig.tight_layout()
+        pixmaps.append(_fig_to_pixmap(fig))
+
+    return pixmaps
+
+
+class _AutoTextBrowser(QTextBrowser):
+    """QTextBrowser que cresce para caber todo o conteúdo (sem rolagem própria),
+    para ser embutido dentro da QScrollArea do relatório."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setOpenExternalLinks(True)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.document().contentsChanged.connect(self._adjust_height)
+
+    def _adjust_height(self):
+        self.document().setTextWidth(self.viewport().width())
+        height = self.document().size().height()
+        self.setFixedHeight(int(height) + 12)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._adjust_height()
 
 
 # =============================================================================
@@ -440,7 +661,10 @@ class LogAnalysisWindow(QMainWindow):
         fotos_cv_path = os.path.join(mission_path, "fotos_cv")
         if os.path.exists(fotos_cv_path):
             self._add_photos_section("🎯 Fotos CV (Detecções/Anomalias)", fotos_cv_path)
-        
+
+        # === SEÇÃO: Relatório de Missão (.md) + gráficos analíticos ===
+        self._add_mission_report_section(mission_path)
+
         self.report_layout.addStretch()
     
     def _add_section_title(self, title: str):
@@ -578,6 +802,71 @@ class LogAnalysisWindow(QMainWindow):
             
             self.report_layout.addWidget(grid_frame)
     
+    def _add_mission_report_section(self, mission_path: str):
+        """
+        Adiciona, ao fim do relatório, o conteúdo do relatorio_da_missao.md
+        renderizado (Markdown) e gráficos analíticos gerados das suas tabelas.
+        """
+        md_path = os.path.join(mission_path, REPORT_MD_NAME)
+        if not os.path.exists(md_path):
+            return
+
+        try:
+            with open(md_path, "r", encoding="utf-8") as f:
+                md_text = f.read()
+        except Exception as e:
+            self._add_section_title("📄 Relatório de Missão (.md)")
+            err = QLabel(f"⚠️ Não foi possível ler o relatório: {e}")
+            err.setStyleSheet("color: #e94560; font-size: 12px; padding: 5px;")
+            self.report_layout.addWidget(err)
+            return
+
+        self._add_section_title("📄 Relatório de Missão")
+
+        # --- Gráficos analíticos (antes do texto, como dashboard de desempenho) ---
+        try:
+            charts = build_report_charts(md_text)
+        except Exception as e:
+            charts = []
+            print(f"[LogAnalise] Erro ao gerar gráficos do relatório: {e}")
+
+        if charts:
+            charts_frame = QFrame()
+            charts_frame.setStyleSheet("QFrame { background-color: #1a1a2e; border-radius: 8px; padding: 8px; }")
+            charts_layout = QVBoxLayout(charts_frame)
+            charts_layout.setSpacing(10)
+
+            graphs_label = QLabel("📈 Análise gráfica de desempenho")
+            graphs_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #00d9ff; padding: 4px;")
+            charts_layout.addWidget(graphs_label)
+
+            for pix in charts:
+                img_label = QLabel()
+                img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                img_label.setPixmap(pix)
+                img_label.setStyleSheet("background-color: #1a1a2e; border-radius: 6px;")
+                charts_layout.addWidget(img_label)
+
+            self.report_layout.addWidget(charts_frame)
+
+        # --- Texto do relatório renderizado (Markdown) ---
+        browser = _AutoTextBrowser()
+        browser.document().setDefaultStyleSheet(
+            "body { color: #ecf0f1; font-size: 13px; }"
+            "h1 { color: #e94560; } h2 { color: #e94560; } h3 { color: #00d9ff; }"
+            "table { border-collapse: collapse; }"
+            "th, td { border: 1px solid #533483; padding: 4px 8px; }"
+            "th { background-color: #0f3460; color: #ecf0f1; }"
+            "code { color: #f5a623; }"
+            "blockquote { color: #7f8c8d; }"
+        )
+        browser.setMarkdown(md_text)
+        browser.setStyleSheet(
+            "QTextBrowser { background-color: #16213e; color: #ecf0f1;"
+            " border: 1px solid #533483; border-radius: 8px; padding: 10px; }"
+        )
+        self.report_layout.addWidget(browser)
+
     def _open_photo(self, photo_path: str):
         """Abre janela para exibir foto em tamanho grande."""
         photo_window = PhotoWindow(photo_path, self)
