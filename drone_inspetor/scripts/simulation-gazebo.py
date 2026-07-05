@@ -43,7 +43,7 @@ def main():
     if models_exist and not args.overwrite:
         print("Models directory not empty. Overwrite not set. Not downloading models.")
 
-    if args.overwrite and models_exist:
+    elif args.overwrite and models_exist:
         try:
             subdirectories = [os.path.join(args.model_store, d) for d in os.listdir(args.model_store) if os.path.isdir(os.path.join(args.model_store, d))]
             for directory in subdirectories:
@@ -91,10 +91,10 @@ def main():
     # Launch gazebo simulation
     print('> Launching gazebo simulation...')
     if not args.dryrun:
-        cmd = f'GZ_SIM_RESOURCE_PATH={args.model_store}/models '
+        cmd  = f'GZ_SIM_RESOURCE_PATH={args.model_store}/models '
         cmd += f'GZ_SIM_SYSTEM_PLUGIN_PATH={args.model_store}/plugins '
         cmd += f'GZ_SIM_SERVER_CONFIG_PATH={args.model_store}/server.config '
-        # cmd += '__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia '
+        cmd += f'__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia '
         cmd += f'gz sim -r {args.model_store}/worlds/{args.world}.sdf'
 
         if args.headless:
