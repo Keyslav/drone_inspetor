@@ -1,0 +1,15 @@
+#!/bin/sh
+#
+# @name X500 Custom Drone with Lidar L515 and Camera D456
+#
+# @type Quadrotor x
+# @class Copter
+#
+# @maintainer PX4 Team
+# @board px4_fmu-v2 exclude
+# @board bitcraze_crazyflie exclude
+#
+
+PX4_SIM_MODEL=${PX4_SIM_MODEL:=x500_uerj}
+
+. ${R}etc/init.d-posix/airframes/4019_gz_x500_gimbal
