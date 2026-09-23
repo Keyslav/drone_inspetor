@@ -1,0 +1,2 @@
+# Contexto de unified diff preserva tabs do C++ após o prefixo de espaço.
+tools/patches/*.patch -whitespace
