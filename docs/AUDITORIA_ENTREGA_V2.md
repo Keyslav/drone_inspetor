@@ -34,8 +34,9 @@ descrita em [REPRODUZIR_TESTES_GAZEBO.md](REPRODUZIR_TESTES_GAZEBO.md).
    Dependências ROS/Python existentes foram reutilizadas; CI remoto não executado.
 4. Revisão funcional e lint fatal passaram; commits locais organizados, sem
    publicação remota. A etapa 5 ainda tem extrações de organização pendentes:
-   seletor/detalhes de modelos em CVScreen e interface curta para JavaScript
-   do mapa. As extrações não são cobertas pelos ensaios de voo.
+   seletor/detalhes de modelos em CVScreen. A interface JavaScript do mapa
+   foi extraída para `gui/presentation/map_javascript.py`, com fila ordenada,
+   serialização e callbacks cobertos por 6 testes próprios (13 com apresentação).
 
 Limitações explícitas: mapa local horizontal não observa teto; não há garantia
 para qualquer geometria; reentrada em OFFBOARD em voo exige transferência

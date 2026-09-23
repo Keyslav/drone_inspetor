@@ -16,6 +16,7 @@ from PyQt6.QtCore import Qt, QTimer, QUrl
 import os
 import yaml
 from .utils import gui_log_info, gui_log_error
+from .presentation.map_javascript import MapJavaScript
 
 class MapaManager:
     """
@@ -221,10 +222,7 @@ class MapaManager:
             is_landed (bool): True se o drone está em solo.
         """
         if self.map_widget and self.map_widget.map_ready:
-            is_armed_js = "true" if is_armed else "false"
-            is_landed_js = "true" if is_landed else "false"
-            script = f"updateDroneStatus({is_armed_js}, {is_landed_js});"
-            self.map_widget.page().runJavaScript(script)
+            self.map_widget.javascript.call('updateDroneStatus', bool(is_armed), bool(is_landed))
 
     # ==================== MÉTODOS DE MISSÃO ====================
     
@@ -324,7 +322,7 @@ class InteractiveMapWidget(QWebEngineView):
         self.map_ready = False
         
         # Lista de ações pendentes (scripts JS) para executar quando O mapa carregar
-        self.pending_actions = []
+        self.javascript = MapJavaScript(self.page, lambda: self.map_ready)
         
         # Localiza o arquivo HTML do mapa.
         # Ordem de busca:
@@ -382,16 +380,11 @@ class InteractiveMapWidget(QWebEngineView):
         # Inicializa o mapa
         self.initialize_map()
         
-        # Executa ações pendentes
-        if self.pending_actions:
-            gui_log_info("MapaManager", f"Executando {len(self.pending_actions)} ações pendentes")
-            for script in self.pending_actions:
-                try:
-                    self.page().runJavaScript(script)
-                except Exception as e:
-                    gui_log_error("MapaManager", f"Erro ao executar ação pendente: {e}")
-            self.pending_actions.clear()
-    
+        try:
+            self.javascript.flush()
+        except Exception as error:
+            gui_log_error("MapaManager", f"Erro em comando pendente: {error}")
+
     def load_map_parameters(self):
         """
         Carrega parâmetros de configuração do mapa a partir de um arquivo YAML.
@@ -431,9 +424,8 @@ class InteractiveMapWidget(QWebEngineView):
             self.map_ready = True
             
             # Constrói o script JavaScript para definir o centro e o zoom do mapa.
-            script = f"setMapCenter({self.map_center_lat}, {self.map_center_lon}, {self.zoom_level});"
-            # Executa o script JavaScript na página do QWebEngineView.
-            self.page().runJavaScript(script, self.on_js_finished)
+            self.javascript.call('setMapCenter', self.map_center_lat, self.map_center_lon,
+                                 self.zoom_level, callback=self.on_js_finished)
             
             gui_log_info("MapaManager", "Mapa inicializado com sucesso!")
             
@@ -458,9 +450,7 @@ class InteractiveMapWidget(QWebEngineView):
             
         try:
             # Constrói o script JavaScript para atualizar a posição do drone.
-            script = f"updateDronePosition({lat}, {lon}, {alt}, {heading}, {speed});"
-            # Executa o script JavaScript na página do QWebEngineView.
-            self.page().runJavaScript(script)
+            self.javascript.call('updateDronePosition', lat, lon, alt, heading, speed)
             
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
@@ -472,7 +462,7 @@ class InteractiveMapWidget(QWebEngineView):
         """
         try:
             # Executa o script JavaScript para aumentar o zoom.
-            self.page().runJavaScript("zoomIn();")
+            self.javascript.call('zoomIn')
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
             gui_log_error("MapaManager", f"Erro ao fazer zoom in: {e}")
@@ -483,7 +473,7 @@ class InteractiveMapWidget(QWebEngineView):
         """
         try:
             # Executa o script JavaScript para diminuir o zoom.
-            self.page().runJavaScript("zoomOut();")
+            self.javascript.call('zoomOut')
         except Exception as e:
             # Em caso de erro, registra mensagem de erro
             gui_log_error("MapaManager", f"Erro ao fazer zoom out: {e}")
@@ -527,8 +517,7 @@ class InteractiveMapWidget(QWebEngineView):
             return
         
         try:
-            script = f"addHomeMarker({lat}, {lon});"
-            self.page().runJavaScript(script)
+            self.javascript.call('addHomeMarker', lat, lon)
         except Exception as e:
             gui_log_error("MapaManager", f"Erro ao adicionar marcador home: {e}")
     
@@ -537,27 +526,17 @@ class InteractiveMapWidget(QWebEngineView):
         if not self.map_ready:
             return
         try:
-            self.page().runJavaScript("removeHomeMarker();")
+            self.javascript.call('removeHomeMarker')
         except Exception:
             pass
     
-    def add_inspection_point(self, index: int, lat: float, lon: float, is_detection_point: bool = False):
-        """
-        Adiciona um ponto de inspeção numerado no mapa.
-        Se o mapa não estiver pronto, enfileira a ação.
-        """
-        is_detection_js = "true" if is_detection_point else "false"
-        script = f"addInspectionPoint({index}, {lat}, {lon}, {is_detection_js});"
-        
-        if not self.map_ready:
-            self.pending_actions.append(script)
-            gui_log_info("MapaManager", f"Ação enfileirada: Ponto {index}")
-            return
-        
+    def add_inspection_point(self, index, lat, lon, is_detection_point=False):
+        """Adiciona ponto, preservando a ordem antes de a página ficar pronta."""
         try:
-            self.page().runJavaScript(script)
-        except Exception as e:
-            gui_log_error("MapaManager", f"Erro ao adicionar ponto de inspeção: {e}")
+            self.javascript.call('addInspectionPoint', index, lat, lon,
+                                 bool(is_detection_point), queue=True)
+        except (ValueError, RuntimeError) as error:
+            gui_log_error('MapaManager', f'Erro ao adicionar ponto: {error}')
     
     def display_mission_points(self, mission_data: dict):
         """
@@ -582,20 +561,11 @@ class InteractiveMapWidget(QWebEngineView):
         gui_log_info("MapaManager", f"Solicitada exibição de {len(pontos)} pontos de inspeção")
     
     def clear_mission_markers(self):
-        """
-        Remove todos os marcadores de missão.
-        Se o mapa não estiver pronto, enfileira a ação.
-        """
-        script = "clearMissionMarkers();"
-        
-        if not self.map_ready:
-            self.pending_actions.append(script)
-            return
-        
+        """Limpa marcadores antes de adicionar os da próxima missão."""
         try:
-            self.page().runJavaScript(script)
-        except Exception as e:
-            gui_log_error("MapaManager", f"Erro ao limpar marcadores de missão: {e}")
+            self.javascript.call('clearMissionMarkers', queue=True)
+        except RuntimeError as error:
+            gui_log_error('MapaManager', f'Erro ao limpar marcadores: {error}')
 
 class ExpandedMapWindow(QMainWindow):
     """
@@ -649,8 +619,8 @@ class ExpandedMapWindow(QMainWindow):
         
         # Aplica zoom aumentado
         self.map_widget.map_ready = True
-        script = f"setMapCenter({self.map_widget.map_center_lat}, {self.map_widget.map_center_lon}, {self.map_widget.zoom_level});"
-        self.map_widget.page().runJavaScript(script)
+        self.map_widget.javascript.call('setMapCenter', self.map_widget.map_center_lat,
+                                        self.map_widget.map_center_lon, self.map_widget.zoom_level)
         
         # Injeta CSS para ícones e fontes 3x maiores
         self._inject_expanded_styles()
@@ -670,51 +640,8 @@ class ExpandedMapWindow(QMainWindow):
                 self.map_widget.display_mission_points(self.mapa_manager._current_mission_data)
     
     def _inject_expanded_styles(self):
-        """Injeta estilos CSS para aumentar tamanho de ícones e fontes."""
-        css_script = """
-        (function() {
-            var style = document.createElement('style');
-            style.textContent = `
-                /* Ícones 3x maiores */
-                .drone-icon {
-                    width: 72px !important;
-                    height: 72px !important;
-                    margin-left: -36px !important;
-                    margin-top: -36px !important;
-                }
-                .home-marker {
-                    width: 60px !important;
-                    height: 60px !important;
-                    font-size: 30px !important;
-                    margin-left: -30px !important;
-                    margin-top: -30px !important;
-                }
-                .inspection-marker {
-                    width: 45px !important;
-                    height: 45px !important;
-                    font-size: 21px !important;
-                    margin-left: -22px !important;
-                    margin-top: -22px !important;
-                }
-                /* Botões de zoom maiores */
-                .leaflet-control-zoom a {
-                    width: 60px !important;
-                    height: 60px !important;
-                    font-size: 36px !important;
-                    line-height: 60px !important;
-                }
-                /* Tooltip/popup fonts 3x */
-                .leaflet-popup-content {
-                    font-size: 21px !important;
-                }
-                .leaflet-tooltip {
-                    font-size: 18px !important;
-                }
-            `;
-            document.head.appendChild(style);
-        })();
-        """
-        self.map_widget.page().runJavaScript(css_script)
+        """Aplica o estilo da página expandida pelo adaptador."""
+        self.map_widget.javascript.expanded_styles()
     
     def mouseDoubleClickEvent(self, event):
         """Fecha a janela com duplo clique."""
