@@ -1,13 +1,17 @@
 # Implementação v2.0 — registro de continuidade
 
-Atualizado em 23/09/2026. Branch local de ambos os repositórios: `v2.0`. A implementação está sendo consolidada em commits locais; não houve publicação
+Atualizado em 23/09/2026. Branch local de ambos os repositórios: `v2.0`. A implementação foi consolidada em commits locais; não houve publicação
 remota desta etapa. O diagnóstico histórico e as etapas
 estão em `PLANO_MELHORIAS_V2.md`; este arquivo registra execução posterior.
 
 ## Estado atual
 
-- **333 testes funcionais passaram, 1 ignorado** na última execução
-  (`.drone-v2-validation/functional-gazebo-final.txt`). Estilo legado permanece
+- Extração final da GUI concluída: seletor/detalhes de modelos e janela de
+  análise em componentes próprios; seleção e detalhes preservados ao reabrir.
+- Build final dos dois pacotes e checagem estática de erros aprovados.
+
+- **339 testes funcionais passaram, 1 ignorado** na última execução
+  (`.drone-v2-validation/functional-delivery-final.txt`). Estilo legado permanece
   como passivo separado; isso não significa aprovação de flake8/pep257 completos.
 - Gazebo com Plataforma_UERJ/x500_uerj/4030: voo vertical, ida/volta de 40 m,
   desvio de cilindro físico, cancelamento, retorno ao HOME, pouso e RTL com
@@ -27,9 +31,9 @@ estão em `PLANO_MELHORIAS_V2.md`; este arquivo registra execução posterior.
 - Histórico SIH em `docs/VALIDACAO_SIH.md`: expôs correções úteis, mas seu cenário
   completo não foi aprovado. Os resultados Gazebo acima têm escopo próprio.
 - Receita da correção disponível em `docs/REPRODUZIR_TESTES_GAZEBO.md`.
-  Pendências da entrega completa estão em `docs/AUDITORIA_ENTREGA_V2.md`.
+  Auditoria da entrega e limites estão em `docs/AUDITORIA_ENTREGA_V2.md`.
 
-## Implementado, ainda sob revisão integrada
+## Implementado e validado no escopo da entrega
 
 - Navegação pura em `navigation/`: perfil Ruckig 0.19.4 local de estado a estado,
   p/v/a coerentes, limites de velocidade/aceleração/jerk, envelope de frenagem,
@@ -46,7 +50,7 @@ estão em `PLANO_MELHORIAS_V2.md`; este arquivo registra execução posterior.
   compartilhado com sincronização extraídos. GUI: apresentação tipada e widgets
   separados. Build/launch/dependências e documentação revisados.
 
-## Evidências até este ponto
+## Evidências históricas da primeira integração
 
 - 34 testes matemáticos/geometria de navegação passaram.
 - 10 testes de integração de trajetória/FSM passaram: vertical, curto, diagonal,

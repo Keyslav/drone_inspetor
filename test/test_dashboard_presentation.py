@@ -89,17 +89,18 @@ def test_cv_window_open_updates_reset_and_close(qt_app):
 def test_model_selection_persists_when_expanded_window_reopens(qt_app):
     signals = CVSignals()
     screen = CVScreen(signals, QLabel())
-    screen._on_models_received({
+    screen.model_selector.update_models({
         'models_data_json': '[{"file_name":"equip.pt","object_type":"equipment",'
                             '"name":"Equipamento"}, {"file_name":"anom.pt",'
                             '"object_type":"anomaly","name":"Anomalia"}]',
         'current_object_model': 'equip.pt', 'current_anomaly_model': 'anom.pt',
     })
     screen.expand_screen()
-    assert screen._selected_equipment_model == 'equip.pt'
-    assert screen._selected_anomaly_model == 'anom.pt'
+    assert screen.model_selector._selected_equipment_model == 'equip.pt'
+    assert screen.model_selector._selected_anomaly_model == 'anom.pt'
+    assert screen.model_selector.equip_details_group.field_labels['name'].text() == 'Equipamento'
     screen.close()
     screen.expand_screen()
-    assert screen._equipment_dropdown.currentData() == 'equip.pt'
-    assert screen._anomaly_dropdown.currentData() == 'anom.pt'
+    assert screen.model_selector._equipment_dropdown.currentData() == 'equip.pt'
+    assert screen.model_selector._anomaly_dropdown.currentData() == 'anom.pt'
     screen.close()
