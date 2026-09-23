@@ -6,7 +6,7 @@ contrato (tipo + QoS) é definido aqui de forma única e inalterável.
 """
 
 from px4_msgs.msg import BatteryStatus
-from sensor_msgs.msg import CompressedImage, Image
+from sensor_msgs.msg import CompressedImage, Image, LaserScan
 from std_msgs.msg import Bool, String
 
 from drone_inspetor_msgs.msg import (
@@ -74,6 +74,11 @@ class InternalTopics:
     )
 
     # --- depth_node ---
+    DEPTH_SCAN = TopicSpec(
+        '/drone_inspetor/interno/depth_node/scan',
+        LaserScan,
+        QoSProfiles.sensor_data(depth=1),
+    )
     DEPTH_IMAGE_PROCESSED = TopicSpec(
         "/drone_inspetor/interno/depth_node/image_processed",
         Image,

@@ -33,8 +33,8 @@ def yaw_diff_shortest(current_deg: float, target_deg: float) -> float:
     Diferença angular pelo caminho mais curto (current - target).
     Resultado normalizado em [-180, 180].
 
-    Positivo: target está à direita (sentido horário) de current.
-    Negativo: target está à esquerda (sentido anti-horário) de current.
+    Para rumos NED: positivo significa current à direita/horário de target;
+    negativo significa current à esquerda/anti-horário de target.
     """
     return normalize_yaw_deg(current_deg - target_deg)
 
@@ -53,13 +53,16 @@ def yaw_step_toward(current_deg: float, target_deg: float, max_step_deg: float) 
 
 
 # =================================================================================================
-# CONVERSÃO GPS ↔ MÉTRICA LOCAL (NED)
+# CONVERSÃO GPS ↔ MÉTRICA LOCAL
 # =================================================================================================
 
 def global_to_local_offset(lat1: float, lon1: float, alt1: float,
                             lat2: float, lon2: float, alt2: float) -> tuple:
     """
-    Calcula offset NED (norte, leste, altitude) entre duas coordenadas globais.
+    API legada: retorna (Norte, Leste, Cima), NÃO NED nem ENU.
+
+    Preservada para consumidores antigos. Novo código de navegação deve usar
+    global_to_ned_offset(), cujo terceiro componente é positivo para baixo.
 
     Aproximação simples: 1° de latitude ≈ 111132 m. Longitude varia com cos(latitude).
     Suficiente para distâncias < ~10 km em latitudes médias.
@@ -72,6 +75,16 @@ def global_to_local_offset(lat1: float, lon1: float, alt1: float,
     dy = (lon2 - lon1) * m_per_deg * math.cos(math.radians(lat1))
     dz = alt2 - alt1
     return (dx, dy, dz)
+
+
+def global_to_ned_offset(lat1, lon1, alt1, lat2, lon2, alt2):
+    """Offset NED em metros; alt1/alt2 devem usar o mesmo datum AMSL.
+
+    Conserva a aproximação geográfica local da API legada. Não define a origem
+    do estimador PX4: o chamador deve somar a posição NED da referência.
+    """
+    north, east, up = global_to_local_offset(lat1, lon1, alt1, lat2, lon2, alt2)
+    return north, east, -up
 
 
 def horizontal_distance(x1: float, y1: float, x2: float, y2: float) -> float:

@@ -24,6 +24,9 @@ class OffboardDesativadoState(BaseState):
     def on_enter(self) -> None:
         # Garante que nenhuma trajetória residual esteja ativa ao entrar.
         self.node.deslocamento_fsm_context.reset()
+        self.context.pending_command = None
+        self.context.native_command = None
+        self.context.native_mode_observed = False
         self.node.get_logger().info(
             "Drone fora do modo OFFBOARD. Aguardando ativação do modo offboard no PX4.",
             throttle_duration_sec=5.0,

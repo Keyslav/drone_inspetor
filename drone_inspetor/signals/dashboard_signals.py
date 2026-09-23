@@ -108,7 +108,7 @@ class CVSignals(QObject):
     """
     image_received = pyqtSignal(object)       # Imagem processada pelo CV
     analysis_data_received = pyqtSignal(dict) # Dados de análise CV
-    detections_received = pyqtSignal(str)     # Detecções CV
+    detections_received = pyqtSignal(object)  # Snapshot imutável DetectionFrame
     model_selected = pyqtSignal(str, str)     # (object_model, anomaly_model) - seleção de modelos
     models_received = pyqtSignal(dict)        # Recebe lista de modelos e modelos atuais
     models_requested = pyqtSignal()           # Solicita atualização de modelos

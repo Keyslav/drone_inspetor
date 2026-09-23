@@ -40,8 +40,18 @@ class PlanandoState(BaseState):
             return None
 
         # Sem posição local ainda: não dá para calcular direção de aproximação.
-        if ctx.state_px4.local_position is None:
+        if self.node.state_px4.local_position is None:
             return None
+
+        if self.node.trajectory.navigation_error or not self.node.trajectory.settled:
+            return None
+
+        # Retomar uma missão após um desvio pode exigir outro desvio. Escolher
+        # a perna observada primeiro evita girar para um rumo que será descartado.
+        self.node.trajectory.prepare_next_segment()
+        if self.node.trajectory.navigation_error:
+            return None
+        target = ctx.target_stack.current
 
         # Há target no topo da pilha: calcula yaw de direção e parte para a manobra.
         # O cálculo da direção é feito aqui (e não no push da pilha) porque a direção
@@ -52,7 +62,7 @@ class PlanandoState(BaseState):
         # Direção indefinida (target praticamente sobre o drone): pula direto para
         # GIRANDO_FIM (alinha yaw final, se houver) ou pop imediato via o próprio fluxo.
         if target.direction_yaw_rad is None:
-            return TS.GIRANDO_FIM
+            return TS.DESLOCANDO
 
         return TS.GIRANDO_INICIO
 

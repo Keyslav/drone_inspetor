@@ -5,11 +5,11 @@
 #
 # Significado: drone girando em torno do próprio eixo para alinhar o yaw com a
 # DIREÇÃO do target ativo (target_stack.current). A translação só começa depois
-# que o yaw está estável dentro da tolerância.
+# que yaw, posição e velocidade estão estabilizados dentro das tolerâncias.
 #
 # Transições:
 #     |yaw - direction_yaw| <= tolerância + estabilização concluída → DESLOCANDO.
-#     target.direction_yaw_rad é None (target em cima do drone) → GIRANDO_FIM.
+#     target.direction_yaw_rad é None (target em cima do drone) → DESLOCANDO.
 #     Pilha esvaziou (cancelamento externo) → PLANANDO.
 # =================================================================================================
 
@@ -37,16 +37,20 @@ class GirandoInicioState(BaseState):
         if target is None:
             return TS.PLANANDO
 
-        # Sem direção definida (target sobre o drone): pula direto para o yaw final.
+        # Sem direção definida: inicia o segmento vertical quando estabilizado.
         if target.direction_yaw_rad is None:
-            return TS.GIRANDO_FIM
+            return TS.DESLOCANDO if self.node.trajectory.settled else None
 
-        px4 = ctx.state_px4
+        px4 = self.node.state_px4
+
+        if abs(ctx.yaw_diff_shortest(
+                px4.current_yaw_deg_normalized, target.direction_yaw_deg_normalized)) > ctx.yaw_tolerance_deg:
+            ctx.yaw_aligned_time = None
 
         # Em período de estabilização: yaw já alinhado, aguardando tempo.
         if ctx.yaw_aligned_time is not None:
             elapsed = ctx.now() - ctx.yaw_aligned_time
-            if elapsed >= ctx.yaw_stabilization_delay:
+            if elapsed >= ctx.yaw_stabilization_delay and self.node.trajectory.settled:
                 self.node.get_logger().info(
                     "DeslocamentoFSM: yaw inicial estável. Iniciando deslocamento."
                 )

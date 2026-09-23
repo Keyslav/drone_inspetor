@@ -1,52 +1,22 @@
-# drone_state_data.py
-# =================================================================================================
-# ESPELHO DE TELEMETRIA DO DRONE PARA O MISSION NODE
-# =================================================================================================
-# Encapsula todos os campos de DroneStateMSG como atributos Python.
-# Usa introspection de ROS para inicialização e atualização automática.
-# =================================================================================================
+"""Snapshot da telemetria pública; desconhecimento de estado bloqueia a missão."""
 
-from drone_inspetor_msgs.msg import DroneStateMSG
 from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription
 
-
-# Campos que possuem defaults especiais (diferentes de 0.0 / False / "")
-_SPECIAL_DEFAULTS = {
-    'state': int(DroneFSMDescription.OFFBOARD_DESATIVADO),
-}
-
-# Mapeamento tipo ROS → default Python
-_TYPE_DEFAULTS = {
-    'boolean': False,
-    'string': '',
-}
+from drone_inspetor_msgs.msg import DroneStateMSG
 
 
 class DroneStateData:
-    """
-    Espelho local da telemetria do drone (DroneStateMSG).
-
-    Todos os campos são criados automaticamente a partir da definição do .msg,
-    garantindo que novos campos adicionados à mensagem sejam refletidos
-    sem mudança nesta classe.
-    """
+    """Preserva tipos/defaults da mensagem gerada e adiciona enum de ciclo de voo."""
 
     def __init__(self):
-        for field, ftype in DroneStateMSG.get_fields_and_field_types().items():
-            if field in _SPECIAL_DEFAULTS:
-                default = _SPECIAL_DEFAULTS[field]
-            else:
-                default = _TYPE_DEFAULTS.get(ftype, 0.0)
-            setattr(self, field, default)
-        # Propriedade derivada: enum tipado do state (atualizado em update_from_msg)
-        self.state = DroneFSMDescription.OFFBOARD_DESATIVADO
+        """Usa os defaults tipados da interface ROS gerada."""
+        self.update_from_msg(DroneStateMSG())
 
-    def update_from_msg(self, msg: DroneStateMSG):
-        """Atualiza todos os campos a partir de uma mensagem DroneStateMSG."""
-        for field in msg.get_fields_and_field_types():
-            setattr(self, field, getattr(msg, field))
-        # Converte state int → enum tipado
+    def update_from_msg(self, message: DroneStateMSG):
+        """Copia a mensagem e rejeita códigos desconhecidos como controle indisponível."""
+        for field in message.get_fields_and_field_types():
+            setattr(self, field, getattr(message, field))
         try:
-            self.state = DroneFSMDescription(msg.state)
+            self.state = DroneFSMDescription(message.state)
         except ValueError:
-            pass
+            self.state = DroneFSMDescription.OFFBOARD_DESATIVADO

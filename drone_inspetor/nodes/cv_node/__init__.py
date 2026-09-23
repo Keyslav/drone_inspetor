@@ -1,5 +1,11 @@
-"""cv_node package — visão computacional com YOLO para detecção de objetos e anomalias."""
+"""Visão computacional; componentes puros não carregam ROS ou pesos YOLO."""
 
-from drone_inspetor.nodes.cv_node.cv_node import CVNode, main
+__all__ = ['CVNode', 'main']
 
-__all__ = ["CVNode", "main"]
+
+def __getattr__(name):
+    """Preserva o entry point público sem importar o nó antecipadamente."""
+    if name in __all__:
+        from .cv_node import CVNode, main
+        return {'CVNode': CVNode, 'main': main}[name]
+    raise AttributeError(name)

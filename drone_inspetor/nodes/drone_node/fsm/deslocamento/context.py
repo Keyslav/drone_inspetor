@@ -12,6 +12,7 @@
 # Acesso a recursos compartilhados (`state_px4`, `obstacles`) é feito via `self.node.<recurso>`.
 # =================================================================================================
 
+import math
 from typing import TYPE_CHECKING
 
 from drone_inspetor.nodes.drone_node.fsm.deslocamento.description import DeslocamentoFSMDescription
@@ -50,13 +51,11 @@ class DeslocamentoFSMContext:
 
         # ---- Parâmetros de tolerância (configuráveis no futuro via param_ros.yaml). ----
         # Distância (m) para considerar "chegou no target" (norma 3D).
-        self.position_tolerance: float = 0.15
+        self.position_tolerance: float = node.param_arrival_position_tol
         # Tolerância angular (graus) para considerar yaw alinhado.
         self.yaw_tolerance_deg: float = 2.0
         # Tempo (s) que o drone permanece parado após yaw alinhado antes de transicionar.
-        self.yaw_stabilization_delay: float = 3.0
-        # Passo angular incremental usado pela rotação suave (graus por tick).
-        self.yaw_step_deg: float = 15.0
+        self.yaw_stabilization_delay: float = node.navigation_config.yaw_stabilization_seconds
 
     # =============================================================================================
     # Utilitários temporais
@@ -80,15 +79,20 @@ class DeslocamentoFSMContext:
         px4 = self.node.state_px4
         if px4.local_position is None:
             return
-        self.last_static_position = [
-            px4.local_position.x,
-            px4.local_position.y,
-            px4.local_position.z,
-        ]
-        yaw_norm = px4.current_yaw_deg_normalized
+        profile = getattr(self.node, 'trajectory_profile', None)
+        if profile is not None and profile.target is not None:
+            self.last_static_position = [o + d * profile.position
+                                         for o, d in zip(profile.origin, profile.direction)]
+        elif not (self.last_static_position is not None and getattr(px4, 'is_armed', False)
+                  and self.node.drone_fsm_context.state.name == 'EM_VOO'):
+            self.last_static_position = [px4.local_position.x, px4.local_position.y,
+                                         px4.local_position.z]
+        trajectory = getattr(self.node, 'trajectory', None)
+        yaw = getattr(trajectory, '_yaw_reference', None)
+        self.last_static_yaw_rad = px4.current_yaw_rad if yaw is None else yaw
+        yaw_norm = (math.degrees(self.last_static_yaw_rad) + 180.) % 360. - 180.
         self.last_static_yaw_deg_normalized = yaw_norm
-        self.last_static_yaw_deg = yaw_norm if yaw_norm >= 0 else yaw_norm + 360
-        self.last_static_yaw_rad = px4.current_yaw_rad
+        self.last_static_yaw_deg = yaw_norm % 360.
 
     # =============================================================================================
     # Reset

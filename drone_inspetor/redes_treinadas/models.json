@@ -17,7 +17,10 @@
                 ],
                 "model": "YOLOv8x",
                 "file_name": "plataform_objects_yolov8x_detection.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "e46c1ed2f33f6bc3bd91b0721332ae484a60948d0c731cf61596f98972f9e51b",
+                "checkpoint_date": "2026-01-19T10:50:09.584711",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "YOLOv8n (100epochs, Lightweight, Detection) - Platform Objects",
@@ -35,25 +38,32 @@
                 ],
                 "model": "YOLOv8n",
                 "file_name": "plataform_objects_yolov8n_detection_100ep.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "0d89c529c381df8901ff519096de7409f9007e0ea2d6d1dfb7e2fbdd7b4cc6de",
+                "checkpoint_date": "2026-01-19T18:37:27.139565",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "YOLOv8n (300epochs, Lightweight, Detection) - Platform Objects",
                 "dataset": "Platform_Objects_Dataset",
                 "classes": [
-                    "Flare",
-                    "Torre_do_Flare",
-                    "Tanque_Oleo_Enferrujado",
-                    "Tanques_Produtos_Quimicos",
-                    "Guindaste",
-                    "Torre_de_Perfuracao",
-                    "Catarina",
-                    "Sonda_de_Perfuracao",
-                    "Roldanas_de_Perfuracao"
+                    "0",
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5",
+                    "6",
+                    "7",
+                    "8"
                 ],
                 "model": "YOLOv8n",
                 "file_name": "plataform_objects_yolov8n_detection_300ep.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "730b4cffb3865ac18fd4f041e77e413e6ff8abcfde33b94102eaf11e9e9c21c7",
+                "checkpoint_date": "2026-01-23T06:51:28.086310",
+                "checkpoint_ultralytics_version": "8.3.206",
+                "validation_warning": "Pesos contêm classes numéricas; mapeamento para equipamentos não verificado."
             },
             {
                 "name": "YOLOv8n (300epochs, Lightweight, Detection) - Platform Objects (Flare separated)",
@@ -71,17 +81,23 @@
                 ],
                 "model": "YOLOv8n",
                 "file_name": "plataform_objects_flare_separated_yolov8n_300ep.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "35b84af9db01320af109f22e025c1f9900e4281dcba6f12ac83b315ffd51e686",
+                "checkpoint_date": "2026-01-25T11:35:19.904518",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "YOLOv8n (300epochs, Lightweight, Detection) - Flare",
                 "dataset": "Flare_Dataset",
                 "classes": [
-                    "Flare"
+                    "flare"
                 ],
                 "model": "YOLOv8n",
                 "file_name": "flare_yolov8n_detection_300ep.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "4b4432d9dc443f057bade43c5655e4332aaf35f91e6915cc1260eeaf2ca291e7",
+                "checkpoint_date": "2026-01-24T23:38:33.356428",
+                "checkpoint_ultralytics_version": "8.3.206"
             }
         ],
         "anomaly": [
@@ -89,31 +105,58 @@
                 "name": "Corrosion YOLOv8x (Detection)",
                 "dataset": "Corrosion_Dataset_v1",
                 "classes": [
-                    "Rust"
+                    "Rust",
+                    "car",
+                    "copper corrosion",
+                    "corroded-part",
+                    "corrosion",
+                    "iron rust",
+                    "mild-corrosion",
+                    "moderate-corrosion",
+                    "rust",
+                    "severe-corrosion"
                 ],
                 "model": "YOLOv8x",
                 "file_name": "corrosion_yolo8x_detection.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "4c762445420c867777d5b82844d6612b7db7e47473f2e2889fc193f018d2a0b7",
+                "checkpoint_date": "2026-01-22T01:10:16.222002",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "Corrosion YOLOv8n (Lightweight, Detection)",
                 "dataset": "Corrosion_Dataset_v1",
                 "classes": [
-                    "Rust"
+                    "Rust",
+                    "car",
+                    "copper corrosion",
+                    "corroded-part",
+                    "corrosion",
+                    "iron rust",
+                    "mild-corrosion",
+                    "moderate-corrosion",
+                    "rust",
+                    "severe-corrosion"
                 ],
                 "model": "YOLOv8n",
                 "file_name": "corrosion_yolo8n_detection.pt",
-                "type": "detection"
+                "type": "detection",
+                "sha256": "c388942431c24024e778c884f6b3f21e532f8829d03037da2721846cdceaaf56",
+                "checkpoint_date": "2026-01-22T00:27:21.242908",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "Corrosion YOLOv8x (Segmentation)",
                 "dataset": "Corrosion_Dataset",
                 "classes": [
-                    "Rust"
+                    "rust"
                 ],
                 "model": "YOLOv8x-seg",
                 "file_name": "corrosion_yolov8x_segmentation.pt",
-                "type": "segmentation"
+                "type": "segmentation",
+                "sha256": "aa031b339fa12d34ec2458ea42476f716b3ddface08b8df669e0fa0222400a6e",
+                "checkpoint_date": "2026-01-22T17:11:56.146866",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "Crack YOLOv8x (Segmentation)",
@@ -123,7 +166,10 @@
                 ],
                 "model": "YOLOv8x-seg",
                 "file_name": "crack_yolo8x_seg.pt",
-                "type": "segmentation"
+                "type": "segmentation",
+                "sha256": "868d71394799e4260f1f32d578e19d49fdab2adae46d72073e986e084eaef0df",
+                "checkpoint_date": "2026-01-21T08:20:12.778218",
+                "checkpoint_ultralytics_version": "8.3.206"
             },
             {
                 "name": "Crack YOLOv8n (Segmentation, Lightweight)",
@@ -133,7 +179,10 @@
                 ],
                 "model": "YOLOv8n-seg",
                 "file_name": "crack_yolo8n_seg.pt",
-                "type": "segmentation"
+                "type": "segmentation",
+                "sha256": "27a3dfdf692c8952d38f919e2b8f2a39d52a609f1a9234de23ef479bf942bd29",
+                "checkpoint_date": "2026-01-21T11:06:03.456453",
+                "checkpoint_ultralytics_version": "8.3.206"
             }
         ]
     }

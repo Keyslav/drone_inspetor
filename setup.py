@@ -1,63 +1,53 @@
-from setuptools import find_packages, setup
-import os
-from glob import glob
+"""Instalação única via ament_python; recursos ficam no diretório share."""
 
-package_name = 'drone_inspetor'
+from glob import glob
+from pathlib import Path
+
+from setuptools import find_packages, setup
+
+
+PACKAGE = 'drone_inspetor'
+
+
+def resource_files():
+    """Preserva subdiretórios dos recursos, sem copiar módulos Python para share."""
+    resources = [
+        ('share/ament_index/resource_index/packages', [f'resource/{PACKAGE}']),
+        (f'share/{PACKAGE}', ['package.xml', 'README.md', 'INIT_SIMULACAO.md']),
+        (f'share/{PACKAGE}/docs', glob('docs/*.md')),
+        (f'share/{PACKAGE}/launch', glob(f'{PACKAGE}/launch/*_launch.py')),
+    ]
+    suffixes = {'.yaml', '.json', '.html', '.js', '.css', '.png', '.jpeg', '.jpg', '.sdf', '.pt'}
+    for directory in ('config', 'models', 'assets', 'missions', 'redes_treinadas', 'gui'):
+        paths_by_parent = {}
+        for path in sorted((Path(PACKAGE) / directory).rglob('*')):
+            if path.is_file() and path.suffix in suffixes:
+                paths_by_parent.setdefault(path.parent, []).append(str(path))
+        for parent, files in paths_by_parent.items():
+            resources.append((str(Path('share') / parent), files))
+    return resources
+
 
 setup(
-    name=package_name,
-    version='0.0.0',
+    name=PACKAGE,
+    version='2.0.0',
     packages=find_packages(exclude=['test']),
-    data_files=[
-        ('share/ament_index/resource_index/packages',
-            ['resource/' + package_name]),
-        ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'launch'), glob(os.path.join('drone_inspetor', 'launch', '*_launch.py'))),
-        (os.path.join('share', package_name, 'config'), glob(os.path.join('drone_inspetor', 'config', '*.yaml'))),
-        (os.path.join('share', package_name, 'models'), glob(os.path.join('drone_inspetor', 'models', '*.sdf'))),
-        (os.path.join('share', package_name, 'assets'), glob(os.path.join('drone_inspetor', 'assets', '*.jpeg')) + glob(os.path.join('drone_inspetor', 'assets', '*.png'))),
-        (os.path.join('share', package_name, 'assets', 'icons'), glob(os.path.join('drone_inspetor', 'assets', 'icons', '*.png'))),
-        # Adicionando os novos diretórios gui e nodes
-        (os.path.join('share', package_name, 'gui'), glob(os.path.join('drone_inspetor', 'gui', '*.py'))),
-        (os.path.join('share', package_name, 'gui'), glob(os.path.join('drone_inspetor', 'gui', '*.html'))),
-        # Adiciona pasta leaflet_local para o mapa funcionar
-        (os.path.join('share', package_name, 'gui', 'leaflet_local'), 
-            glob(os.path.join('drone_inspetor', 'gui', 'leaflet_local', '*.js')) + 
-            glob(os.path.join('drone_inspetor', 'gui', 'leaflet_local', '*.css')) +
-            glob(os.path.join('drone_inspetor', 'gui', 'leaflet_local', '*.png'))),
-        (os.path.join('share', package_name, 'nodes'), glob(os.path.join('drone_inspetor', 'nodes', '*.py'))),
-        (os.path.join('share', package_name, 'missions'), glob(os.path.join('drone_inspetor', 'missions', '*.json'))),
-        # Copiar modelo YOLO best.pt e models.json para o diretório de instalação
-        (os.path.join('share', package_name, 'redes_treinadas'), 
-            glob(os.path.join('drone_inspetor', 'redes_treinadas', '*.pt')) +
-            glob(os.path.join('drone_inspetor', 'redes_treinadas', '*.json'))),
-    ],
+    data_files=resource_files(),
     install_requires=[
-        'setuptools',
-        'PyQt6',
-        'PyQt6-WebEngine',
-        'opencv-python',
-        'numpy',
-        'pillow',
-        'pyyaml'
+        'setuptools', 'numpy>=1.26,<2', 'PyYAML', 'Pillow', 'opencv-python>=4.8,<4.12',
+        'PyQt6', 'PyQt6-WebEngine', 'ultralytics==8.3.206',
+        'torch==2.8.0', 'torchvision==0.23.0', 'ruckig==0.19.4',
     ],
-    zip_safe=True,
-    maintainer='user',
+    zip_safe=False,
+    maintainer='Keyslav',
     maintainer_email='user@todo.todo',
-    description='Pacote ROS2 para o dashboard de monitoramento do drone, com arquitetura modular e integração de controles, missão e mapa.',
+    description='Controle ROS 2/PX4, percepção e dashboard para inspeção com drone.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'dashboard_node = drone_inspetor.nodes.dashboard_node:main',
-            'camera_node = drone_inspetor.nodes.camera_node:main',
-            'cv_node = drone_inspetor.nodes.cv_node:main',
-            'depth_node = drone_inspetor.nodes.depth_node:main',
-            'lidar_node = drone_inspetor.nodes.lidar_node:main',
-            'drone_node = drone_inspetor.nodes.drone_node:main',
-            'mission_node = drone_inspetor.nodes.mission_node:main',
-            'teste_drone_node = drone_inspetor.scripts.teste_drone_node:main',
-        ],
+            f'{node}_node = {PACKAGE}.nodes.{node}_node.{node}_node:main'
+            for node in ('dashboard', 'camera', 'cv', 'depth', 'lidar', 'drone', 'mission', 'monitor')
+        ] + [f'teste_drone_node = {PACKAGE}.scripts.teste_drone_node:main'],
     },
 )
-

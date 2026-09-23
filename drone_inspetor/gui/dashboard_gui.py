@@ -25,8 +25,8 @@ COMPONENTES:
 """
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QGridLayout, QSplitter, QFrame)
-from PyQt6.QtGui import QPixmap, QImage, QCursor
+                             QGridLayout, QSplitter, QFrame, QPushButton)
+from PyQt6.QtGui import QPixmap, QImage, QCursor, QKeySequence, QShortcut
 from PyQt6.QtCore import Qt
 
 import cv2
@@ -67,7 +67,7 @@ class DashboardGUI(QWidget):
     - Gerenciar janelas expandidas para visualização em tela cheia
     """
     
-    def __init__(self, signals: DashboardSignals):
+    def __init__(self, signals: DashboardSignals, missions_file=None, monitor_store=None):
         """
         Inicializa a janela principal do Dashboard.
 
@@ -82,6 +82,10 @@ class DashboardGUI(QWidget):
         # Os sinais permitem comunicação assíncrona entre threads (ROS2 e GUI)
         # Os sinais também contêm métodos de publicação de comandos incorporados
         self.signals = signals
+        self.missions_file = missions_file
+        from .presentation.telemetry import MonitorStore
+        self.monitor_store = monitor_store if monitor_store is not None else MonitorStore()
+        self.monitor_window = None
         
         # Cria instância do CvBridge para conversão entre formatos ROS e OpenCV/PyQt
         # Necessário para processar imagens recebidas via ROS2 e exibi-las na GUI
@@ -153,40 +157,43 @@ class DashboardGUI(QWidget):
         self.connect_signals()
 
     def _load_missions(self):
-        """
-        Carrega missões do arquivo missions.json e distribui para os gerenciadores.
-        Este é o ponto centralizado de carregamento de missões.
-        """
-        import json
-        import os
-        
+        """Compartilha a validação do catálogo com o nó de missão."""
+        from pathlib import Path
+        from ament_index_python.packages import get_package_share_directory
+        from drone_inspetor.missions.repository import MissionRepository
+        from .logging import gui_log_error, gui_log_info
+
         try:
-            from ament_index_python.packages import get_package_share_directory
-            package_share_dir = get_package_share_directory('drone_inspetor')
-            missions_file = os.path.join(package_share_dir, 'missions', 'missions.json')
-            
-            with open(missions_file, 'r') as f:
-                self.loaded_missions = json.load(f)
-            
-            from .utils import gui_log_info
-            gui_log_info("DashboardGUI", f"Missões carregadas: {list(self.loaded_missions.keys())}")
-            
-            # Distribui as missões para os gerenciadores
-            if hasattr(self.mapa_manager, 'set_missions'):
-                self.mapa_manager.set_missions(self.loaded_missions)
-            
-            if hasattr(self.controles_manager, 'set_missions'):
-                self.controles_manager.set_missions(self.loaded_missions)
-            
-        except FileNotFoundError:
-            from .utils import gui_log_error
-            gui_log_error("DashboardGUI", f"Arquivo de missões não encontrado: {missions_file}")
+            path = self.missions_file or (
+                Path(get_package_share_directory('drone_inspetor'))
+                / 'missions' / 'missions.json'
+            )
+            repository = MissionRepository(path)
+            repository.load()
+            self.loaded_missions = repository.as_mapping()
+            gui_log_info('DashboardGUI', f'Missões carregadas: {list(self.loaded_missions)}')
+        except (OSError, ValueError) as exc:
             self.loaded_missions = {}
-        except Exception as e:
-            from .utils import gui_log_error
-            gui_log_error("DashboardGUI", f"Erro ao carregar missões: {e}")
-            self.loaded_missions = {}
-    
+            gui_log_error('DashboardGUI', f'Erro ao carregar missões: {exc}')
+        self.mapa_manager.set_missions(self.loaded_missions)
+        self.controles_manager.set_missions(self.loaded_missions)
+
+    def closeEvent(self, event):
+        """Fecha janelas auxiliares para que o processo Qt termine por completo."""
+        for screen in (self.camera_screen, self.cv_screen, self.depth_screen):
+            if screen is not None:
+                screen.close()
+        for window in self.expanded_windows:
+            window.close()
+        if self.monitor_window is not None:
+            self.monitor_window.close()
+        if self.mapa_manager.expanded_window is not None:
+            self.mapa_manager.expanded_window.close()
+        simulation_window = getattr(self.controles_manager, 'gazebo_window', None)
+        if simulation_window is not None:
+            simulation_window.close()
+        super().closeEvent(event)
+
     def apply_dark_theme(self):
         """
         Aplica um tema escuro personalizado a todos os widgets do Dashboard.
@@ -251,8 +258,18 @@ class DashboardGUI(QWidget):
         """
         # print("Configurando layout principal modular") # Comentado para evitar logs desnecessários.
         
-        main_layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
         main_layout.setContentsMargins(5, 5, 5, 5)
+        toolbar = QHBoxLayout()
+        toolbar.addWidget(QLabel('Drone Inspetor'))
+        toolbar.addStretch()
+        self.monitor_button = QPushButton('Monitor do drone  ·  Ctrl+M')
+        self.monitor_button.setToolTip('Estados do drone, PX4, missão e saúde dos tópicos')
+        self.monitor_button.clicked.connect(self.open_monitor)
+        toolbar.addWidget(self.monitor_button)
+        main_layout.addLayout(toolbar)
+        self.monitor_shortcut = QShortcut(QKeySequence('Ctrl+M'), self)
+        self.monitor_shortcut.activated.connect(self.open_monitor)
         
         # QSplitter permite redimensionar as áreas A e B dinamicamente.
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -276,6 +293,15 @@ class DashboardGUI(QWidget):
         
         # print("Layout principal configurado") # Comentado para evitar logs desnecessários.
     
+    def open_monitor(self):
+        """Abre uma única janela auxiliar e preserva a seleção ao reabrir."""
+        from .monitor_screen import MonitorWindow
+        if self.monitor_window is None:
+            self.monitor_window = MonitorWindow(self.monitor_store, parent=self)
+        self.monitor_window.show()
+        self.monitor_window.raise_()
+        self.monitor_window.activateWindow()
+
     def setup_sensor_grid(self):
         """
         Configura o grid 2x2 para as telas dos sensores (Câmera, CV, Profundidade, LiDAR).
@@ -743,5 +769,4 @@ class DashboardGUI(QWidget):
         lidar_widget.setLayout(lidar_layout)
         
         return lidar_widget
-
 

@@ -1,57 +1,8 @@
-from launch import LaunchDescription
-from launch_ros.actions import Node
+"""Aplicação completa com relógio real e sensores ROS externos."""
+
+from drone_inspetor.launch.composition import create_launch
+
 
 def generate_launch_description():
-    return LaunchDescription([
-        Node(
-            package='drone_inspetor',
-            executable='camera_node',
-            name='camera_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-        Node(
-            package='drone_inspetor',
-            executable='drone_node',
-            name='drone_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-        Node(
-            package='drone_inspetor',
-            executable='cv_node',
-            name='cv_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-        Node(
-            package='drone_inspetor',
-            executable='depth_node',
-            name='depth_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-        Node(
-            package='drone_inspetor',
-            executable='mission_node',
-            name='mission_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-        Node(
-            package='drone_inspetor',
-            executable='lidar_node',
-            name='lidar_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-        Node(
-            package='drone_inspetor',
-            executable='dashboard_node',
-            name='dashboard_node',
-            output='screen',
-            emulate_tty=True,
-        ),
-    ])
-
-
+    """Parâmetros e seleção de subsistemas são compartilhados com o dashboard."""
+    return create_launch()

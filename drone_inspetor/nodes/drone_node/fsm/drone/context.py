@@ -1,18 +1,7 @@
-# =================================================================================================
-# DroneFSMContext — variáveis da DroneFSM (lifecycle do drone)
-# =================================================================================================
-# Pareado com DroneFSM. Contém EXCLUSIVAMENTE as variáveis usadas pelos estados de
-# lifecycle (OFFBOARD_DESATIVADO, POUSADO_DESARMADO, POUSADO_ARMADO, DECOLANDO, EM_VOO,
-# EMERGENCIA).
-#
-# NÃO contém estado da TargetStack, last_static_position, tolerâncias de manobra —
-# tudo isso pertence ao DeslocamentoFSMContext.
-#
-# Acesso a recursos compartilhados (`state_px4`, `obstacles`) é feito via `self.node.<recurso>`,
-# já que esses subsistemas pertencem ao DroneNode e não a uma FSM específica.
-# =================================================================================================
+"""Dados do ciclo de voo, admissão de comandos e intenção de transferência ao PX4."""
 
 from typing import TYPE_CHECKING
+import math
 
 from px4_msgs.msg import VehicleStatus
 
@@ -26,6 +15,8 @@ if TYPE_CHECKING:
 # Mapeamento comando → lifecycle states permitidos
 # =================================================================================================
 VALID_COMMANDS = {
+    "DISARM": [DroneFSMDescription.POUSADO_ARMADO],
+    "STOP": [DroneFSMDescription.EM_VOO, DroneFSMDescription.DECOLANDO],
     "ARM":     [DroneFSMDescription.POUSADO_DESARMADO],
     "TAKEOFF": [DroneFSMDescription.POUSADO_ARMADO],
     "GOTO":    [DroneFSMDescription.EM_VOO],
@@ -48,10 +39,12 @@ class DroneFSMContext:
         self.state_entry_time: float = self.now()
 
         # ---- Comando pendente recebido via Action (consumido pelo estado correspondente). ----
-        # Valores: None | "ARM" | "TAKEOFF" | "GOTO" | "LAND" | "RTL".
+        # ARM/TAKEOFF são consumidos pelos estados de solo; GOTO é preparado de imediato.
         self.pending_command: 'str | None' = None
         # Modo de GOTO pendente: True → "manter yaw apontando ao foco".
         self.pending_use_focus: bool = False
+        self.native_command: str | None = None
+        self.native_mode_observed = False
 
         # ---- Parâmetros lifecycle ----
         # Altitude alvo de decolagem (m). Sobrescrita pelo Action TAKEOFF.
@@ -83,7 +76,8 @@ class DroneFSMContext:
         if self.emergency_active:
             return False
         battery = self.node.state_px4.battery_status
-        if battery and battery.remaining < 0.10:
+        if (self.node.state_px4.is_armed and battery
+                and math.isfinite(battery.remaining) and 0 <= battery.remaining < 0.10):
             self.node.get_logger().warn("EMERGÊNCIA: Bateria crítica!")
             self.emergency_active = True
             return True
@@ -95,22 +89,32 @@ class DroneFSMContext:
 
         Pré-condições gerais:
             - PX4 está em modo OFFBOARD.
-            - Posição local conhecida.
+            - Posição local conhecida, recente e referência de frenagem concluída.
+            - A FSM confirma estabilização medida antes de iniciar movimento.
+            - Controle não está delegado a um comando nativo.
         Pré-condição específica:
             - lifecycle atual permite este comando (ver VALID_COMMANDS).
 
         Returns:
             (pode_executar, mensagem_de_erro). Erro vazio se OK.
         """
+        if command not in VALID_COMMANDS:
+            return False, f"Comando desconhecido: {command}"
         px4 = self.node.state_px4
+        if self.native_command is not None:
+            return False, "Controle delegado ao PX4; aguardando conclusão nativa."
         if px4.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
             return False, "Drone NÃO está em modo OFFBOARD."
         if px4.local_position is None:
             return False, "Posição local desconhecida."
 
-        allowed = VALID_COMMANDS.get(command, [])
-        if not allowed:
-            return True, ""
+        if not self.node.telemetry_fresh():
+            return False, "Telemetria local expirada."
+        if command in ('ARM', 'TAKEOFF', 'DISARM') and not px4.is_landed:
+            return False, f'{command} é permitido somente no solo.'
+        if command in ('ARM', 'TAKEOFF', 'GOTO') and not self.node.trajectory.reference_stopped:
+            return False, "A referência da frenagem anterior ainda está em movimento."
+        allowed = VALID_COMMANDS[command]
         if self.state in allowed:
             return True, ""
 
@@ -119,3 +123,18 @@ class DroneFSMContext:
             f"Comando '{command}' não permitido no estado {self.state.name}. "
             f"Estados permitidos: {allowed_names}"
         )
+
+    def accepts_native_mode(self):
+        """Distingue transferência esperada de controle de mudança manual/falha."""
+        state = self.node.state_px4.nav_state
+        accepted = {
+            'LAND': {VehicleStatus.NAVIGATION_STATE_AUTO_LAND,
+                     VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND},
+            'RTL': {VehicleStatus.NAVIGATION_STATE_AUTO_RTL,
+                    VehicleStatus.NAVIGATION_STATE_AUTO_LAND,
+                    VehicleStatus.NAVIGATION_STATE_AUTO_PRECLAND},
+        }.get(self.native_command, set())
+        if state in accepted:
+            self.native_mode_observed = True
+            return True
+        return False

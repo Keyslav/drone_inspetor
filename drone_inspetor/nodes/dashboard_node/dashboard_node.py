@@ -22,6 +22,9 @@ from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QThread
 import sys
 import signal
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
+from drone_inspetor.common.param_utils import load_param
 
 # Importações de sinais e GUI
 from drone_inspetor.signals.dashboard_signals import DashboardSignals
@@ -36,6 +39,8 @@ from drone_inspetor.subscribers.dashboard_lidar_subscriber import DashboardLidar
 from drone_inspetor.subscribers.dashboard_drone_subscriber import DashboardDroneSubscriber
 from drone_inspetor.subscribers.dashboard_mission_subscriber import DashboardMissionSubscriber
 from drone_inspetor.subscribers.dashboard_mapa_subscriber import DashboardMapaSubscriber
+from drone_inspetor.subscribers.dashboard_monitor_subscriber import DashboardMonitorSubscriber
+from drone_inspetor.gui.presentation.telemetry import MonitorStore
 
 # Importações de publishers modulares
 # Cada publisher gerencia a publicação de comandos para um nó específico
@@ -76,6 +81,12 @@ class DashboardNode(Node):
 
         # Armazena a referência aos sinais PyQt6 para comunicação com a GUI
         self.signals = signals
+        self.monitor_store = MonitorStore()
+        self.monitor_subscriber = DashboardMonitorSubscriber(self, self.monitor_store)
+        missions_file = Path(load_param(self, 'missions_file', 'missions.json')).expanduser()
+        self.missions_file = missions_file if missions_file.is_absolute() else (
+            Path(get_package_share_directory('drone_inspetor')) / 'missions' / missions_file
+        )
 
         # ==================== INICIALIZAÇÃO DOS SUBSCRIBERS MODULARIZADOS ====================
         # Cada subscriber assina um tópico ROS2 específico e emite sinais PyQt6 quando recebe dados
@@ -181,7 +192,8 @@ def main(args=None):
     # ==================== INICIALIZAÇÃO DA GUI ====================
     # A GUI recebe apenas os sinais PyQt6, que já contêm os métodos de publicação de comandos
     # Isso mantém a separação entre GUI e ROS2, facilitando manutenção e testes
-    dashboard_gui = DashboardGUI(signals=signals)
+    dashboard_gui = DashboardGUI(signals=signals, missions_file=dashboard_node.missions_file,
+                                 monitor_store=dashboard_node.monitor_store)
     dashboard_gui.showMaximized()
 
     # ==================== HANDLER DE SINAL PARA CTRL+C ====================
@@ -224,5 +236,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-
 

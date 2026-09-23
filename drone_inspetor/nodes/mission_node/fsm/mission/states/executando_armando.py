@@ -1,46 +1,23 @@
-# executando_armando.py
-# =================================================================================================
-# ESTADO: EXECUTANDO_ARMANDO
-# =================================================================================================
-# Envia comando ARM para o drone e aguarda confirmação.
-# =================================================================================================
+"""Arma uma única vez e verifica o resultado da operação correspondente."""
 
 from drone_inspetor.base_classes.base_state import BaseState
 from drone_inspetor.nodes.mission_node.fsm.mission.description import MissionFSMDescription as MS
-from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription as DS
 
 
 class ExecutandoArmandoState(BaseState):
-    """
-    Arma os motores do drone. Transiciona para DECOLANDO quando armado com sucesso.
-    """
+    """Rejeição/falha encerra a sessão em vez de repetir ARM indefinidamente."""
+
+    def on_enter(self):
+        """Descarta referências da sessão anterior."""
+        self.operation = None
 
     def on_step(self):
-        drone_state = self.node.drone.state
-
-        # Aguarda action em andamento
-        if self.node._action_in_progress:
-            if self.node.check_action_timeout():
-                self.node.get_logger().error("Timeout ao armar. Abortando missão.")
-                self.context.reset()
-                return MS.DESATIVADO
-            self.node.get_logger().info(
-                "Aguardando confirmação de armamento...",
-                throttle_duration_sec=3.0,
-            )
+        """Envia ARM uma vez e decide pelo resultado da mesma operação."""
+        if self.operation is None:
+            self.operation = self.node.actions.arm()
+        if self.operation is None or not self.operation.done:
             return None
-
-        if drone_state == DS.POUSADO_ARMADO:
-            self.node.get_logger().info("Drone armado! Iniciando decolagem.")
+        if self.operation.result.success:
             return MS.EXECUTANDO_DECOLANDO
-
-        if drone_state == DS.POUSADO_DESARMADO:
-            self.node.get_logger().info("Enviando comando ARM para o drone.")
-            self.node.send_drone_action({"command": "ARM"})
-            return None
-
-        self.node.get_logger().warn(
-            f"Estado inesperado durante armamento: {drone_state.name}. Abortando."
-        )
-        self.context.reset()
+        self.node.get_logger().error(self.operation.result.message)
         return MS.DESATIVADO

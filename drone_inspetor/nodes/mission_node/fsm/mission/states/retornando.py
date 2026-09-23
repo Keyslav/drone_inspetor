@@ -1,71 +1,52 @@
-# retornando.py
-# =================================================================================================
-# ESTADO: RETORNANDO
-# =================================================================================================
-# Envia comando RTL ao drone e aguarda o ciclo completo: voo de retorno → pouso → desarme.
-# Transiciona para PRONTO após o drone reportar POUSADO_DESARMADO.
-# =================================================================================================
-#
-# Na arquitetura nova da DroneFSM, todo o trajeto RTL (giro inicial + translação + pouso) ocorre
-# enquanto o drone está em EM_VOO. As fases internas (girar, deslocar) são responsabilidade
-# da DeslocamentoFSM do drone_node, transparente ao mission_node. Por isso aqui basta observar
-# apenas três estados externos: EM_VOO (em retorno), POUSADO_ARMADO (recém-pousou) e
-# POUSADO_DESARMADO (terminou).
-# =================================================================================================
+"""Solicita RTL com retentativa limitada somente após rejeição confirmada."""
 
 from drone_inspetor.base_classes.base_state import BaseState
+from drone_inspetor.nodes.mission_node.action_client import ActionStatus
 from drone_inspetor.nodes.mission_node.fsm.mission.description import MissionFSMDescription as MS
-from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription as DS
 
 
 class RetornandoState(BaseState):
-    """
-    Retorno ao ponto de origem via RTL. Aguarda pouso e desarmamento para ir a PRONTO.
-    """
+    """Espera cancelamento anterior e nunca reenvia um RTL de aceitação incerta."""
+
+    def on_enter(self):
+        """Prepara o limite monotônico, iniciado na primeira tentativa de RTL."""
+        self.operation = None
+        self.acceptance_deadline = None
+        self.retry_at = None
+        self.failure_logged = False
 
     def on_step(self):
-        drone_state = self.node.drone.state
-
-        # Aguarda action de RTL em andamento
-        if self.node._action_in_progress:
-            self.node.get_logger().info(
-                "Aguardando conclusão do RTL...",
-                throttle_duration_sec=3.0,
-            )
+        """Retenta rejeições temporárias; falhas após aceitação exigem supervisão."""
+        drone = self.node.drone
+        if drone.is_landed and not drone.is_armed:
+            self.node.actions.cancel()
+            return MS.DESATIVADO
+        if self.node.actions.busy:
             return None
-
-        # Drone pousou e desarmou — missão encerrada com sucesso
-        if drone_state == DS.POUSADO_DESARMADO:
-            self.node.get_logger().info(
-                "Drone pousado e desarmado. Retorno concluído com sucesso!"
-            )
-            self.context.reset()
-            return MS.PRONTO
-
-        # Drone pousado mas ainda armado — aguarda desarmamento automático
-        if drone_state == DS.POUSADO_ARMADO:
-            self.node.get_logger().info(
-                "Drone pousado e armado. Aguardando desarmamento automático...",
-                throttle_duration_sec=3.0,
-            )
+        now = self.node.monotonic_time()
+        if self.operation is None:
+            # O servidor pode ainda estar freando após o prazo de cancelamento local.
+            self.acceptance_deadline = now + self.node.config.return_acceptance_timeout
+            self._request_return(now)
             return None
-
-        # Drone ainda no ar (em retorno OU em pouso final, ambos cobertos por EM_VOO).
-        # A DeslocamentoFSM do drone_node cuida das fases internas — daqui só monitoramos.
-        if drone_state == DS.EM_VOO:
-            self.node.get_logger().info(
-                "Drone retornando ao home...",
-                throttle_duration_sec=3.0,
-            )
-
-            # Se ainda não enviamos o RTL, manda agora. send_drone_action() é idempotente
-            # (já bloqueia comando duplicado via _action_in_progress no MissionNode).
-            if not self.node._action_in_progress:
-                self.node.get_logger().info("Enviando comando RTL.")
-                self.node.send_drone_action({"command": "RTL"})
+        if not self.operation.done or self.operation.result.success:
             return None
-
-        self.node.get_logger().warn(
-            f"Estado inesperado durante retorno: {drone_state.name}."
-        )
+        status = self.operation.result.status
+        rejected = status is ActionStatus.REJECTED and self.operation.goal_handle is None
+        if rejected and now < self.acceptance_deadline:
+            if now >= self.retry_at:
+                self._request_return(now)
+            return None
+        if not self.failure_logged:
+            self.failure_logged = True
+            reason = ('Prazo de aceitação do RTL excedido após rejeições do servidor'
+                      if rejected else self.operation.result.message)
+            self.context.failure_reason = reason
+            self.node.get_logger().error(
+                f'Retorno não confirmado: {reason}. '
+                'Aguardando pouso ou intervenção do operador.')
         return None
+
+    def _request_return(self, now):
+        self.operation = self.node.actions.return_home()
+        self.retry_at = now + self.node.config.return_retry_interval

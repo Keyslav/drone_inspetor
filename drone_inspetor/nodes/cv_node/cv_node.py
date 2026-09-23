@@ -1,1033 +1,401 @@
-"""
-cv_node.py
-=================================================================================================
-Nó ROS2 responsável pelo processamento de visão computacional.
+"""Adaptador ROS para inferência, consultas de detecção e mídia de inspeção.
 
-Este nó implementa algoritmos de detecção de objetos usando YOLO (You Only Look Once),
-uma rede neural convolucional para detecção de objetos em tempo real. O nó processa
-imagens recebidas da câmera principal, detecta objetos de interesse (como flares, anomalias),
-e publica tanto imagens anotadas quanto dados estruturados de detecção.
-
-ARQUITETURA:
-- Assina: /drone_inspetor/interno/camera_node/image_raw (imagens da câmera)
-- Publica: /drone_inspetor/interno/cv_node/image_processed (imagens anotadas)
-- Publica: /drone_inspetor/interno/cv_node/object_detections (dados de detecção em JSON)
-
-PARÂMETROS ROS2 (definidos em param_ros.yaml):
-- anomaly_photo_interval_seconds: Intervalo entre capturas de fotos de anomalias (segundos)
-- object_detection_min_confidence: Confiança mínima para detecção de objetos (0.0 a 1.0)
-- anomaly_detection_min_confidence: Confiança mínima para detecção de anomalias (0.0 a 1.0)
-- photo_format: Formato das imagens (jpg, png)
-- photo_quality: Qualidade de compressão JPEG (1-100)
-- video_fps: FPS do vídeo de detecções
-- video_codec: Codec de vídeo (MJPG recomendado, XVID alternativa)
-
-ALGORITMO:
-- Utiliza modelo YOLO customizado para detecção de objetos específicos
-- Aplica threshold de confiança mínimo configurável para filtrar detecções
-- Desenha bounding boxes e labels nas imagens processadas
-=================================================================================================
+Imagem, estado de missão e controles pertencem ao mesmo grupo de callbacks:
+nenhum frame combina configuração de missões ou modelos diferentes. A consulta
+bloqueante de detecção tem grupo próprio e aguarda snapshots com prazo monotônico.
 """
 
-import rclpy
-from rclpy.node import Node
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
-from sensor_msgs.msg import CompressedImage
-from cv_bridge import CvBridge
-from std_msgs.msg import String
-import cv2
-import numpy as np
 from datetime import datetime
-from ultralytics import YOLO
-import os
-import time
-from ament_index_python.packages import get_package_share_directory
-
-# Importação das mensagens ROS customizadas (construtores e type hints)
-from drone_inspetor_msgs.msg import CVDetectionMSG, CVDetectionItemMSG, MissionStateMSG, CVControlMSG
 import json
+import math
+from pathlib import Path
+import time
 
-# Importações centralizadas de tópicos
+from ament_index_python.packages import get_package_share_directory
+from cv_bridge import CvBridge
+import cv2
+import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from rclpy.node import Node
+
+from drone_inspetor.common.param_utils import load_param
+from drone_inspetor.media.photos import filename_component, save_photo
+from drone_inspetor.media.recorder import VideoRecorder
+from drone_inspetor.nodes.cv_node.detection_buffer import DetectionBuffer
+from drone_inspetor.nodes.cv_node.inference import DetectionPipeline, InferenceOptions
+from drone_inspetor.nodes.cv_node.model_registry import ModelManager, ModelRegistry
 from drone_inspetor.ros_interfaces import (
-    Topics,
-    create_publisher_from,
-    create_service_from,
-    create_subscription_from,
+    Topics, create_publisher_from, create_service_from, create_subscription_from,
 )
+from drone_inspetor_msgs.msg import CVDetectionMSG, CVDetectionItemMSG
+
+
+FOCUSED_STATES = frozenset((
+    'EXECUTANDO_INSPECIONANDO_DETECTANDO',
+    'EXECUTANDO_INSPECIONANDO_ESCANEANDO',
+    'EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO',
+))
 
 
 class CVNode(Node):
-    """
-    Nó ROS2 para processamento de visão computacional.
-    
-    Este nó utiliza YOLO para detectar objetos em imagens recebidas da câmera principal.
-    As detecções são processadas e publicadas em dois formatos:
-    1. Imagens anotadas com bounding boxes e labels
-    2. Dados estruturados em JSON contendo informações sobre cada detecção
-    
-    Responsabilidades:
-    - Assinar tópicos de imagem raw da câmera
-    - Aplicar algoritmos de detecção de objetos usando YOLO
-    - Publicar imagem processada com bounding boxes e labels
-    - Publicar dados estruturados de detecção de objetos em formato JSON
-    """
-    
-    def __init__(self):
-        """
-        Inicializa o nó de visão computacional.
-        
-        Carrega o modelo YOLO e configura subscribers/publishers necessários.
-        """
-        super().__init__("cv_node")
-        self.get_logger().info("Nó CVNode iniciado.")
-        
-        # Flag para controle de shutdown limpo
+    """Converte contratos ROS em operações dos componentes de percepção."""
+
+    def __init__(self, **node_options):
+        super().__init__('cv_node', **node_options)
         self._is_shutting_down = False
-        
-        # ==================== GRUPOS DE CALLBACK (CONCORRÊNCIA) ====================
-        # Grupos separados para evitar que serviços longos (com loops de espera)
-        # bloqueiem o processamento de imagens (deadlock).
         self.camera_cb_group = MutuallyExclusiveCallbackGroup()
         self.service_cb_group = MutuallyExclusiveCallbackGroup()
-        
-        # ==================== INICIALIZAÇÃO ============================================================
-        # Cria instância do CvBridge para conversão entre formatos ROS e OpenCV
         self.bridge = CvBridge()
-        
-        # Estado da máquina de missão atual
-        self._current_mission_state = ""
+        self._current_mission_state = ''
+        self._mission_folder = ''
         self._on_mission = False
-        self._last_annotated_image = None  # Última imagem com anotações
-        
-        # Controle de fotos
-        self._photos_folder = ""
+        self._last_annotated_image = None
+        self._last_frame_time = float('-inf')
+        self._last_source_stamp = None
         self._photo_counter = 0
         self._ponto_indice_atual = 0
-        self._objeto_alvo = ""
-        
-        # === Variáveis para service de detecção ===
-        self._last_detections = []  # Últimas detecções encontradas
-        
-        # === Variáveis para gravação de vídeo ===
-        self._is_recording = False
-        self._video_writer = None
-        self._video_path = ""
-        self._videos_folder = ""  # Pasta para salvar vídeos CV
-        self._video_frame_size = (1280, 720)  # Tamanho padrão do vídeo
-        
-        # === Flag para controle de detecção de anomalias ===
-        self._anomaly_detection_enabled = False  # Só roda rede de anomalias quando True
-        
-        # === Controle de tempo para fotos de anomalias ===
-        self._last_anomaly_photo_time = 0.0  # Timestamp da última foto de anomalia
-        
-        # Declara parâmetro para intervalo de fotos de anomalias (default: 4 segundos)
-        self.declare_parameter('anomaly_photo_interval_seconds', 4.0)
-        self._anomaly_photo_interval = self.get_parameter('anomaly_photo_interval_seconds').value
-        self.get_logger().info(f"Intervalo fotos anomalias: {self._anomaly_photo_interval}s")
-        
-        # Declara parâmetros de confiança mínima
-        self.declare_parameter('object_detection_min_confidence', 0.5)
-        self._object_min_confidence = self.get_parameter('object_detection_min_confidence').value
-        
-        self.declare_parameter('anomaly_detection_min_confidence', 0.5)
-        self._anomaly_min_confidence = self.get_parameter('anomaly_detection_min_confidence').value
-        
-        self.get_logger().info(f"Confiança mínima: objetos={self._object_min_confidence}, anomalias={self._anomaly_min_confidence}")
-        
-        # ==================== PARÂMETROS DE FOTO E VÍDEO =============================================
-        # Parâmetros de foto (similar ao camera_node)
-        self.declare_parameter("photo_format", "jpg")
-        self.declare_parameter("photo_quality", 95)
-        self._photo_format = self.get_parameter("photo_format").get_parameter_value().string_value
-        self._photo_quality = self.get_parameter("photo_quality").get_parameter_value().integer_value
-        
-        # Parâmetros de vídeo
-        self.declare_parameter("video_fps", 15)
-        self.declare_parameter("video_codec", "mp4v")
-        self._video_fps = self.get_parameter("video_fps").get_parameter_value().integer_value
-        self._video_codec = self.get_parameter("video_codec").get_parameter_value().string_value
-        
-        self.get_logger().info(f"CV Foto: formato={self._photo_format}, qualidade={self._photo_quality}")
-        self.get_logger().info(f"CV Vídeo: fps={self._video_fps}, codec={self._video_codec}")
-        
-        # ==================== CARREGAMENTO DOS MODELOS YOLO ===============================================
-        # Obtém o caminho do diretório de instalação do pacote
-        self._pkg_share_dir = get_package_share_directory('drone_inspetor')
-        
-        # Carrega configuração de modelos disponíveis do models.json
-        self._available_models = self._load_models_json()
-        
-        # Nomes dos arquivos dos modelos atualmente carregados
-        self._current_object_model_file = ""
-        self._current_anomaly_model_file = ""
-        
-        # Define modelos iniciais baseados no primeiro disponível de cada tipo
-        for model in self._available_models:
-            filename = model.get('file_name', '')
-            obj_type = model.get('object_type', '')
-            
-            if not self._current_object_model_file and obj_type == 'equipment':
-                self._current_object_model_file = filename
-            
-            if not self._current_anomaly_model_file and obj_type == 'anomaly':
-                self._current_anomaly_model_file = filename
-            
-            # Se já encontrou ambos, para
-            if self._current_object_model_file and self._current_anomaly_model_file:
-                break
-        
-        # Modelo 1: Detecção de objetos da plataforma (Flare, roldanas, etc.)
-        objects_model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', self._current_object_model_file)
-        
-        # Modelo 2: Detecção de anomalias (corrosão) - usado em crops dos objetos detectados
-        anomalies_model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', self._current_anomaly_model_file)
-        
-        import torch
-        if torch.cuda.is_available():
-            self.get_logger().info(f"GPU disponível: {torch.cuda.get_device_name(0)}")
-        else:
-            self.get_logger().warn("------------------------------------------------")
-            self.get_logger().warn("GPU indisponível! - Redes YOLO executadas na CPU")
-        
-        # Carrega modelo de objetos da plataforma
-        try:
-            self.yolo_model_objects = YOLO(objects_model_path)
-            self.get_logger().info(f"✅ Modelo de objetos carregado: {os.path.basename(objects_model_path)}")
-            self.get_logger().info(f"   Classes disponíveis: {self.yolo_model_objects.names}")
-        except Exception as e:
-            self.get_logger().error(f"Erro ao carregar modelo de objetos: {e}")
-            self.yolo_model_objects = None
-        
-        # Carrega modelo de detecção de anomalias (corrosão)
-        try:
-            self.yolo_model_anomalies = YOLO(anomalies_model_path)
-            self.get_logger().info(f"✅ Modelo de anomalias carregado: {os.path.basename(anomalies_model_path)}")
-        except Exception as e:
-            self.get_logger().error(f"Erro ao carregar modelo de anomalias: {e}")
-            self.yolo_model_anomalies = None
-        
-        # ==================== SUBSCRIBERS EXTERNOS (ENTRADA DE DADOS DO SIMULADOR/DRONE) ========================
+        self._objeto_alvo = ''
+        self._photos_folder = None
+        self._videos_folder = None
+        self._anomaly_detection_enabled = False
+        self._last_anomaly_photo_time = float('-inf')
+        self._anomaly_photo_interval = load_param(self, 'anomaly_photo_interval_seconds', 4.0)
+        self._object_min_confidence = load_param(self, 'object_detection_min_confidence', 0.5)
+        self._anomaly_min_confidence = load_param(self, 'anomaly_detection_min_confidence', 0.5)
+        self._photo_format = load_param(self, 'photo_format', 'jpg')
+        self._photo_quality = load_param(self, 'photo_quality', 95)
+        self._max_frame_age = load_param(self, 'detection_max_frame_age_seconds', 1.0)
+        self._detections = DetectionBuffer(self._max_frame_age)
+        self._recorder = VideoRecorder(
+            load_param(self, 'video_codec', 'mp4v'), load_param(self, 'video_fps', 15),
+        )
+        if not math.isfinite(self._anomaly_photo_interval) or self._anomaly_photo_interval < 0:
+            raise ValueError('Intervalo de fotos deve ser finito e não negativo')
+        if any(not 0 <= value <= 1 for value in (
+            self._object_min_confidence, self._anomaly_min_confidence,
+        )):
+            raise ValueError('Confiança mínima deve estar entre 0 e 1')
+
+        self._registry = None
+        self._models = None
+        self._pipeline = None
+        self._initialize_models()
+        self._device = self._select_device(load_param(self, 'inference_device', 'auto'))
+
         self.compressed_image_subscription = create_subscription_from(
-            self,
-            Topics.Externo.CAMERA_COMPRESSED,
-            self.image_callback,
+            self, Topics.Externo.CAMERA_COMPRESSED, self.image_callback,
             callback_group=self.camera_cb_group,
         )
-        self.get_logger().info(f"Assinado tópico externo: {self.compressed_image_subscription.topic_name}")
-
-        # ==================== PUBLISHERS INTERNOS (SAÍDA DE DADOS PARA O DASHBOARD) ====================
         self.processed_image_publisher = create_publisher_from(self, Topics.Interno.CV_COMPRESSED)
-        self.get_logger().info(f"Publicando no tópico: {self.processed_image_publisher.topic_name}")
-
         self.detection_publisher = create_publisher_from(self, Topics.Interno.CV_OBJECT_DETECTIONS)
-        self.get_logger().info(f"Publicando detecções no tópico: {self.detection_publisher.topic_name}")
-
-        # ==================== SUBSCRIBER MISSION STATE =====================
-        self.mission_state_sub = create_subscription_from(self, Topics.Interno.MISSION_STATE, self.mission_state_callback)
-        self.get_logger().info("Assinado tópico Mission State para monitoramento de missão.")
-
-        # ==================== SERVICES ====================
+        self.mission_state_sub = create_subscription_from(
+            self, Topics.Interno.MISSION_STATE, self.mission_state_callback,
+            callback_group=self.camera_cb_group,
+        )
+        self.cv_control_sub = create_subscription_from(
+            self, Topics.Dashboard.CV_CONTROL, self._cv_control_callback,
+            callback_group=self.camera_cb_group,
+        )
         self.detection_service = create_service_from(
             self, Topics.Service.CV_DETECTION, self.detection_service_callback,
             callback_group=self.service_cb_group,
         )
-        self.get_logger().info(f"Service de detecção criado: {Topics.Service.CV_DETECTION.name}")
-
+        # Controles curtos continuam disponíveis enquanto a consulta espera imagens.
         self.record_service = create_service_from(
             self, Topics.Service.CV_RECORD_DETECTIONS, self.record_service_callback,
-            callback_group=self.service_cb_group,
+            callback_group=self.camera_cb_group,
         )
-        self.get_logger().info(f"Service de gravação criado: {Topics.Service.CV_RECORD_DETECTIONS.name}")
-
         self.anomaly_detection_service = create_service_from(
             self, Topics.Service.CV_ENABLE_ANOMALY, self.enable_anomaly_detection_callback,
-            callback_group=self.service_cb_group,
+            callback_group=self.camera_cb_group,
         )
-        self.get_logger().info(f"Service de anomalias criado: {Topics.Service.CV_ENABLE_ANOMALY.name}")
-
         self.cv_models_service = create_service_from(
             self, Topics.Service.CV_LIST_MODELS, self.cv_models_service_callback,
-            callback_group=self.service_cb_group,
+            callback_group=self.camera_cb_group,
         )
-        self.get_logger().info(f"Service de modelos criado: {Topics.Service.CV_LIST_MODELS.name}")
+        self.get_logger().info(f'CV iniciado; inferência em {self._device}')
 
-        # ==================== SUBSCRIBER PARA CONTROLE DE MODELOS ====================
-        self.cv_control_sub = create_subscription_from(self, Topics.Dashboard.CV_CONTROL, self._cv_control_callback)
-        self.get_logger().info(f"Subscriber CVControlMSG criado: {self.cv_control_sub.topic_name}")
+    @staticmethod
+    def _select_device(configured):
+        """Nunca anuncia CPU enquanto envia device=0 para o preditor."""
+        if str(configured).lower() == 'auto':
+            import torch
+            return 0 if torch.cuda.is_available() else 'cpu'
+        return configured
 
-        self.get_logger().info("CVNode inicializado com sucesso.")
-
-    def destroy_node(self):
-        """
-        Override do método destroy_node para garantir shutdown limpo.
-        """
-        self._is_shutting_down = True
-        self.get_logger().info("Encerrando cv_node... (Flag _is_shutting_down=True)")
-        
-        # Libera recursos de vídeo se estiver gravando
-        if self._video_writer:
-            self._video_writer.release()
-            self._video_writer = None
-            
-        super().destroy_node()
-
-    
-    # ==================== MÉTODOS DE GERENCIAMENTO DE MODELOS ====================
-    
-    def _load_models_json(self):
-        """
-        Carrega a lista de modelos disponíveis do arquivo models.json.
-        Adapta a nova estrutura hierárquica (equipment/anomaly) para uma lista plana
-        com o campo 'object_type' injetado, mantendo compatibilidade com o restante do sistema.
-        
-        Returns:
-            list: Lista de dicionários com informações dos modelos.
-        """
+    def _initialize_models(self):
+        """Carrega cada categoria; indisponibilidade de anomalias não impede objetos."""
         try:
-            models_json_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', 'models.json')
-            
-            with open(models_json_path, 'r') as f:
-                data = json.load(f)
-            
-            # Suporta tanto a estrutura antiga (lista) quanto a nova (dict)
-            raw_models = data.get('models', {})
-            
-            flat_models = []
-            
-            if isinstance(raw_models, list):
-                # Estrutura antiga: já é uma lista plana
-                flat_models = raw_models
-            elif isinstance(raw_models, dict):
-                # Nova estrutura: chaves 'equipment' e 'anomaly'
-                equipment_list = raw_models.get('equipment', [])
-                anomaly_list = raw_models.get('anomaly', [])
-                
-                # Injeta object_type e adiciona à lista plana
-                for m in equipment_list:
-                    m['object_type'] = 'equipment'
-                    flat_models.append(m)
-                
-                for m in anomaly_list:
-                    m['object_type'] = 'anomaly'
-                    flat_models.append(m)
-            
-            self.get_logger().info(f"Models.json carregado: {len(flat_models)} modelos disponíveis")
-            return flat_models
-        except Exception as e:
-            self.get_logger().error(f"Erro ao carregar models.json: {e}")
-            return []
-    
-    def _cv_control_callback(self, msg: CVControlMSG):
-        """
-        Callback para receber comandos de controle de modelos do dashboard.
-        
-        Args:
-            msg (CVControlMSG): Mensagem com modelos selecionados
-        """
-        self.get_logger().info(f"CVControlMSG recebido: obj={msg.object_detection_model}, anom={msg.anomaly_detection_model}")
-        
-        # Recarrega modelo de objetos se diferente do atual
-        if msg.object_detection_model and msg.object_detection_model != self._current_object_model_file:
-            self._load_object_model(msg.object_detection_model)
-        
-        # Recarrega modelo de anomalias se diferente do atual
-        if msg.anomaly_detection_model and msg.anomaly_detection_model != self._current_anomaly_model_file:
-            self._load_anomaly_model(msg.anomaly_detection_model)
-    
-    def _load_object_model(self, model_filename: str):
-        """
-        Carrega um novo modelo de detecção de objetos.
-        
-        Args:
-            model_filename (str): Nome do arquivo do modelo (ex: 'plataform_objects_yolo8n_detection.pt')
-        """
-        model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', model_filename)
-        
-        if not os.path.exists(model_path):
-            self.get_logger().error(f"Modelo de objetos não encontrado: {model_path}")
+            from ultralytics import YOLO
+            directory = Path(get_package_share_directory('drone_inspetor')) / 'redes_treinadas'
+            self._registry = ModelRegistry(directory)
+            self._models = ModelManager(self._registry, YOLO)
+            self._pipeline = DetectionPipeline(self._models)
+            for kind in ('equipment', 'anomaly'):
+                filename = self._registry.first(kind)
+                if not filename:
+                    continue
+                try:
+                    args = (filename, '') if kind == 'equipment' else ('', filename)
+                    self._models.replace(*args)
+                except Exception as exc:
+                    self.get_logger().error(f'Falha ao carregar {filename}: {exc}')
+        except Exception as exc:
+            self.get_logger().error(f'Percepção indisponível: {exc}')
+
+    def _cv_control_callback(self, msg):
+        """Troca o par inteiro; uma falha preserva ambos os modelos anteriores."""
+        if self._models is None:
+            self.get_logger().error('Registro de modelos indisponível')
             return
-        
         try:
-            self.get_logger().info(f"🔄 Carregando modelo de objetos: {model_filename}...")
-            self.yolo_model_objects = YOLO(model_path)
-            self._current_object_model_file = model_filename
-            self.get_logger().info(f"✅ Modelo de objetos atualizado: {model_filename}")
-            self.get_logger().info(f"   Classes disponíveis: {self.yolo_model_objects.names}")
-        except Exception as e:
-            self.get_logger().error(f"Erro ao carregar modelo de objetos {model_filename}: {e}")
-    
-    def _load_anomaly_model(self, model_filename: str):
-        """
-        Carrega um novo modelo de detecção de anomalias.
-        
-        Args:
-            model_filename (str): Nome do arquivo do modelo (ex: 'corrosion_yolo8x_detection.pt')
-        """
-        model_path = os.path.join(self._pkg_share_dir, 'redes_treinadas', model_filename)
-        
-        if not os.path.exists(model_path):
-            self.get_logger().error(f"Modelo de anomalias não encontrado: {model_path}")
+            self._models.replace(msg.object_detection_model, msg.anomaly_detection_model)
+            self._detections.invalidate()
+            self.get_logger().info(f'Modelos ativos: {self._models.filenames}')
+        except Exception as exc:
+            self.get_logger().error(f'Troca de modelos recusada: {exc}')
+
+    def image_callback(self, msg):
+        """Processa um frame com a configuração do início do callback."""
+        if self._is_shutting_down:
             return
-        
+        received_at = self._frame_acquisition_time(msg)
+        if received_at is None:
+            return
         try:
-            self.get_logger().info(f"🔄 Carregando modelo de anomalias: {model_filename}...")
-            self.yolo_model_anomalies = YOLO(model_path)
-            self._current_anomaly_model_file = model_filename
-            self.get_logger().info(f"✅ Modelo de anomalias atualizado: {model_filename}")
-        except Exception as e:
-            self.get_logger().error(f"Erro ao carregar modelo de anomalias {model_filename}: {e}")
-
-    # ==================== CALLBACKS INTERNOS (PROCESSAMENTO DE IMAGENS DA CÂMERA) ====================
-
-    def image_callback(self, msg: CompressedImage):
-        """
-        Callback para processar imagens comprimidas recebidas da câmera.
-        
-        Este método é chamado sempre que uma nova imagem comprimida é recebida. Ele:
-        1. Converte a mensagem CompressedImage ROS para formato OpenCV
-        2. Aplica detecção de objetos usando YOLO
-        3. Publica a imagem anotada como CompressedImage
-        4. Publica dados estruturados de detecção como mensagem ROS
-        
-        Args:
-            msg (sensor_msgs.msg.CompressedImage): Mensagem de imagem comprimida recebida.
-        """
-        try:
-            # Verifica se o nó está encerrando antes de processar
+            frame = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            annotated, detections = self.detect_objects(frame)
             if self._is_shutting_down:
                 return
+            self._last_annotated_image = annotated
+            self._last_frame_time = received_at
+            self._detections.publish(detections, received_at)
+            processed = self.bridge.cv2_to_compressed_imgmsg(annotated, dst_format='jpeg')
+            processed.header = msg.header
+            self.processed_image_publisher.publish(processed)
+            self._publish_detections(detections)
+            self._recorder.write(annotated)
+        except Exception as exc:
+            self.get_logger().error(f'Falha no processamento de imagem: {exc}')
 
-            # Converte mensagem CompressedImage ROS para imagem OpenCV no formato BGR8
-            cv_image = self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            
-            # Aplica detecção de objetos usando YOLO
-            # Retorna imagem anotada e lista de detecções
-            annotated_image, detections = self.detect_objects(cv_image)
-            
-            # Publica imagem processada com anotações como CompressedImage
-            try:
-                # Converte imagem OpenCV para mensagem CompressedImage ROS
-                processed_msg = self.bridge.cv2_to_compressed_imgmsg(annotated_image, dst_format="jpeg")
-                # Preserva o header original (timestamp, frame_id, etc.)
-                processed_msg.header = msg.header
-                
-                # Double-check antes de publicar
-                if not self._is_shutting_down:
-                    self.processed_image_publisher.publish(processed_msg)
-            except Exception as e:
-                self.get_logger().error(f"Erro ao publicar imagem processada: {e}")
-            
-            # Publica dados de detecção como mensagem ROS
-            # Apenas publica se houver detecções
-            # Cria mensagem CVDetectionMSG
-            detection_msg = CVDetectionMSG()
-            detection_msg.timestamp = datetime.now().isoformat()
-            detection_msg.count = len(detections)
-            
-            # Converte cada detecção para CVDetectionItemMSG
-            detection_items = []
-            for det in detections:
-                item = CVDetectionItemMSG()
-                item.object_type = det.get("object_type", "")
-                item.class_name = det.get("class", "")
-                item.confidence = det.get("confidence", 0.0)
-                item.bbox = det.get("bbox", [])
-                item.bbox_center = det.get("bbox_center", [])
-                detection_items.append(item)
-            
-            detection_msg.detections = detection_items
-            detection_msg.detections = detection_items
-            
-            # Double-check antes de publicar
+    def _frame_acquisition_time(self, msg):
+        """Não renova um frame repetido durante pausa do relógio simulado."""
+        received = time.monotonic()
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec / 1e9
+        if stamp == 0:
+            return received  # Driver sem timestamp: somente idade desde a recepção.
+        now_ros = self.get_clock().now().nanoseconds / 1e9
+        if self._last_source_stamp is not None and now_ros < self._last_source_stamp:
+            self._last_source_stamp = None
+            self._detections.invalidate()
+        age = now_ros - stamp
+        if (not 0 <= age <= self._max_frame_age or
+                (self._last_source_stamp is not None and stamp <= self._last_source_stamp)):
+            return None
+        self._last_source_stamp = stamp
+        return received - age
+
+    def detect_objects(self, image):
+        """Delega inferência e salva capturas conforme o intervalo da missão."""
+        if self._pipeline is None:
+            return image, []
+        options = InferenceOptions(
+            object_confidence=self._object_min_confidence,
+            anomaly_confidence=self._anomaly_min_confidence,
+            target=self._objeto_alvo,
+            filter_target=self._current_mission_state in FOCUSED_STATES,
+            enable_anomalies=self._anomaly_detection_enabled,
+            device=self._device,
+        )
+        annotated, detections, captures = self._pipeline.process(image, options)
+        for capture in captures:
             if not self._is_shutting_down:
-                self.detection_publisher.publish(detection_msg)
+                self._capture_anomaly_photos(capture)
+        return annotated, detections
 
-            
-            # Armazena as últimas detecções para o service
-            self._last_detections = detections
-            
-            # Armazena a última imagem anotada para captura de foto
-            self._last_annotated_image = annotated_image
-            
-            # Grava frame se gravação estiver ativa
-            if self._is_recording and self._video_writer is not None:
-                try:
-                    # Redimensiona para tamanho padrão do vídeo
-                    frame_resized = cv2.resize(annotated_image, self._video_frame_size)
-                    self._video_writer.write(frame_resized)
-                except Exception as e:
-                    self.get_logger().error(f"Erro ao gravar frame: {e}")
-            
-        except Exception as e:
-            self.get_logger().error(f"Erro no processamento da imagem: {e}")
-    
-    def mission_state_callback(self, msg: MissionStateMSG):
-        """
-        Callback para mensagens de estado do mission_node.
-        Monitora início/fim de missões e estados que disparam captura de foto.
-        """
-        new_state = msg.state_name
-        new_on_mission = msg.on_mission
-        new_mission_folder = msg.mission_folder_path
-        
-        # ========== INÍCIO DE MISSÃO (configura pastas) ==========
-        if new_on_mission and not self._on_mission:
-            self._photos_folder = os.path.join(new_mission_folder, "fotos_cv") if new_mission_folder else ""
-            self._videos_folder = os.path.join(new_mission_folder, "videos_cv") if new_mission_folder else ""
+    def _publish_detections(self, detections):
+        message = CVDetectionMSG()
+        message.timestamp = datetime.now().isoformat()
+        message.count = len(detections)
+        for detection in detections:
+            item = CVDetectionItemMSG()
+            item.object_type = detection['object_type']
+            item.class_name = detection['class']
+            item.confidence = detection['confidence']
+            item.bbox = detection['bbox']
+            item.bbox_center = detection['bbox_center']
+            message.detections.append(item)
+        self.detection_publisher.publish(message)
+
+    def mission_state_callback(self, msg):
+        """Associa mídia à missão e encerra gravações antes de abandonar a pasta."""
+        if self._is_shutting_down:
+            return
+        folder_changed = msg.mission_folder_path != self._mission_folder
+        if msg.on_mission and (not self._on_mission or folder_changed):
+            self._recorder.close()
+            self._detections.invalidate()
             self._photo_counter = 0
-            
-            # Cria pasta de fotos CV se não existir
-            if self._photos_folder and not os.path.exists(self._photos_folder):
-                try:
-                    os.makedirs(self._photos_folder, exist_ok=True)
-                    self.get_logger().info(f"📷 Pasta de fotos CV criada: {self._photos_folder}")
-                except Exception as e:
-                    self.get_logger().error(f"Erro ao criar pasta de fotos CV: {e}")
-        
-        # ========== ATUALIZAÇÃO DE INFORMAÇÕES DO PONTO ==========
-        if new_on_mission:
+            self._last_anomaly_photo_time = float('-inf')
+            self._mission_folder = msg.mission_folder_path
+            folder = Path(self._mission_folder) if self._mission_folder else None
+            self._photos_folder = folder / 'fotos_cv' if folder else None
+            self._videos_folder = folder / 'videos_cv' if folder else None
+        if msg.on_mission:
+            if (msg.objeto_alvo != self._objeto_alvo or
+                    msg.ponto_de_inspecao_indice_atual != self._ponto_indice_atual):
+                self._detections.invalidate()
             self._ponto_indice_atual = msg.ponto_de_inspecao_indice_atual
             self._objeto_alvo = msg.objeto_alvo
-        
-        # ========== FIM DE MISSÃO (limpa variáveis) ==========
-        if not new_on_mission and self._on_mission:
-            self.get_logger().info(f"Missão finalizada. Fotos CV: {self._photo_counter}")
-            self._photos_folder = ""
-            self._videos_folder = ""
-        
-        # ========== CAPTURA DE FOTO ==========
-        # Tira foto sempre que mission_node transicionar de INSPECIONANDO para DETECTANDO
-        # IMPORTANTE: verificar ANTES de atualizar _current_mission_state
-        if new_on_mission and new_state == "EXECUTANDO_INSPECIONANDO_DETECTANDO":
-            if self._current_mission_state == "EXECUTANDO_INSPECIONANDO":
-                self._capture_photo(new_state)
-        
-        # Atualiza estado (APÓS verificação de captura de foto)
-        self._on_mission = new_on_mission
-        self._current_mission_state = new_state
-    
-    def _capture_photo(self, state_name: str):
-        """
-        Captura e salva uma foto anotada (com bounding boxes) na pasta fotos_cv da missão.
-        """
-        if self._last_annotated_image is None:
-            self.get_logger().warn("Nenhuma imagem anotada disponível para captura.")
-            return
-        
-        if not self._photos_folder or not os.path.exists(self._photos_folder):
-            self.get_logger().warn("Pasta de fotos CV não existe. Foto não salva.")
-            return
-        
-        try:
-            self._photo_counter += 1
-            timestamp = datetime.now().strftime("%H%M%S")
-            
-            # Formato: 001_P01_detectando_flare_093012.jpg
-            prefix = state_name.lower().replace("executando_inspecionando_", "")
-            ponto_str = f"P{self._ponto_indice_atual + 1:02d}"  # P01, P02, etc.
-            objeto_str = f"_{self._objeto_alvo}" if self._objeto_alvo else ""
-            filename = f"{self._photo_counter:03d}_{ponto_str}_{prefix}{objeto_str}_{timestamp}.{self._photo_format}"
-            
-            photo_path = os.path.join(self._photos_folder, filename)
-            
-            # Configura parâmetros de compressão
-            if self._photo_format.lower() == "jpg":
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._photo_quality]
-            elif self._photo_format.lower() == "png":
-                png_compression = max(0, min(9, 9 - int(self._photo_quality / 11)))
-                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, png_compression]
-            else:
-                encode_params = []
-            
-            # Salva a imagem anotada
-            cv2.imwrite(photo_path, self._last_annotated_image, encode_params)
-            self.get_logger().info(f"🔍 Foto CV capturada: {os.path.basename(photo_path)}")
-            
-        except Exception as e:
-            self.get_logger().error(f"Erro ao capturar foto CV: {e}")
+        elif self._on_mission:
+            self._recorder.close()
+            self._detections.invalidate()
+            self._photos_folder = None
+            self._videos_folder = None
+            self._mission_folder = ''
+            self._anomaly_detection_enabled = False
+            self._objeto_alvo = ''
+        if (msg.on_mission and msg.state_name == 'EXECUTANDO_INSPECIONANDO_DETECTANDO'
+                and self._current_mission_state == 'EXECUTANDO_INSPECIONANDO'):
+            self._capture_photo(msg.state_name)
+        self._on_mission = msg.on_mission
+        self._current_mission_state = msg.state_name
 
-    def _capture_anomaly_photos(self, img_original: np.ndarray, img_objeto: np.ndarray, 
-                                  img_anomalias: np.ndarray, crop_original: np.ndarray,
-                                  crop_anomalias: np.ndarray, object_name: str):
-        """
-        Salva 5 fotos do MESMO momento quando anomalias são detectadas.
-        Só salva se passou pelo menos 1 segundo desde a última captura.
-        
-        Todas as fotos têm a mesma resolução da imagem original.
-        Sequencial: <seq_momento>_<seq_foto> (ex: 1_1, 1_2, etc.)
-        
-        As 5 fotos são salvas instantaneamente (mesmo timestamp):
-        1. original: imagem completa sem anotações
-        2. objeto: imagem completa com BB do objeto (verde)
-        3. anomalias: imagem completa com BB objeto + anomalias (verde + vermelho)
-        4. crop_original: crop do objeto redimensionado para resolução original
-        5. crop_anomalias: crop do objeto com anomalias redimensionado
-        """
-        current_time = time.time()
-        
-        # Só salva se passou o intervalo configurado desde a última foto
-        if (self.get_clock().now().nanoseconds / 1e9) - self._last_anomaly_photo_time < self._anomaly_photo_interval:
+    def _capture_photo(self, state_name):
+        if (self._last_annotated_image is None or self._photos_folder is None or
+                time.monotonic() - self._last_frame_time > self._max_frame_age):
             return
-        
-        if not self._photos_folder or not os.path.exists(self._photos_folder):
-            return
-        
+        self._photo_counter += 1
+        state = state_name.lower().replace('executando_inspecionando_', '')
+        timestamp = datetime.now().strftime('%H%M%S_%f')
+        object_name = filename_component(self._objeto_alvo)
+        filename = (f'{self._photo_counter:03d}_P{self._ponto_indice_atual + 1:02d}_'
+                    f'{state}_{object_name}_{timestamp}.{self._photo_format}')
         try:
-            self._last_anomaly_photo_time = self.get_clock().now().nanoseconds / 1e9
-            self._photo_counter += 1
-            seq_momento = self._photo_counter
-            
-            ponto_str = f"P{self._ponto_indice_atual + 1:02d}"
-            obj_str = object_name.lower().replace(" ", "_")
-            timestamp = datetime.now().strftime("%H%M%S")
-            
-            # Resolução da imagem original para redimensionar crops
-            h, w = img_original.shape[:2]
-            
-            # Redimensiona crops para mesma resolução da imagem original
-            crop_original_resized = cv2.resize(crop_original, (w, h), interpolation=cv2.INTER_LANCZOS4)
-            crop_anomalias_resized = cv2.resize(crop_anomalias, (w, h), interpolation=cv2.INTER_LANCZOS4)
-            
-            # Salva as 5 fotos do MESMO momento (seq: momento_foto)
-            ext = self._photo_format
-            f1 = f"{ponto_str}_{obj_str}_{seq_momento}_1_original_{timestamp}.{ext}"
-            f2 = f"{ponto_str}_{obj_str}_{seq_momento}_2_objeto_{timestamp}.{ext}"
-            f3 = f"{ponto_str}_{obj_str}_{seq_momento}_3_anomalias_{timestamp}.{ext}"
-            f4 = f"{ponto_str}_{obj_str}_{seq_momento}_4_crop_{timestamp}.{ext}"
-            f5 = f"{ponto_str}_{obj_str}_{seq_momento}_5_crop_anomalias_{timestamp}.{ext}"
-            
-            # Parâmetros de compressão
-            if self._photo_format.lower() == "jpg":
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, self._photo_quality]
-            elif self._photo_format.lower() == "png":
-                png_compression = max(0, min(9, 9 - int(self._photo_quality / 11)))
-                encode_params = [cv2.IMWRITE_PNG_COMPRESSION, png_compression]
-            else:
-                encode_params = []
-            
-            cv2.imwrite(os.path.join(self._photos_folder, f1), img_original, encode_params)
-            cv2.imwrite(os.path.join(self._photos_folder, f2), img_objeto, encode_params)
-            cv2.imwrite(os.path.join(self._photos_folder, f3), img_anomalias, encode_params)
-            cv2.imwrite(os.path.join(self._photos_folder, f4), crop_original_resized, encode_params)
-            cv2.imwrite(os.path.join(self._photos_folder, f5), crop_anomalias_resized, encode_params)
-            
-            self.get_logger().info(f"📷 5 fotos anomalias: seq={seq_momento}, ts={timestamp}")
-            
-        except Exception as e:
-            self.get_logger().error(f"Erro ao salvar fotos de anomalias: {e}")
+            save_photo(self._photos_folder / filename, self._last_annotated_image,
+                       self._photo_quality)
+        except (OSError, ValueError, cv2.error) as exc:
+            self.get_logger().error(f'Falha ao salvar foto de inspeção: {exc}')
 
-    # ==================== SERVICE CALLBACKS ====================
+    def _capture_anomaly_photos(self, capture):
+        now = time.monotonic()
+        if (self._photos_folder is None or
+                now - self._last_anomaly_photo_time < self._anomaly_photo_interval):
+            return
+        self._last_anomaly_photo_time = now
+        self._photo_counter += 1
+        timestamp = datetime.now().strftime('%H%M%S_%f')
+        prefix = (f'P{self._ponto_indice_atual + 1:02d}_'
+                  f'{filename_component(capture.object_name.lower())}_{self._photo_counter}')
+        size = (capture.original.shape[1], capture.original.shape[0])
+        images = (
+            ('original', capture.original), ('objeto', capture.object_image),
+            ('anomalias', capture.annotated),
+            ('crop', cv2.resize(capture.crop, size, interpolation=cv2.INTER_LANCZOS4)),
+            ('crop_anomalias', cv2.resize(capture.annotated_crop, size,
+                                        interpolation=cv2.INTER_LANCZOS4)),
+        )
+        try:
+            for index, (label, image) in enumerate(images, start=1):
+                name = f'{prefix}_{index}_{label}_{timestamp}.{self._photo_format}'
+                save_photo(self._photos_folder / name, image, self._photo_quality)
+        except (OSError, ValueError, cv2.error) as exc:
+            self.get_logger().error(f'Falha ao salvar fotos de anomalias: {exc}')
 
     def detection_service_callback(self, request, response):
-        """
-        Callback do service de detecção.
-        Monitora as detecções por timeout_seconds e retorna se encontrou o objeto.
-        
-        Args:
-            request: CVDetectionSRV.Request com object_name, anomaly_types, timeout_seconds
-            response: CVDetectionSRV.Response com success, bbox, bbox_center
-        """
-        object_name = request.object_name
-        timeout = request.timeout_seconds if request.timeout_seconds > 0 else 2.0
-        
-        self.get_logger().info(f"Service de detecção chamado: buscando '{object_name}' por {timeout}s")
-        
-        import time
-        start_time = self.get_clock().now().nanoseconds / 1e9
-        found = False
-        best_detection = None
-
-        self.get_logger().info(f" ")
-        self.get_logger().info(f"Requested: {object_name}")
-        
-        # Monitora detecções por timeout segundos
-        while (self.get_clock().now().nanoseconds / 1e9) - start_time < timeout:
-            # Faz cópia para evitar erro se lista for modificada durante iteração
-            detections_snapshot = self._last_detections.copy()
-            for det in detections_snapshot:
-                det_class = det.get("class", "").lower()
-                det_type = det.get("object_type", "").lower()
-
-                self.get_logger().info(f"Detected: {det_class}, {det_type}")
-                
-                if object_name.lower() in det_class or object_name.lower() in det_type:
-                    # Encontrou o objeto
-                    if best_detection is None or det.get("confidence", 0) > best_detection.get("confidence", 0):
-                        best_detection = det
-                        found = True
-            
-            if found:
-                break
-            
-            time.sleep(0.1)  # Pequena pausa para não sobrecarregar
-        
-        if found and best_detection:
-            response.success = True
-            response.message = f"Objeto '{object_name}' detectado com {best_detection['confidence']:.2f} de confiança"
-            response.confidence = best_detection.get("confidence", 0.0)
-            response.bbox = best_detection.get("bbox", [])
-            response.bbox_center = [float(x) for x in best_detection.get("bbox_center", [])]
-            self.get_logger().info(f"✅ {response.message}")
+        """Consulta só frames novos, mesmo quando o relógio simulado está pausado."""
+        response.success = False
+        response.confidence = 0.0
+        response.bbox = []
+        response.bbox_center = []
+        timeout = request.timeout_seconds if request.timeout_seconds != 0 else 2.0
+        try:
+            detection = self._detections.wait_for(request.object_name, timeout)
+        except ValueError as exc:
+            response.message = str(exc)
+            return response
+        if detection is None:
+            response.message = ('Percepção encerrada' if self._is_shutting_down else
+                                f'Objeto {request.object_name!r} sem observação nova em {timeout}s')
         else:
-            response.success = False
-            response.message = f"Objeto '{object_name}' não detectado em {timeout}s"
-            response.confidence = 0.0
-            response.bbox = []
-            response.bbox_center = []
-            self.get_logger().warn(f"❌ {response.message}")
-        
+            response.success = True
+            response.confidence = detection['confidence']
+            response.bbox = detection['bbox']
+            response.bbox_center = detection['bbox_center']
+            response.message = f'Objeto {request.object_name!r} detectado'
         return response
 
     def record_service_callback(self, request, response):
-        """
-        Callback do service de gravação de vídeo.
-        Inicia ou para a gravação de vídeo com detecções.
-        
-        Args:
-            request: RecordDetectionsSRV.Request com start_recording (bool)
-            response: RecordDetectionsSRV.Response com success, message, video_path
-        """
-        if request.start_recording:
-            # Iniciar gravação
-            if self._is_recording:
-                response.success = False
-                response.message = "Gravação já está em andamento"
-                response.video_path = ""
-                return response
-            
-            try:
-                # Determina extensão baseada no codec
-                video_ext = "avi" if self._video_codec in ["MJPG", "XVID"] else "mp4"
-                
-                # Gera caminho para o vídeo na pasta videos_cv da missão
-                if self._videos_folder:
-                    # Cria pasta de vídeos CV se não existir
-                    if not os.path.exists(self._videos_folder):
-                        os.makedirs(self._videos_folder, exist_ok=True)
-                    
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    self._video_path = os.path.join(
-                        self._videos_folder,
-                        f"detection_{timestamp}.{video_ext}"
-                    )
-                else:
-                    # Fallback se não houver missão ativa
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    self._video_path = f"/tmp/detection_{timestamp}.{video_ext}"
-                
-                # Configura VideoWriter usando parâmetros configuráveis
-                fourcc = cv2.VideoWriter_fourcc(*self._video_codec)
-                self._video_writer = cv2.VideoWriter(
-                    self._video_path,
-                    fourcc,
-                    float(self._video_fps),
-                    self._video_frame_size
-                )
-                
-                if not self._video_writer.isOpened():
-                    raise Exception("Não foi possível abrir VideoWriter")
-                
-                self._is_recording = True
-                response.success = True
-                response.message = f"Gravação iniciada: {os.path.basename(self._video_path)}"
-                response.video_path = self._video_path
-                self.get_logger().info(f"🔴 {response.message}")
-                
-            except Exception as e:
-                response.success = False
-                response.message = f"Erro ao iniciar gravação: {e}"
-                response.video_path = ""
-                self.get_logger().error(response.message)
-                
-        else:
-            # Parar gravação
-            if not self._is_recording:
-                response.success = False
-                response.message = "Nenhuma gravação em andamento"
-                response.video_path = ""
-                return response
-            
-            try:
-                if self._video_writer:
-                    self._video_writer.release()
-                    self._video_writer = None
-                
-                self._is_recording = False
-                response.success = True
-                response.message = f"Gravação finalizada: {os.path.basename(self._video_path)}"
-                response.video_path = self._video_path
-                self.get_logger().info(f"⬛ {response.message}")
-                
-            except Exception as e:
-                response.success = False
-                response.message = f"Erro ao parar gravação: {e}"
-                response.video_path = ""
-                self.get_logger().error(response.message)
-        
+        """O gravador concentra abertura, redimensionamento e liberação do recurso."""
+        response.success = False
+        response.video_path = ''
+        if self._is_shutting_down:
+            response.message = 'Percepção encerrada'
+            return response
+        try:
+            if request.start_recording:
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+                path = (self._videos_folder or Path('/tmp')) / (
+                    f'detection_{timestamp}.{self._recorder.extension}')
+                response.video_path = self._recorder.start(path, frame_size=(1280, 720))
+                response.message = 'Gravação iniciada'
+            else:
+                if not self._recorder.active:
+                    raise RuntimeError('Nenhuma gravação em andamento')
+                response.video_path = self._recorder.close()
+                response.message = 'Gravação finalizada'
+            response.success = True
+        except Exception as exc:
+            response.message = f'Falha na gravação: {exc}'
+            self.get_logger().error(response.message)
         return response
 
     def enable_anomaly_detection_callback(self, request, response):
-        """
-        Callback do service para habilitar/desabilitar detecção de anomalias.
-        
-        Args:
-            request: EnableAnomalyDetectionSRV.Request com enable (bool)
-            response: EnableAnomalyDetectionSRV.Response com success, message
-        """
+        """Habilita o segundo estágio sem bloquear a espera de detecção."""
         self._anomaly_detection_enabled = request.enable
-        
-        if request.enable:
-            response.success = True
-            response.message = "Detecção de anomalias HABILITADA"
-            self.get_logger().info("🔴 Detecção de anomalias HABILITADA")
-        else:
-            response.success = True
-            response.message = "Detecção de anomalias DESABILITADA"
-            self.get_logger().info("⬛ Detecção de anomalias DESABILITADA")
-        
+        response.success = True
+        response.message = 'Detecção de anomalias ' + ('habilitada' if request.enable else 'desabilitada')
         return response
 
     def cv_models_service_callback(self, request, response):
-        """
-        Callback do service para listar modelos disponíveis e atuais.
-        
-        Args:
-            request: CVModelsSRV.Request (vazio)
-            response: CVModelsSRV.Response com listas de modelos e modelos atuais
-        """
-        try:
-            # Retorna a lista completa de modelos como JSON string
-            response.models_data_json = json.dumps(self._available_models)
-            response.current_object_model = self._current_object_model_file
-            response.current_anomaly_model = self._current_anomaly_model_file
-        except Exception as e:
-            self.get_logger().error(f"Erro ao serializar modelos: {e}")
-            response.models_data_json = "[]"
-            response.current_object_model = ""
-            response.current_anomaly_model = ""
-        
+        """Expõe apenas modelos efetivamente carregados como seleção atual."""
+        response.models_data_json = json.dumps(self._registry.entries if self._registry else [])
+        current = self._models.filenames if self._models else ('', '')
+        response.current_object_model, response.current_anomaly_model = current
         return response
 
-    # ==================== MÉTODOS DE PROCESSAMENTO (ALGORITMOS DE VISÃO COMPUTACIONAL) ================
+    def request_shutdown(self):
+        """Libera consultas antes que o executor espere pelos callbacks pendentes."""
+        self._is_shutting_down = True
+        self._detections.close()
 
-    def detect_objects(self, image):
-        """
-        Detecta objetos e anomalias usando detecção hierárquica em dois estágios.
-        
-        Estágio 1: Detecta objetos da plataforma (Flare, roldanas, etc.) usando yolo_model_objects
-        Estágio 2: Para cada objeto detectado, faz crop e detecta anomalias (corrosão) usando yolo_model_anomalies
-        
-        Quando o filtro de objeto está ativo (seja por detecção de anomalias habilitada ou pelos estados DETECTANDO/ESCANEANDO):
-        - Mostra APENAS o bounding box do objeto alvo (_objeto_alvo)
-        - Detecta e desenha anomalias apenas dentro desse objeto (apenas se _anomaly_detection_enabled=True)
-        
-        Args:
-            image (numpy.ndarray): Imagem OpenCV no formato BGR (numpy array)
-            
-        Returns:
-            tuple: (imagem_anotada, lista_deteccoes)
-                - imagem_anotada: Imagem com bounding boxes e labels desenhados
-                - lista_deteccoes: Lista de dicionários com informações das detecções
-        """
-        if self.yolo_model_objects is None:
-            return image, []
+    def destroy_node(self):
+        """O mesmo fechamento idempotente atende término normal e erro de execução."""
+        self.request_shutdown()
+        self._recorder.close()
+        return super().destroy_node()
 
-        try:
-            annotated_image = image.copy()
-            detections = []
-            
-            # ==================== ESTÁGIO 1: Detecção de objetos da plataforma ====================
-            target_class_id = None
-            
-            # Define se deve filtrar apenas o objeto alvo com base nos estados do mission_node que requerem foco:
-            # - DETECTANDO: Buscando o objeto para confirmar presença e posição
-            # - ESCANEANDO: Analisando o objeto encontrado em busca de anomalias
-            # - ESCANEAMENTO_FINALIZADO: Finalizando o processo e salvando dados
-            should_filter_object = (
-                    self._current_mission_state == "EXECUTANDO_INSPECIONANDO_DETECTANDO" or
-                    self._current_mission_state == "EXECUTANDO_INSPECIONANDO_ESCANEANDO" or
-                    self._current_mission_state == "EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO"
-                )
-            if should_filter_object and self._objeto_alvo:
-                # Encontra o ID da classe que corresponde ao objeto alvo
-                for class_id, class_name in self.yolo_model_objects.names.items():
-                    if self._objeto_alvo.lower() == class_name.lower():
-                        target_class_id = class_id
-                
-                if target_class_id is None:
-                    # Objeto alvo não existe nas classes do modelo, então não conseguirá detectar nada
-                    results = None
-                else:
-                    # Executa predição filtrando apenas pela classe do objeto alvo
-                    results = self.yolo_model_objects.predict(image, verbose=False, device=0, classes=target_class_id)
-            else:
-                # Modo geral: detecta qualquer objeto conhecido pelo modelo
-                results = self.yolo_model_objects.predict(image, verbose=False, device=0, classes=None)
-            
-            if not results:
-                return image, []
-
-            result = results[0]
-            boxes = result.boxes
-            if boxes is None or len(boxes) == 0:
-                return image, []
-
-            # Converte UMA vez por frame (GPU -> CPU)
-            xyxy = boxes.xyxy.cpu().numpy()              # (N, 4)
-            conf = boxes.conf.cpu().numpy()              # (N,)
-            cls  = boxes.cls.cpu().numpy().astype(int)   # (N,)
-
-            for (x1, y1, x2, y2), confidence, class_id in zip(xyxy, conf, cls):
-                # Filtra detecções com confiança mínima configurável
-                if confidence <= self._object_min_confidence:
-                    continue
-
-                class_name = self.yolo_model_objects.names[class_id]
-                x1i, y1i, x2i, y2i = int(x1), int(y1), int(x2), int(y2)
-                
-                # Desenha bounding box do objeto (VERDE)
-                cv2.rectangle(annotated_image, (x1i, y1i), (x2i, y2i), (0, 255, 0), 2)
-                label = f"{class_name}: {float(confidence):.2f}"
-                cv2.putText(annotated_image, label, (x1i, y1i - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-                # Calcula centro do bounding box
-                bbox_center_x = (x1 + x2) / 2.0
-                bbox_center_y = (y1 + y2) / 2.0
-
-                # Cria entrada de detecção
-                detection = {
-                    "object_type": class_name.lower(),
-                    "class": class_name,
-                    "confidence": float(confidence),
-                    "bbox": [x1i, y1i, x2i, y2i],
-                    "bbox_center": [float(bbox_center_x), float(bbox_center_y)],
-                    "anomalies": []  # Lista de anomalias detectadas neste objeto
-                }
-                
-                # ==================== ESTÁGIO 2: Detecção de anomalias no crop ====================
-                # Só executa se a detecção de anomalias estiver habilitada via service
-                if self._anomaly_detection_enabled and self.yolo_model_anomalies is not None:
-                    # === Copia imagens ANTES de desenhar anomalias ===
-                    img_original = image.copy()  # Imagem sem nenhuma anotação
-                    img_objeto = annotated_image.copy()  # Imagem com BB do objeto (verde)
-                    
-                    # Faz crop da região do objeto
-                    crop = image[y1i:y2i, x1i:x2i]
-                    
-                    if crop.size > 0:  # Verifica se crop é válido
-                        anomaly_results = self.yolo_model_anomalies.predict(crop, verbose=False, device=0)
-                        
-                        if anomaly_results and anomaly_results[0].boxes is not None:
-                            anom_boxes = anomaly_results[0].boxes
-                            if len(anom_boxes) > 0:
-                                anom_xyxy = anom_boxes.xyxy.cpu().numpy()
-                                anom_conf = anom_boxes.conf.cpu().numpy()
-                                anom_cls = anom_boxes.cls.cpu().numpy().astype(int)
-                                
-                                anom_segments = None
-                                if anomaly_results[0].masks is not None:
-                                    anom_segments = anomaly_results[0].masks.xy
-
-                                for idx, ((ax1, ay1, ax2, ay2), anom_confidence, anom_class_id) in enumerate(zip(anom_xyxy, anom_conf, anom_cls)):
-                                    if anom_confidence <= self._anomaly_min_confidence:
-                                        continue
-                                    
-                                    anom_class_name = self.yolo_model_anomalies.names[anom_class_id]
-                                    
-                                    # Converte coordenadas do crop para coordenadas da imagem original
-                                    ax1_abs = int(ax1) + x1i
-                                    ay1_abs = int(ay1) + y1i
-                                    ax2_abs = int(ax2) + x1i
-                                    ay2_abs = int(ay2) + y1i
-                                    
-                                    has_mask = False
-                                    # Se houver máscaras de segmentação, desenha elas
-                                    if anom_segments is not None and len(anom_segments) > idx:
-                                        segment = anom_segments[idx]
-                                        if segment.size > 0:
-                                            has_mask = True
-                                            # Copia para não alterar o original se for reusado (embora aqui seja novo por frame)
-                                            seg_global = segment.copy()
-                                            # Ajusta coordenadas (x += x1i, y += y1i)
-                                            seg_global[:, 0] += x1i
-                                            seg_global[:, 1] += y1i
-                                            seg_global = seg_global.astype(np.int32)
-                                            
-                                            # Desenha contorno preenchido com transparência
-                                            overlay = annotated_image.copy()
-                                            cv2.fillPoly(overlay, [seg_global], (0, 0, 255))
-                                            cv2.addWeighted(overlay, 0.4, annotated_image, 0.6, 0, annotated_image)
-                                            # Desenha borda sólida
-                                            cv2.drawContours(annotated_image, [seg_global], -1, (0, 0, 255), 2)
-                                    
-                                    # Se NÃO tiver máscara, desenha bounding box e texto (fallback)
-                                    if not has_mask:
-                                        # Desenha bounding box da anomalia (VERMELHO)
-                                        cv2.rectangle(annotated_image, (ax1_abs, ay1_abs), (ax2_abs, ay2_abs), (0, 0, 255), 2)
-                                        anom_label = f"{anom_class_name}: {float(anom_confidence):.2f}"
-                                        cv2.putText(annotated_image, anom_label, (ax1_abs, ay1_abs - 5),
-                                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-                                    
-                                    # Adiciona anomalia à lista do objeto
-                                    detection["anomalies"].append({
-                                        "class": anom_class_name,
-                                        "confidence": float(anom_confidence),
-                                        "bbox": [ax1_abs, ay1_abs, ax2_abs, ay2_abs],
-                                        "bbox_relative": [int(ax1), int(ay1), int(ax2), int(ay2)]
-                                    })
-                                
-                                # === Captura 5 fotos do mesmo momento (a cada 1s) ===
-                                if len(detection["anomalies"]) > 0:
-                                    img_anomalias = annotated_image.copy()
-                                    # Crop com anomalias desenhadas
-                                    crop_anomalias = annotated_image[y1i:y2i, x1i:x2i].copy()
-                                    self._capture_anomaly_photos(
-                                        img_original, img_objeto, img_anomalias,
-                                        crop.copy(), crop_anomalias, class_name
-                                    )
-                
-                detections.append(detection)
-
-            return annotated_image, detections
-
-        except Exception as e:
-            self.get_logger().error(f"Erro na detecção de objetos: {e}")
-            return image, []
 
 def main(args=None):
-    """Função principal do nó."""
-    import signal
-    from rclpy.executors import MultiThreadedExecutor, ExternalShutdownException
-    
+    """Mantém o handler de sinais do rclpy e aguarda término dos callbacks."""
     rclpy.init(args=args)
-    cv_node = CVNode()
-    
-    # Usa MultiThreadedExecutor para evitar deadlock entre serviços e callbacks
-    executor = MultiThreadedExecutor()
-    executor.add_node(cv_node)
-    
-    # Handler para SIGINT (Ctrl+C) - encerramento limpo
-    def signal_handler(sig, frame):
-        cv_node.get_logger().info("Encerrando cv_node...")
-        # Encerramento forçado se necessário, mas o executor normalmente cuida disso
-        # rclpy.shutdown() deve ser chamado no final
-        pass
-    
-    signal.signal(signal.SIGINT, signal_handler)
-    
+    node = None
+    executor = MultiThreadedExecutor(num_threads=3)
     try:
+        node = CVNode()
+        executor.add_node(node)
         executor.spin()
-    except (KeyboardInterrupt, ExternalShutdownException, Exception):
-        pass  # Ignora exceções durante shutdown
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
-        try:
-            cv_node.destroy_node()
-        except Exception:
-            pass
+        if node is not None:
+            node.request_shutdown()
+        executor.shutdown()
+        if node is not None:
+            node.destroy_node()
         rclpy.try_shutdown()
 
-if __name__ == "__main__":
-    main()
 
+if __name__ == '__main__':
+    main()

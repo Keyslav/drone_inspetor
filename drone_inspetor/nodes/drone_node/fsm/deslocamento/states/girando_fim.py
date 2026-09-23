@@ -43,7 +43,11 @@ class GirandoFimState(BaseState):
             self._concluir_target()
             return TS.PLANANDO
 
-        px4 = ctx.state_px4
+        px4 = self.node.state_px4
+
+        if abs(ctx.yaw_diff_shortest(
+                px4.current_yaw_deg_normalized, target.final_yaw_deg_normalized)) > ctx.yaw_tolerance_deg:
+            ctx.yaw_aligned_time = None
 
         # Em período de estabilização: yaw já alinhado, aguardando o delay.
         if ctx.yaw_aligned_time is not None:

@@ -1,0 +1,8 @@
+# Dependências Python fora do rosdep. Use um venv --system-site-packages.
+# numpy<2 mantém compatibilidade com cv_bridge do ROS Jazzy/Ubuntu 24.04.
+numpy>=1.26,<2
+opencv-python>=4.8,<4.12
+ruckig==0.19.4
+ultralytics==8.3.206
+torch==2.8.0
+torchvision==0.23.0

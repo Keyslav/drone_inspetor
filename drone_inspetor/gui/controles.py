@@ -45,6 +45,7 @@ class ControlesManager:
         self.start_button = None
         self.cancel_button = None
         self.log_button = None
+        self.gazebo_window = None
         
         # Missões serão recebidas do dashboard_gui via set_missions()
         self.missions = {}

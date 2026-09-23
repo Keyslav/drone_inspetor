@@ -13,11 +13,11 @@ from PyQt6.QtWidgets import (QLabel, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QTextEdit, QScrollArea, QComboBox, QSizePolicy)
 from PyQt6.QtGui import QPixmap, QCursor, QFont
 from PyQt6.QtCore import Qt
-from .utils import ExpandedWindow, BaseScreen, ImageProcessor, COMMON_STYLES, IMAGE_QUALITY, gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
-import json
-from datetime import datetime
-import os
-from .utils import ExpandedWindow, BaseScreen, ImageProcessor, COMMON_STYLES, IMAGE_QUALITY, gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
+from .widgets.screens import ExpandedWindow, BaseScreen
+from .widgets.images import ImageProcessor
+from .theme import COMMON_STYLES, IMAGE_QUALITY
+from .logging import gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
+from .presentation.detections import DetectionFrame, format_analysis_report
 import json
 from datetime import datetime
 import os
@@ -54,7 +54,7 @@ class CVScreen(BaseScreen):
 
         # Variáveis para armazenar dados de análise e detecções
         self.analysis_logs = []
-        self.current_detections = []
+        self.current_detections = DetectionFrame(timestamp='')
         self.analysis_window = None  # Referência para a janela de logs de análise
         
         # Listas de modelos (populadas via serviço)
@@ -577,27 +577,12 @@ class CVScreen(BaseScreen):
         except Exception as e:
             gui_log_error("CVScreen", f"Erro ao atualizar dados de análise: {e}")
     
-    def update_detections(self, detections_json):
-        """
-        Atualiza as detecções de objetos recebidas do nó de CV.
-        As detecções são esperadas em formato JSON (string).
+    def update_detections(self, detections: DetectionFrame):
+        """Recebe o snapshot imutável do subscriber sem serialização interna."""
+        self.current_detections = detections
+        if self.analysis_window and self.analysis_window.isVisible():
+            self.update_analysis_window()
 
-        Args:
-            detections_json (str): String JSON contendo a lista de detecções.
-        """
-        gui_log_debug("CVScreen", "Atualizando detecções CV")
-        
-        try:
-            detections = json.loads(detections_json)
-            self.current_detections = detections
-            
-            # Se a janela de análise estiver aberta, atualiza seu conteúdo
-            if self.analysis_window and self.analysis_window.isVisible():
-                self.update_analysis_window()
-                
-        except Exception as e:
-            gui_log_error("CVScreen", f"Erro ao atualizar detecções: {e}")
-    
     def show_analysis_logs(self):
         """
         Exibe a janela com os logs de análise em tempo real.
@@ -629,7 +614,7 @@ class CVScreen(BaseScreen):
         # Título da janela de análise
         title = QLabel("Análise de Visão Computacional")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setFont(QFont("Arial", 16, QFont.Bold))
+        title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setStyleSheet(f"""
             color: {COMMON_STYLES["text_color"]};
             background-color: {COMMON_STYLES["accent_color"]};
@@ -725,73 +710,17 @@ class CVScreen(BaseScreen):
             
             # Rola o texto para o final para mostrar os logs mais recentes
             cursor = self.analysis_text.textCursor()
-            cursor.movePosition(cursor.End)
+            cursor.movePosition(cursor.MoveOperation.End)
             self.analysis_text.setTextCursor(cursor)
             
         except Exception as e:
             gui_log_error("CVScreen", f"Erro ao atualizar janela de análise: {e}")
     
     def generate_analysis_content(self):
-        """
-        Gera o conteúdo formatado para exibição na janela de análise.
-        Inclui cabeçalho, detecções atuais, estatísticas e logs recentes.
-
-        Returns:
-            str: Uma string contendo o conteúdo formatado dos logs de análise.
-        """
-        content = []
-        
-        content.append("=" * 80)
-        content.append("LOGS DE ANÁLISE DE VISÃO COMPUTACIONAL")
-        content.append("=" * 80)
-        content.append(f"Última atualização: {datetime.now().strftime("%H:%M:%S")}")
-        content.append(f"Total de análises: {len(self.analysis_logs)}")
-        content.append(f"Detecções atuais: {len(self.current_detections)}")
-        content.append("")
-        
-        if self.current_detections:
-            content.append("DETECÇÕES ATUAIS:")
-            content.append("-" * 40)
-            for i, detection in enumerate(self.current_detections):
-                obj_type = detection.get("object_type", detection.get("label", "unknown"))
-                confidence = detection.get("confidence", 0.0)
-                content.append(f"{i+1}. {obj_type} (confiança: {confidence:.2f})")
-            content.append("")
-        
-        if self.analysis_logs:
-            content.append("ESTATÍSTICAS:")
-            content.append("-" * 40)
-            
-            avg_quality = sum(log.get("quality_score", 0) for log in self.analysis_logs) / len(self.analysis_logs)
-            content.append(f"Qualidade média: {avg_quality:.1f}/100")
-            
-            avg_sharpness = sum(log.get("sharpness_score", 0) for log in self.analysis_logs) / len(self.analysis_logs)
-            content.append(f"Nitidez média: {avg_sharpness:.1f}")
-            
-            content.append("")
-        
-        content.append("LOGS RECENTES (últimos 10):")
-        content.append("-" * 40)
-        
-        recent_logs = self.analysis_logs[-10:] if len(self.analysis_logs) >= 10 else self.analysis_logs
-        
-        for log in reversed(recent_logs):  # Itera de trás para frente para mostrar os mais recentes primeiro
-            timestamp = log.get("timestamp", "N/A")
-            quality = log.get("quality_score", 0)
-            sharpness = log.get("sharpness_score", 0)
-            detections = log.get("detections", [])
-            
-            content.append(f"[{timestamp}] Qualidade: {quality:.1f} | Nitidez: {sharpness:.1f} | Detecções: {len(detections)}")
-            
-            if detections:
-                for detection in detections:
-                    obj_type = detection.get("object_type", detection.get("label", "unknown"))
-                    confidence = detection.get("confidence", 0.0)
-                    content.append(f"    → {obj_type} ({confidence:.2f})")
-            
-            content.append("")
-        
-        return "\n".join(content)
+        """Gera a mesma apresentação para a janela e a exportação."""
+        return format_analysis_report(
+            self.current_detections, self.analysis_logs, datetime.now().strftime("%H:%M:%S")
+        )
 
     def clear_analysis_logs(self):
         """
@@ -801,7 +730,7 @@ class CVScreen(BaseScreen):
         gui_log_info("CVScreen", "Limpando logs de análise")
         
         self.analysis_logs.clear()
-        self.current_detections.clear()
+        self.current_detections = DetectionFrame(timestamp='')
         
         if self.analysis_window and hasattr(self, "analysis_text"):
             self.update_analysis_window()
@@ -836,7 +765,7 @@ class CVScreen(BaseScreen):
         gui_log_info("CVScreen", "Resetando dados de análise CV")
         
         self.analysis_logs.clear()
-        self.current_detections.clear()
+        self.current_detections = DetectionFrame(timestamp='')
         
         if self.analysis_window and hasattr(self, "analysis_text"):
             self.update_analysis_window()

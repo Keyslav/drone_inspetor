@@ -1,0 +1,77 @@
+name: ROS Jazzy
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    container: ros:jazzy-ros-base
+    env:
+      QT_QPA_PLATFORM: offscreen
+      ROS_LOG_DIR: /tmp/ros-logs
+      MPLCONFIGDIR: /tmp/matplotlib
+      YOLO_CONFIG_DIR: /tmp/ultralytics
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ws/src/drone_inspetor
+      - uses: actions/checkout@v4
+        with:
+          repository: Keyslav/drone_inspetor_msgs
+          ref: v2.0
+          path: ws/src/drone_inspetor_msgs
+      - uses: actions/checkout@v4
+        with:
+          repository: PX4/px4_msgs
+          ref: 57e96edf0772fb548cbc352b332e67e76fc64756
+          path: ws/src/px4_msgs
+      - name: Dependências ROS e Python
+        run: |
+          apt-get update
+          apt-get install -y python3-venv python3-pip python3-colcon-common-extensions python3-rosdep
+          rosdep update
+          source /opt/ros/jazzy/setup.bash
+          rosdep install --from-paths ws/src --ignore-src --rosdistro jazzy -r -y
+          python3 -m venv --system-site-packages /tmp/drone-python
+          source /tmp/drone-python/bin/activate
+          python -m pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r ws/src/drone_inspetor/requirements-runtime.txt flake8
+      - name: Build das interfaces e da aplicação
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source /tmp/drone-python/bin/activate
+          cd ws
+          python -m colcon build --packages-select px4_msgs drone_inspetor_msgs drone_inspetor
+      - name: Testes funcionais e erros estáticos
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source /tmp/drone-python/bin/activate
+          source ws/install/setup.bash
+          cd ws/src/drone_inspetor
+          python -m pytest test -m 'not linter' --junitxml=pytest-functional.xml
+          python -m flake8 drone_inspetor test setup.py --select E9,F63,F7,F82 --show-source
+      - name: Relatório de dívida de estilo
+        if: always()
+        continue-on-error: true
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source /tmp/drone-python/bin/activate
+          source ws/install/setup.bash
+          cd ws/src/drone_inspetor
+          python -m pytest test -m linter --junitxml=pytest-style.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation
+          path: |
+            ws/src/drone_inspetor/pytest-*.xml
+            ws/log

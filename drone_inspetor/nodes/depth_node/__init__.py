@@ -1,5 +1,10 @@
-"""depth_node package — processa câmera de profundidade e alertas de proximidade."""
+"""Projeção métrica e visualização da câmera de profundidade."""
 
-from drone_inspetor.nodes.depth_node.depth_node import DepthNode, main
+__all__ = ['DepthNode', 'main']
 
-__all__ = ["DepthNode", "main"]
+
+def __getattr__(name):
+    if name in __all__:
+        from .depth_node import DepthNode, main
+        return {'DepthNode': DepthNode, 'main': main}[name]
+    raise AttributeError(name)

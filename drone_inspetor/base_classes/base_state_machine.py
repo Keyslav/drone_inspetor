@@ -19,8 +19,8 @@ class BaseStateMachine:
     Responsabilidades:
         - Registrar estados com identificadores (enum, str ou int).
         - Conduzir transições (chama on_exit do antigo → marca on_enter do novo).
-        - Executar o ciclo tick: on_enter no primeiro ciclo após uma transição,
-          on_step nos ciclos subsequentes.
+        - Executar o ciclo tick: on_enter uma vez após a transição,
+          seguido de on_step no mesmo ciclo e nos ciclos subsequentes.
 
     Subclasses concretas costumam:
         - Adicionar lógica global de pré-tick em `tick()` (override).
@@ -83,7 +83,7 @@ class BaseStateMachine:
         Executa um ciclo da FSM.
 
         Comportamento:
-            - Primeiro tick após uma transição: executa on_enter() do estado novo.
+            - Primeiro tick após uma transição: executa on_enter() e depois on_step().
             - Ticks subsequentes: executa on_step().
             - Se on_step retorna um identificador diferente do atual, transiciona.
         """

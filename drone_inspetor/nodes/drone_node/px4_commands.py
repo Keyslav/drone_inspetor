@@ -1,23 +1,7 @@
-# =================================================================================================
-# px4_commands.py
-# =================================================================================================
-# MIXIN: Comandos de baixo nível para o PX4 (alto-nível) do DroneNode
-# =================================================================================================
-# Métodos que traduzem comandos de alto nível (arm, takeoff, goto, land, rtl, stop, emergency_rtl)
-# em mensagens VehicleCommand para o PX4 e/ou em alterações na TargetStack/lifecycle FSM.
-# Implementado como Mixin herdado por DroneNode.
-#
-# Estratégia atual (versão inicial — vai evoluir):
-#   - ARM/TAKEOFF: comandos diretos ao PX4 (sem usar a TargetStack — TAKEOFF é vertical puro,
-#                  observado pelo lifecycle DECOLANDO).
-#   - GOTO:        empilha um Target MISSAO na TargetStack; DeslocamentoFSM cuida da execução.
-#   - LAND / RTL:  delegados ao PX4 nativo (VEHICLE_CMD_NAV_LAND / RETURN_TO_LAUNCH). O autopilot
-#                  conduz o pouso; nossa DroneFSM detecta `is_landed` e volta para POUSADO_*.
-#   - EMERGENCY:   alias para RTL nativo do PX4 — chamado pelo estado EMERGENCIA.
-#   - STOP:        cancela manobras (limpa a TargetStack), drone fica hover via DeslocamentoFSM.
-# =================================================================================================
+"""Tradução de comandos em destinos locais, referências de decolagem e ordens PX4."""
 
 import math
+
 from typing import TYPE_CHECKING
 
 from px4_msgs.msg import VehicleCommand, VehicleCommandAck
@@ -25,6 +9,7 @@ from px4_msgs.msg import VehicleCommand, VehicleCommandAck
 if TYPE_CHECKING:
     from drone_inspetor.nodes.drone_node.drone_node import DroneNode
 
+from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription as DS
 from drone_inspetor.common.log_colors import LogPrefix
 from drone_inspetor.ros_interfaces import Topics
 
@@ -32,39 +17,35 @@ from drone_inspetor.ros_interfaces import Topics
 class DronePX4CommandsMixin:
     """Mixin com comandos de alto nível traduzidos para mensagens PX4."""
 
-    # =============================================================================================
     # Setup de estado interno do mixin
-    # =============================================================================================
 
     def init_px4_commands_state(self: 'DroneNode') -> None:
         """
-        Inicializa o estado interno da camada de comandos PX4.
-        Deve ser chamado pelo __init__ do DroneNode.
+        Inicializa IDs de comandos aguardando ACK e a falha associada à operação.
 
-        Atributo `_px4_commands_awaiting_ack_log`: ids de comandos enviados ao PX4 que
-        estamos esperando ACK. Filtra o callback de ACK p/ logar apenas o que enviamos
-        (o PX4 publica ACKs de TODAS as fontes — QGroundControl, MAVSDK etc.).
+        O ACK contém o ID do comando, não o UUID da action. Confirmações não
+        substituem a observação da telemetria para concluir uma operação.
         """
         self._px4_commands_awaiting_ack_log: set[int] = set()
+        self._px4_command_error = None
 
-    # =============================================================================================
     # Callback de ACK do PX4
-    # =============================================================================================
 
-    def px4_command_ack_callback(self: 'DroneNode', msg) -> None:
-        """Loga ACKs de comandos enviados pelo drone_node (filtra os de outras fontes)."""
-        self.state_px4.last_command_ack = msg
-        if msg.command not in self._px4_commands_awaiting_ack_log:
-            return
-        self._px4_commands_awaiting_ack_log.discard(msg.command)
-
-        result_text = (
-            "ACEITO" if msg.result == VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED else "REJEITADO"
-        )
-        descricao = self._get_command_description(msg.command)
-        self.get_logger().info(
-            LogPrefix.px4_rx(f"ACK {descricao} ({msg.command}): {result_text} (cód {msg.result})")
-        )
+    def px4_command_ack_callback(self, msg) -> None:
+        """Distingue ACK negativo de confirmação; o resultado observa telemetria."""
+        with self._control_lock:
+            self.state_px4.last_command_ack = msg
+            if msg.command not in self._px4_commands_awaiting_ack_log:
+                return
+            if msg.result == VehicleCommandAck.VEHICLE_CMD_RESULT_IN_PROGRESS:
+                return
+            self._px4_commands_awaiting_ack_log.discard(msg.command)
+            description = self._get_command_description(msg.command)
+            if msg.result != VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED:
+                self._px4_command_error = f'PX4 rejeitou {description}: código {msg.result}'
+                self.get_logger().error(self._px4_command_error)
+            else:
+                self.get_logger().info(f'PX4 aceitou {description}; aguardando estado físico')
 
     def _get_command_description(self: 'DroneNode', command_id: int) -> str:
         """Descrição legível de um comando PX4 (para logs)."""
@@ -77,9 +58,7 @@ class DronePX4CommandsMixin:
         }
         return nomes.get(command_id, f"Comando_{command_id}")
 
-    # =============================================================================================
     # Publish helper
-    # =============================================================================================
 
     def publish_vehicle_command(self: 'DroneNode', command: int, **params) -> None:
         """
@@ -95,19 +74,17 @@ class DronePX4CommandsMixin:
         msg.param5 = params.get("param5", 0.0)
         msg.param6 = params.get("param6", 0.0)
         msg.param7 = params.get("param7", 0.0)
-        msg.target_system = 1
+        msg.target_system = self.param_px4_target_system_id
         msg.target_component = 1
         msg.source_system = 255
         msg.source_component = 1
         msg.from_external = True
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
 
-        self.px4_vehicle_command_pub.publish(msg)
         self._px4_commands_awaiting_ack_log.add(command)
+        self.px4_vehicle_command_pub.publish(msg)
 
-    # =============================================================================================
     # ARM
-    # =============================================================================================
 
     def arm_drone(self: 'DroneNode') -> None:
         """
@@ -125,6 +102,8 @@ class DronePX4CommandsMixin:
 
     def disarm_drone(self: 'DroneNode') -> None:
         """Envia comando para DESARMAR os motores ao PX4."""
+        if not self.state_px4.is_landed:
+            raise ValueError('DISARM é permitido somente quando o drone está pousado')
         self.get_logger().warn(
             LogPrefix.px4_tx(
                 f"[{Topics.PX4.VEHICLE_COMMAND.name}] Solicitando DESARMAR motores..."
@@ -134,9 +113,7 @@ class DronePX4CommandsMixin:
             VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM, param1=0.0
         )
 
-    # =============================================================================================
     # TAKEOFF
-    # =============================================================================================
 
     def takeoff(self: 'DroneNode', altitude: 'float | None' = None) -> None:
         """
@@ -144,128 +121,86 @@ class DronePX4CommandsMixin:
 
         Apenas marca o pending_command e a takeoff_altitude no contexto — o estado
         POUSADO_ARMADO da DroneFSM consome o pending_command, transita para DECOLANDO,
-        e a `vertical_takeoff_trajectory` faz o drone subir até a altitude alvo.
+        e `Trajectory.compute_vertical_takeoff` produz a referência até a altitude alvo.
 
         Args:
             altitude: Altitude alvo em metros. Se None, usa `context.takeoff_altitude`
                       (default 2.5m).
         """
         ctx = self.drone_fsm_context
-        if altitude is not None and not math.isnan(altitude):
+        if altitude is not None:
+            if not math.isfinite(altitude) or altitude <= 0:
+                raise ValueError('Altitude de decolagem deve ser positiva e finita')
             ctx.takeoff_altitude = float(altitude)
         ctx.pending_command = "TAKEOFF"
         self.get_logger().info(f"TAKEOFF solicitado: altitude alvo {ctx.takeoff_altitude:.2f}m.")
 
-    # =============================================================================================
     # GOTO (sem foco e com foco)
-    # =============================================================================================
 
-    def goto(
-        self: 'DroneNode',
-        lat: 'float | None' = None,
-        lon: 'float | None' = None,
-        alt: 'float | None' = None,
-        yaw: 'float | None' = None,
-        use_focus: bool = False,
-        focus_lat: 'float | None' = None,
-        focus_lon: 'float | None' = None,
-    ) -> None:
-        """
-        Empilha um target de missão na TargetStack — DeslocamentoFSM cuida de executá-lo.
+    def goto(self, lat=None, lon=None, alt=None, yaw=None, use_focus=False,
+             focus_lat=None, focus_lon=None):
+        """Prepara GPS absoluto→NED antes de alterar a pilha; NaN mantém cada eixo."""
+        def provided(value):
+            return value is not None and not math.isnan(value)
 
-        Comportamento de NaN/None nos parâmetros: mantém o valor atual do drone para
-        aquele eixo (lat/lon/alt) ou ignora (yaw final).
+        def coordinate(value, name, bound=None):
+            if value is None or not math.isfinite(value) or (
+                bound is not None and abs(value) > bound
+            ):
+                raise ValueError(f'GOTO: {name} inválido')
+            return value
 
-        Args:
-            lat, lon, alt: Coordenadas GPS do destino. None ou NaN = manter atual.
-            yaw:           Yaw final em graus (-180 a 180). None = não rotacionar no fim.
-            use_focus:     Se True, mantém o yaw apontando para focus_lat/focus_lon durante
-                           todo o trajeto (em vez de seguir a direção do movimento).
-            focus_lat,
-            focus_lon:     Coordenadas do ponto de foco. Obrigatórios se use_focus=True.
-        """
-        def _missing(v):
-            return v is None or (isinstance(v, float) and math.isnan(v))
-
-        if use_focus:
-            if _missing(lat) or _missing(lon) or _missing(alt):
-                self.get_logger().error(
-                    "GOTO com foco: lat/lon/alt obrigatórios."
-                )
-                return
-            if _missing(focus_lat) or _missing(focus_lon):
-                self.get_logger().error(
-                    "GOTO com foco: focus_lat/focus_lon obrigatórios."
-                )
-                return
-
-        dctx = self.drone_fsm_context
-        sctx = self.deslocamento_fsm_context
         px4 = self.state_px4
+        current = px4.local_position
+        if current is None:
+            raise ValueError('GOTO: posição local desconhecida')
+        target_x, target_y, target_z = current.x, current.y, current.z
+        lat_used = px4.global_position.lat if px4.global_position else None
+        lon_used = px4.global_position.lon if px4.global_position else None
+        alt_used = px4.global_position.alt if px4.global_position else None
+        if provided(lat) or provided(lon):
+            lat_used = coordinate(lat if provided(lat) else lat_used, 'latitude', 90)
+            lon_used = coordinate(lon if provided(lon) else lon_used, 'longitude', 180)
+            # A altura enviada aqui afeta só Z, descartado nessa conversão horizontal.
+            target_x, target_y, _ = self.trajectory.global_to_local_position(
+                lat_used, lon_used, coordinate(px4.home_global_alt, 'altitude HOME')
+            )
+        if provided(alt):
+            alt_used = coordinate(alt, 'altitude')
+            home = px4.home_local_position
+            if home is None:
+                raise ValueError('GOTO: HOME local desconhecido')
+            from drone_inspetor.common.coordinates import amsl_to_local_down
+            target_z = amsl_to_local_down(
+                alt_used, coordinate(px4.home_global_alt, 'altitude HOME'), home[2])
+        if not all(math.isfinite(value) for value in (target_x, target_y, target_z)):
+            raise ValueError('GOTO: destino NED não finito')
 
-        # Resolve local_position do target a partir de lat/lon/alt + posição atual como fallback.
-        if _missing(lat) or _missing(lon):
-            target_x = px4.local_position.x
-            target_y = px4.local_position.y
-            lat_used = px4.global_position.lat if px4.global_position else None
-            lon_used = px4.global_position.lon if px4.global_position else None
-        else:
-            converted = self.global_to_local_position(lat, lon, px4.global_position.alt)
-            if converted is None:
-                self.get_logger().error("GOTO: falha ao converter coordenadas globais.")
-                return
-            target_x, target_y = converted[0], converted[1]
-            lat_used, lon_used = lat, lon
-
-        if _missing(alt):
-            target_z = px4.local_position.z
-            alt_used = px4.global_position.alt if px4.global_position else None
-        else:
-            # NED: altitude positiva (acima do solo) → z negativo no frame local.
-            alt_diff = alt - px4.home_global_alt
-            target_z = -alt_diff
-            alt_used = alt
-
-        # Yaw final (rad/deg)
-        final_yaw_deg = final_yaw_rad = final_yaw_norm = None
-        if not _missing(yaw) and not use_focus:
-            final_yaw_norm = float(yaw)
-            final_yaw_deg = final_yaw_norm if final_yaw_norm >= 0 else final_yaw_norm + 360
-            final_yaw_rad = math.radians(final_yaw_norm)
-
-        # Foco: conversão para local (se aplicável).
+        final_yaw_norm = None
+        if provided(yaw) and not use_focus:
+            final_yaw_norm = (coordinate(yaw, 'yaw') + 180.) % 360. - 180.
         focus_local = None
         if use_focus:
-            focus_z_ref = -px4.local_position.z  # altitude atual (positiva) p/ alimentar a conversão
-            focus_local = self.global_to_local_position(focus_lat, focus_lon, focus_z_ref)
-            if focus_local is None:
-                self.get_logger().error("GOTO com foco: falha ao converter coordenadas de foco.")
-                return
-
-        # Empilha o target. A DeslocamentoFSM, em PLANANDO, detectará o novo topo no próximo tick.
-        sctx.target_stack.push_missao(
+            focus_lat = coordinate(focus_lat, 'latitude de foco', 90)
+            focus_lon = coordinate(focus_lon, 'longitude de foco', 180)
+            focus_local = self.trajectory.global_to_local_position(
+                focus_lat, focus_lon, coordinate(px4.home_global_alt, 'altitude HOME')
+            )
+        self.deslocamento_fsm_context.target_stack.push_missao(
             local_pos=[target_x, target_y, target_z],
-            latitude=lat_used,
-            longitude=lon_used,
-            altitude=alt_used,
-            final_yaw_deg=final_yaw_deg,
+            latitude=lat_used, longitude=lon_used, altitude=alt_used,
+            final_yaw_deg=None if final_yaw_norm is None else final_yaw_norm % 360.,
             final_yaw_deg_normalized=final_yaw_norm,
-            final_yaw_rad=final_yaw_rad,
+            final_yaw_rad=None if final_yaw_norm is None else math.radians(final_yaw_norm),
             focus_local_position=focus_local,
             focus_latitude=focus_lat if use_focus else None,
             focus_longitude=focus_lon if use_focus else None,
         )
-        dctx.pending_command = None  # processado de imediato — não há lifecycle a transicionar.
-        dctx.pending_use_focus = use_focus
+        self.drone_fsm_context.pending_command = None
+        self.drone_fsm_context.pending_use_focus = use_focus
+        self.get_logger().info(f'GOTO preparado: NED {[target_x, target_y, target_z]}')
 
-        modo = "com foco" if use_focus else "sem foco"
-        self.get_logger().info(
-            f"GOTO ({modo}) solicitado: target_local=[{target_x:.2f}, {target_y:.2f}, {target_z:.2f}]"
-        )
-
-    # =============================================================================================
     # LAND
-    # =============================================================================================
 
     def land(self: 'DroneNode') -> None:
         """
@@ -281,13 +216,9 @@ class DronePX4CommandsMixin:
             )
         )
         # Cancela qualquer manobra Offboard ativa antes de delegar ao autopilot.
-        self.deslocamento_fsm_context.target_stack.clear()
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_LAND)
-        self.drone_fsm_context.pending_command = "LAND"
+        self._handover_native('LAND', VehicleCommand.VEHICLE_CMD_NAV_LAND)
 
-    # =============================================================================================
     # RTL
-    # =============================================================================================
 
     def rtl(self: 'DroneNode') -> None:
         """
@@ -302,9 +233,7 @@ class DronePX4CommandsMixin:
             )
         )
         # Cancela manobras Offboard antes de delegar ao autopilot.
-        self.deslocamento_fsm_context.target_stack.clear()
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
-        self.drone_fsm_context.pending_command = "RTL"
+        self._handover_native('RTL', VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
 
     def emergency_rtl(self: 'DroneNode') -> None:
         """
@@ -316,26 +245,34 @@ class DronePX4CommandsMixin:
                 f"[{Topics.PX4.VEHICLE_COMMAND.name}] EMERGÊNCIA — RTL nativo do PX4."
             )
         )
-        self.deslocamento_fsm_context.target_stack.clear()
-        self.publish_vehicle_command(VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
+        self._handover_native('RTL', VehicleCommand.VEHICLE_CMD_NAV_RETURN_TO_LAUNCH)
 
-    # =============================================================================================
     # STOP
-    # =============================================================================================
 
-    def stop(self: 'DroneNode') -> None:
-        """
-        Cancela a manobra atual: limpa a TargetStack e captura a posição atual como hover.
-
-        O lifecycle permanece em EM_VOO; a DeslocamentoFSM detecta target_stack vazio
-        no próximo tick e transita para PLANANDO (hover na last_static_position).
-        """
-        self.get_logger().info("STOP solicitado — cancelando manobras e indo a hover.")
+    def _handover_native(self, command, px4_command):
+        """Registra a intenção antes de publicar o comando de mudança de modo."""
         self.deslocamento_fsm_context.reset()
+        self.deslocamento_fsm.reset_to_planando()
+        context = self.drone_fsm_context
+        context.pending_command = None
+        context.native_command = command
+        context.native_mode_observed = False
+        self.publish_vehicle_command(px4_command)
 
-    # =============================================================================================
+    def stop(self):
+        """Descarta destinos e mantém o perfil para a frenagem suave de compute_hover."""
+        context = self.drone_fsm_context
+        context.pending_command = None
+        self.deslocamento_fsm_context.reset()
+        self.deslocamento_fsm.reset_to_planando()
+        if context.state == DS.DECOLANDO:
+            if self.state_px4.is_landed:
+                state = DS.POUSADO_ARMADO if self.state_px4.is_armed else DS.POUSADO_DESARMADO
+            else:
+                state = DS.EM_VOO
+            self.drone_fsm.transition_to(state)
+
     # Modos PX4 (utilitários)
-    # =============================================================================================
 
     def set_offboard_mode(self: 'DroneNode') -> None:
         """Pede ao PX4 para entrar em modo OFFBOARD. Requer setpoints Offboard sendo publicados."""

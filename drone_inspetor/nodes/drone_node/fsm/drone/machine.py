@@ -1,13 +1,4 @@
-# =================================================================================================
-# DroneFSM — máquina de estados de lifecycle do DroneNode
-# =================================================================================================
-# Herda BaseStateMachine. Registra os 6 estados de lifecycle e executa verificações
-# globais por ciclo (emergência, perda de offboard) ANTES de delegar ao estado atual.
-#
-# Espelha automaticamente o estado atual em `context.lifecycle_state` e
-# `context.lifecycle_state_entry_time` em cada transição, para consumo por código
-# externo (publishers de telemetria, GUI, mission_node).
-# =================================================================================================
+"""FSM do ciclo de voo; publica seu estado através do contexto compartilhado."""
 
 from drone_inspetor.base_classes.base_state_machine import BaseStateMachine
 from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription as DS
@@ -60,8 +51,8 @@ class DroneFSM(BaseStateMachine):
         Realiza a transição e atualiza o espelho do estado no contexto.
 
         Em adição ao comportamento base (chama on_exit/marca on_enter), grava o novo
-        identificador em `context.lifecycle_state` e o timestamp em
-        `context.lifecycle_state_entry_time`, para consumo externo (telemetria/GUI).
+        identificador em `context.state` e o timestamp em
+        `context.state_entry_time`, para consumo externo (telemetria/GUI).
         """
         if new_id == self.current_state_id:
             return

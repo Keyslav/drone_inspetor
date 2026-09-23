@@ -1,253 +1,277 @@
-# =================================================================================================
-# action_server.py
-# =================================================================================================
-# MIXIN: ActionServer callbacks do DroneNode (interface com mission_node)
-# =================================================================================================
-# Agrupa os callbacks do ActionServer DroneCommand: aceitação, cancelamento, execução
-# e feedback. Implementado como Mixin herdado por DroneNode.
-#
-# Comandos suportados (DroneCommand Action):
-#     ARM, TAKEOFF, GOTO (com ou sem foco), LAND, RTL.
-#
-# Critério de conclusão (`_is_command_complete`) — em termos do NOVO modelo de FSMs:
-#     ARM     → lifecycle == POUSADO_ARMADO
-#     TAKEOFF → lifecycle == EM_VOO
-#     GOTO    → lifecycle == EM_VOO  +  target_stack vazia  +  deslocamento_state == PLANANDO
-#     LAND    → lifecycle ∈ {POUSADO_ARMADO, POUSADO_DESARMADO}
-#     RTL     → lifecycle == POUSADO_DESARMADO
-# =================================================================================================
+"""Servidor de comandos com uma reserva atômica e conclusão por telemetria."""
 
 import math
 import time
-from typing import TYPE_CHECKING
 
 from rclpy.action import CancelResponse, GoalResponse
-
-if TYPE_CHECKING:
-    from drone_inspetor.nodes.drone_node.drone_node import DroneNode
+from px4_msgs.msg import VehicleStatus
 
 from drone_inspetor_msgs.action import DroneCommand
-from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription
-from drone_inspetor.nodes.drone_node.fsm.deslocamento.description import DeslocamentoFSMDescription
-from drone_inspetor.common.log_colors import LogPrefix
+from drone_inspetor.nodes.drone_node.command_manager import ActiveCommand
+from drone_inspetor.nodes.drone_node.fsm.drone.description import DroneFSMDescription as DS
+from drone_inspetor.nodes.drone_node.fsm.deslocamento.description import (
+    DeslocamentoFSMDescription as TS,
+)
 
 
 class DroneActionServerMixin:
-    """Mixin com os callbacks do ActionServer DroneCommand."""
+    """Serializa goals; cancelamento freia antes de liberar a próxima operação."""
 
-    # Handle do goal em execução (None quando idle). Compartilhado pelos callbacks.
-    _current_goal_handle = None
-
-    # =============================================================================================
-    # Aceitação / cancelamento de goals
-    # =============================================================================================
-
-    def goal_callback(self: 'DroneNode', goal_request):
-        """
-        Aceita ou rejeita um goal com base na validade do comando no estado atual
-        (consulta `context.verifica_validade_do_comando`, que conhece VALID_COMMANDS).
-        """
-        command = goal_request.command
-        self.get_logger().info(LogPrefix.mission_rx(f"(DroneCommand Action): {command}"))
-
-        pode, erro = self.drone_fsm_context.verifica_validade_do_comando(command)
-        if pode:
-            self.get_logger().info(f"Comando do mission_node aceito: {command}")
-            return GoalResponse.ACCEPT
-        self.get_logger().warn(f"Comando do mission_node rejeitado: {erro}")
-        return GoalResponse.REJECT
-
-    def cancel_callback(self: 'DroneNode', goal_handle):
-        """Aceita o cancelamento e executa STOP para parar o drone em hover."""
-        self.get_logger().info("Cancelamento de action solicitado. Executando STOP...")
-        self.stop()
-        return CancelResponse.ACCEPT
-
-    # =============================================================================================
-    # Execução do goal (loop de feedback)
-    # =============================================================================================
-
-    def execute_drone_command_callback(self: 'DroneNode', goal_handle):
-        """
-        Executa o comando recebido, publicando feedback periódico até a conclusão
-        ou ocorrência de timeout/cancelamento.
-        """
-        self._current_goal_handle = goal_handle
-        request = goal_handle.request
-        command = request.command
-
-        if not self._execute_command(request):
-            result = DroneCommand.Result()
-            result.success = False
-            result.message = f"Falha ao iniciar comando: {command}"
-            result.final_state = int(self.drone_fsm_context.state)
-            goal_handle.abort()
-            self._current_goal_handle = None
-            return result
-
-        # Timeouts por comando (segundos).
-        command_timeouts = {
-            "ARM": 10.0,
-            "TAKEOFF": 60.0,
-            "LAND": 120.0,
-            "GOTO": 120.0,
-            "RTL": 300.0,
-        }
-        timeout = command_timeouts.get(command, 60.0)
-        start_time = self.get_clock().now().nanoseconds / 1e9
-
-        feedback_msg = DroneCommand.Feedback()
-
-        while not self._is_command_complete(command):
-            elapsed = (self.get_clock().now().nanoseconds / 1e9) - start_time
-            if elapsed > timeout:
-                self.get_logger().warn(f"Timeout ({timeout}s) aguardando conclusão de {command}.")
-                result = DroneCommand.Result()
-                result.success = False
-                result.message = f"Timeout ({timeout}s) aguardando conclusão de {command}."
-                result.final_state = int(self.drone_fsm_context.state)
-                goal_handle.abort()
-                self._current_goal_handle = None
-                return result
-
-            if goal_handle.is_cancel_requested:
-                self.get_logger().info(f"Action cancelada durante execução de {command}.")
-                result = DroneCommand.Result()
-                result.success = False
-                result.message = "Ação cancelada."
-                result.final_state = int(self.drone_fsm_context.state)
-                goal_handle.canceled()
-                self._current_goal_handle = None
-                return result
-
-            if self._is_drone_node_shutting_down:
-                return DroneCommand.Result()
-
-            try:
-                lifecycle = self.drone_fsm_context.state
-                feedback_msg.current_state = int(lifecycle)
-                feedback_msg.state_name = lifecycle.name
-                feedback_msg.distance_to_target = self._calculate_distance_to_target()
-                feedback_msg.progress_percent = self._calculate_progress_percent(command)
-                goal_handle.publish_feedback(feedback_msg)
-            except Exception as e:
-                if not self._is_drone_node_shutting_down:
-                    self.get_logger().warn(f"Erro ao publicar feedback: {e}")
-
-            time.sleep(0.1)
-
-        result = DroneCommand.Result()
-        result.success = True
-        result.message = f"Comando {command} completado com sucesso."
-        result.final_state = int(self.drone_fsm_context.state)
-        goal_handle.succeed()
+    def init_action_server_state(self):
+        """Inicializa propriedade por nó antes de criar o ActionServer."""
+        self._active_command = None
         self._current_goal_handle = None
+        self._command_sequence = 0
+        self.command_timeouts = {
+            'ARM': 10., 'DISARM': 10., 'TAKEOFF': 60., 'GOTO': 120.,
+            'LAND': 120., 'RTL': 300., 'STOP': 30.,
+        }
+        self.command_cancel_timeout = 30.
+
+    @staticmethod
+    def _validate_parameters(request):
+        """NaN é ausência nas coordenadas; infinito nunca é uma referência válida."""
+        if request.command == 'TAKEOFF':
+            if not math.isnan(request.altitude) and (
+                not math.isfinite(request.altitude) or request.altitude <= 0
+            ):
+                raise ValueError('TAKEOFF exige altitude positiva e finita, ou NaN para default')
+        if request.command != 'GOTO':
+            return
+        for field in ('lat', 'lon', 'alt', 'yaw', 'focus_lat', 'focus_lon'):
+            value = getattr(request, field)
+            if math.isinf(value):
+                raise ValueError(f'GOTO: {field} não pode ser infinito')
+        for field, bound in (('lat', 90), ('lon', 180)):
+            value = getattr(request, field)
+            if not math.isnan(value) and not -bound <= value <= bound:
+                raise ValueError(f'GOTO: {field} fora do intervalo GPS')
+        if request.use_focus:
+            for field, bound in (('focus_lat', 90), ('focus_lon', 180)):
+                value = getattr(request, field)
+                if not math.isfinite(value) or not -bound <= value <= bound:
+                    raise ValueError(f'GOTO com foco: {field} inválido')
+
+    def goal_callback(self, goal_request):
+        """Reserva dentro do lock, antes de qualquer callback de execução."""
+        with self._control_lock:
+            if self._active_command is not None:
+                self.get_logger().warn('Comando rejeitado: outra operação ainda está ativa')
+                return GoalResponse.REJECT
+            allowed, reason = self.drone_fsm_context.verifica_validade_do_comando(
+                goal_request.command
+            )
+            try:
+                self._validate_parameters(goal_request)
+            except ValueError as error:
+                allowed, reason = False, str(error)
+            if not allowed:
+                self.get_logger().warn(f'Comando rejeitado: {reason}')
+                return GoalResponse.REJECT
+            self._command_sequence += 1
+            self._active_command = ActiveCommand(self._command_sequence, goal_request)
+            return GoalResponse.ACCEPT
+
+    def cancel_callback(self, goal_handle):
+        """Não tenta substituir o autopiloto durante LAND/RTL nativos."""
+        with self._control_lock:
+            operation = self._active_command
+            if operation is None or (
+                operation.handle is not None and operation.handle is not goal_handle
+            ):
+                return CancelResponse.REJECT
+            if operation.request.command in ('LAND', 'RTL'):
+                self.get_logger().warn('Cancelamento de LAND/RTL nativo não suportado')
+                return CancelResponse.REJECT
+            operation.cancel_requested = True
+            if operation.dispatched:
+                self.stop()
+            return CancelResponse.ACCEPT
+
+    def execute_drone_command_callback(self, goal_handle):
+        """Usa prazo monotônico, identifica falhas e libera somente sua reserva."""
+        with self._control_lock:
+            operation = self._active_command
+            if operation is None or operation.handle is not None:
+                return self._finish_command(goal_handle, False, 'Operação sem reserva válida')
+            operation.handle = goal_handle
+            self._current_goal_handle = goal_handle
+        command = operation.request.command
+        started = time.monotonic()
+        stopping_since = None
+        failure = None
+        canceled = False
+        try:
+            with self._control_lock:
+                if operation.cancel_requested or goal_handle.is_cancel_requested:
+                    canceled = True
+                    stopping_since = started
+                else:
+                    allowed, reason = self.drone_fsm_context.verifica_validade_do_comando(command)
+                    if not allowed:
+                        return self._finish_command(goal_handle, False, reason)
+                    self.trajectory.begin_command()
+                    self._px4_command_error = None
+                    self._px4_commands_awaiting_ack_log.clear()
+                    self._execute_command(operation.request)
+                    operation.dispatched = True
+            while True:
+                with self._control_lock:
+                    if self._is_drone_node_shutting_down:
+                        return self._finish_command(goal_handle, False, 'Nó em encerramento')
+                    if stopping_since is None:
+                        canceled = operation.cancel_requested or goal_handle.is_cancel_requested
+                        failure = self._command_failure(command)
+                        if time.monotonic() - started >= self.command_timeouts[command]:
+                            failure = f'Timeout aguardando conclusão de {command}'
+                        if canceled or failure:
+                            if command in ('LAND', 'RTL'):
+                                self._release_failed_native_handover()
+                                return self._finish_command(
+                                    goal_handle, False, failure or 'Cancelado'
+                                )
+                            self.stop()
+                            stopping_since = time.monotonic()
+                        elif self._is_command_complete(command):
+                            return self._finish_command(
+                                goal_handle, True, f'Comando {command} concluído'
+                            )
+                    if stopping_since is not None:
+                        physically_stopped = self.trajectory.stopped or not self.state_px4.is_armed
+                        # rclpy marca CANCELING depois que cancel_callback retorna.
+                        # Não conclua como CANCELED antes dessa atualização concorrente.
+                        cancellation_ready = not canceled or goal_handle.is_cancel_requested
+                        if physically_stopped and cancellation_ready:
+                            return self._finish_command(
+                                goal_handle, False, failure or 'Ação cancelada', canceled=canceled
+                            )
+                        if time.monotonic() - stopping_since >= self.command_cancel_timeout:
+                            return self._finish_command(
+                                goal_handle, False,
+                                (failure or 'Cancelamento') + '; frenagem não confirmada',
+                                canceled=canceled and goal_handle.is_cancel_requested,
+                            )
+                    self._publish_command_feedback(goal_handle, command)
+                time.sleep(0.05)
+        except Exception as error:
+            self.get_logger().error(f'Falha na operação {command}: {error}')
+            with self._control_lock:
+                if command not in ('LAND', 'RTL'):
+                    self.stop()
+                else:
+                    self._release_failed_native_handover()
+                return self._finish_command(goal_handle, False, str(error))
+        finally:
+            with self._control_lock:
+                if self._active_command is operation:
+                    self._active_command = None
+                    self._current_goal_handle = None
+
+    def _release_failed_native_handover(self):
+        """Se AUTO nunca foi assumido, permite nova tentativa sem prender a admissão."""
+        context = self.drone_fsm_context
+        offboard = self.state_px4.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD
+        if offboard and not context.native_mode_observed:
+            context.native_command = None
+            self.stop()
+        # Em AUTO o PX4 mantém a autoridade, mesmo após timeout do cliente.
+
+    def _command_failure(self, command):
+        """Falhas têm prioridade sobre uma pilha vazia ou um estado de chegada."""
+        if self._px4_command_error:
+            return self._px4_command_error
+        context = self.drone_fsm_context
+        if context.state == DS.EMERGENCIA:
+            return 'Controle transferido ao failsafe'
+        if context.state == DS.OFFBOARD_DESATIVADO:
+            return 'Controle OFFBOARD perdido'
+        if not self.telemetry_fresh():
+            return 'Telemetria local expirada'
+        if command in ('GOTO', 'TAKEOFF', 'STOP') and self.trajectory.navigation_error:
+            return self.trajectory.navigation_error
+        if command in ('GOTO', 'TAKEOFF') and not self.state_px4.is_armed:
+            return 'Drone desarmado durante movimento'
+        return None
+
+    def _finish_command(self, handle, success, message, *, canceled=False):
+        result = DroneCommand.Result()
+        result.success = success
+        result.message = message
+        result.final_state = int(self.drone_fsm_context.state)
+        if canceled:
+            handle.canceled()
+        elif success:
+            handle.succeed()
+        else:
+            handle.abort()
         return result
 
-    # =============================================================================================
-    # Dispatch (action → método do mixin px4_commands)
-    # =============================================================================================
-
-    def _execute_command(self: 'DroneNode', request) -> bool:
-        """Despacha cada comando para o método correspondente em DronePX4CommandsMixin."""
+    def _execute_command(self, request):
+        """Erros de validação/preparo chegam ao resultado, sem falsos sucessos."""
+        self._validate_parameters(request)
         command = request.command
-        try:
-            match command:
-                case "ARM":
-                    # Quem aciona o PX4 é o estado POUSADO_DESARMADO ao detectar pending_command.
-                    self.drone_fsm_context.pending_command = "ARM"
-                case "TAKEOFF":
-                    alt = request.altitude if not math.isnan(request.altitude) else None
-                    self.takeoff(alt)
-                case "GOTO":
-                    lat = request.lat if not math.isnan(request.lat) else None
-                    lon = request.lon if not math.isnan(request.lon) else None
-                    alt = request.alt if not math.isnan(request.alt) else None
-                    yaw = request.yaw if not math.isnan(request.yaw) else None
-                    if request.use_focus:
-                        flat = request.focus_lat if not math.isnan(request.focus_lat) else None
-                        flon = request.focus_lon if not math.isnan(request.focus_lon) else None
-                        self.goto(
-                            lat=lat, lon=lon, alt=alt,
-                            use_focus=True, focus_lat=flat, focus_lon=flon,
-                        )
-                    else:
-                        self.goto(lat=lat, lon=lon, alt=alt, yaw=yaw)
-                case "LAND":
-                    self.land()
-                case "RTL":
-                    self.rtl()
-                case _:
-                    self.get_logger().warn(f"Comando não reconhecido: {command}")
-                    return False
-            return True
-        except Exception as e:
-            self.get_logger().error(f"Erro ao executar comando {command}: {e}")
-            return False
+        if command == 'ARM':
+            self.drone_fsm_context.pending_command = 'ARM'
+        elif command == 'DISARM':
+            self.disarm_drone()
+        elif command == 'TAKEOFF':
+            self.takeoff(None if math.isnan(request.altitude) else request.altitude)
+        elif command == 'GOTO':
+            self.goto(
+                request.lat, request.lon, request.alt, request.yaw,
+                request.use_focus, request.focus_lat, request.focus_lon,
+            )
+        elif command == 'STOP':
+            self.stop()
+        elif command == 'LAND':
+            self.land()
+        elif command == 'RTL':
+            self.rtl()
+        else:
+            raise ValueError(f'Comando não suportado: {command}')
 
-    # =============================================================================================
-    # Critério de conclusão por comando
-    # =============================================================================================
+    def _is_command_complete(self, command):
+        state = self.drone_fsm_context.state
+        px4 = self.state_px4
+        if command == 'ARM':
+            return px4.is_armed and px4.is_landed and state == DS.POUSADO_ARMADO
+        if command == 'DISARM':
+            return not px4.is_armed and px4.is_landed
+        if command == 'TAKEOFF':
+            return state == DS.EM_VOO and self.trajectory.stopped
+        if command == 'GOTO':
+            return all((
+                state == DS.EM_VOO,
+                self.deslocamento_fsm_context.target_stack.is_empty,
+                self.deslocamento_fsm_context.state == TS.PLANANDO,
+                self.trajectory.stopped,
+            ))
+        if command == 'STOP':
+            return self.trajectory.stopped
+        if command == 'LAND':
+            return px4.is_landed and state in (DS.POUSADO_ARMADO, DS.POUSADO_DESARMADO)
+        if command == 'RTL':
+            return px4.is_landed and not px4.is_armed and state == DS.POUSADO_DESARMADO
+        return False
 
-    def _is_command_complete(self: 'DroneNode', command: str) -> bool:
-        """Avalia se um comando ja completou, com base no estado das duas FSMs + TargetStack."""
-        lifecycle = self.drone_fsm_context.state
+    def _publish_command_feedback(self, goal_handle, command):
+        feedback = DroneCommand.Feedback()
+        state = self.drone_fsm_context.state
+        feedback.current_state = int(state)
+        feedback.state_name = state.name
+        feedback.distance_to_target = self._calculate_distance_to_target()
+        feedback.progress_percent = self._calculate_progress_percent(command)
+        goal_handle.publish_feedback(feedback)
 
-        match command:
-            case "ARM":
-                return lifecycle == DroneFSMDescription.POUSADO_ARMADO
-
-            case "TAKEOFF":
-                # TAKEOFF completa quando entramos em EM_VOO (DECOLANDO → EM_VOO ao atingir altitude).
-                return lifecycle == DroneFSMDescription.EM_VOO
-
-            case "GOTO":
-                # GOTO completa quando o drone está em EM_VOO, a pilha esvaziou
-                # (DeslocamentoFSM concluiu) e voltou ao PLANANDO (hover).
-                sctx = self.deslocamento_fsm_context
-                return (
-                    lifecycle == DroneFSMDescription.EM_VOO
-                    and sctx.target_stack.is_empty
-                    and sctx.state == DeslocamentoFSMDescription.PLANANDO
-                )
-
-            case "LAND":
-                return lifecycle in (
-                    DroneFSMDescription.POUSADO_ARMADO,
-                    DroneFSMDescription.POUSADO_DESARMADO,
-                )
-
-            case "RTL":
-                return lifecycle == DroneFSMDescription.POUSADO_DESARMADO
-
-            case _:
-                return True
-
-    # =============================================================================================
-    # Métricas de progresso para feedback
-    # =============================================================================================
-
-    def _calculate_distance_to_target(self: 'DroneNode') -> float:
-        """Distância 3D (m) até o target ativo. Zero se não houver target ou posição."""
+    def _calculate_distance_to_target(self):
         target = self.deslocamento_fsm_context.target_stack.current
-        if target is None or self.state_px4.local_position is None:
+        position = self.state_px4.local_position
+        if target is None or position is None:
             return 0.0
-        cur = self.state_px4.local_position
-        tx, ty, tz = target.local_position
-        return math.sqrt((tx - cur.x) ** 2 + (ty - cur.y) ** 2 + (tz - cur.z) ** 2)
+        return math.dist(target.local_position, (position.x, position.y, position.z))
 
-    def _calculate_progress_percent(self: 'DroneNode', command: str) -> float:
-        """
-        Percentual de progresso para comandos de trajetória (GOTO/RTL).
-
-        Para RTL, como delegamos ao autopilot, não temos `initial_distance_to_target`
-        com semântica direta — retorna 0 nesse caso.
-        """
-        if command != "GOTO":
+    def _calculate_progress_percent(self, command):
+        initial = self.deslocamento_fsm_context.initial_distance_to_target
+        if command != 'GOTO' or initial is None or initial <= 0:
             return 0.0
-        d0 = self.deslocamento_fsm_context.initial_distance_to_target
-        if d0 is None or d0 <= 0:
-            return 0.0
-        d_now = self._calculate_distance_to_target()
-        progress = 1.0 - (d_now / d0)
-        return max(0.0, min(100.0, progress * 100.0))
+        return max(0., min(100., 100. * (1. - self._calculate_distance_to_target() / initial)))

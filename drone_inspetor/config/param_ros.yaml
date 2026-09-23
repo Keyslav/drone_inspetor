@@ -41,6 +41,18 @@ camera_node:
 mission_node:
   ros__parameters:
     missions_file: "missions.json"
+    takeoff_altitude: 20.0
+    tempo_de_permanencia: 5.0
+    mission_period: 0.6
+    topic_health_timeout: 5.0
+    action_feedback_timeout: 60.0
+    action_cancel_timeout: 5.0
+    # Retenta RTL somente após rejeição confirmada, antes de qualquer aceitação.
+    return_acceptance_timeout: 40.0
+    return_retry_interval: 1.0
+    detection_timeout: 10.0
+    detection_service_timeout: 2.0
+    cv_control_timeout: 5.0
 
 
 # =================================================================================================
@@ -49,6 +61,8 @@ mission_node:
 cv_node:
   ros__parameters:
     # Intervalos e confiança
+    detection_max_frame_age_seconds: 1.0
+    inference_device: "auto"
     anomaly_photo_interval_seconds: 4.0
     object_detection_min_confidence: 0.5
     anomaly_detection_min_confidence: 0.5
@@ -70,6 +84,7 @@ cv_node:
 # =================================================================================================
 lidar_node:
   ros__parameters:
+    sensor_timeout_seconds: 0.75
     lidar_data_publish_rate: 5.0
     obstacles_publish_rate: 5.0
 
@@ -79,13 +94,43 @@ lidar_node:
 # =================================================================================================
 drone_node:
   ros__parameters:
+    px4_target_system_id: 1
     command_timeout: 30.0
-    # Perfil trapezoidal de velocidade no GOTO/RTL
+    # Referência S-curve (posição + velocidade/aceleração feedforward)
     cruise_velocity: 3.0          # vc — velocidade de cruzeiro (m/s)
-    travel_acceleration: 1.0      # ad — aceleração/desaceleração nominal (m/s²)
-    obstacle_deceleration: 2.0    # ao — desaceleração quando obstáculo próximo (m/s², deve ser > ad)
+    travel_acceleration: 1.0      # limite de aceleração positiva do perfil (m/s²)
+    obstacle_deceleration: 2.0    # limite de frenagem do perfil e do envelope de obstáculos (m/s²)
     arrival_position_tol: 0.2     # distância (m) para considerar destino alcançado
     arrival_velocity_tol: 0.1     # velocidade (m/s) abaixo da qual a chegada se estabiliza
+    navigation:
+      jerk_limit: 2.0               # m/s³; limita mudanças de aceleração
+      vertical_velocity: 1.0       # m/s; subida e descida comandadas em OFFBOARD
+      yaw_rate_deg: 30.0           # graus/s; independente da frequência do timer
+      yaw_stabilization_seconds: 0.5
+      vehicle_radius: 0.35        # raio físico; ajustar à aeronave
+      obstacle_margin: 0.45       # margem adicional ao raio (m)
+      sensor_pose_max_skew: 0.05 # s; limite para interpolar pose de aquisição
+      sensor_timeout: 0.75        # s sem scan novo => frear
+      telemetry_timeout: 0.5      # s sem posição válida => failsafe PX4
+      reaction_time: 0.35         # orçamento de latência para frenagem (s)
+      planning_distance: 6.0
+      detour_distance: 3.0
+      near_obstacle_velocity: 0.6
+      # Trecho lento antes da parada; acomodação deve ser validada no modelo PX4.
+      arrival_approach_velocity: 0.6
+      arrival_settling_time: 2.0
+      tracking_error_limit: 1.0
+      reference_lead_limit: 0.5  # margem de avanço; o erro transversal consome esse orçamento
+      tracking_gain: 2.0
+      blocked_timeout: 15.0
+      max_detours: 12
+      lidar_mount_yaw_deg: 0.0    # sensor FLU relativo ao corpo (anti-horário)
+      lidar_offset_forward: 0.0   # m; calibrar sensor relativo ao centro do drone
+      lidar_offset_left: 0.0
+      depth_offset_forward: 0.0
+      depth_offset_left: 0.0
+      down_clearance: 0.5         # distância ao chão para GOTO descendente
+
 
     # Períodos dos timers (segundos). Loops independentes:
     #   trajectory_timer_period: TrajectorySetpoint a 50 Hz (PX4 exige p/ OFFBOARD)
@@ -110,4 +155,21 @@ dashboard_node:
 # =================================================================================================
 depth_node:
   ros__parameters:
-    dummy_param: true
+    scan_enabled: true
+    # Sem calibração, não publica distância depth para navegação.
+    scan_horizontal_fov_deg: 0.0
+    scan_fx: 0.0
+    scan_fy: 0.0
+    scan_cx: -1.0
+    scan_cy: -1.0
+    scan_calibration_width: 0
+    scan_calibration_height: 0
+    scan_mount_yaw_deg: 0.0
+    scan_frame_id: "depth_scan_flu"
+    scan_camera_height_m: 0.0
+    scan_band_half_height_m: 0.35
+    scan_bins: 181
+    min_depth: 0.1
+    max_depth: 10.0
+    proximity_threshold: 1.0
+    visualization_mode: "grayscale"

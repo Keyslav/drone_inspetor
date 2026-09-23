@@ -1,12 +1,14 @@
-"""
-mission_node package — máquina de estados de missão hierárquica.
+"""Missão: domínio importável sem inicializar ROS, Qt ou inferência."""
 
-Contém:
-- mission_node.py: entry point + classe MissionNode (nó ROS2)
-- state_machine.py: MissionStateMachine (FSM de missão com match/case)
-- drone_state_data.py: DroneStateData (espelho de telemetria do drone)
-"""
 
-from drone_inspetor.nodes.mission_node.mission_node import MissionNode, main
+def main(args=None):
+    """Preserva o entry point instalado, carregando ROS apenas na execução."""
+    from drone_inspetor.nodes.mission_node.mission_node import main as run
+    return run(args)
 
-__all__ = ["MissionNode", "main"]
+
+def __getattr__(name):
+    if name == 'MissionNode':
+        from drone_inspetor.nodes.mission_node.mission_node import MissionNode
+        return MissionNode
+    raise AttributeError(name)

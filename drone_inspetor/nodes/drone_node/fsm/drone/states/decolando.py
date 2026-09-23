@@ -47,15 +47,10 @@ class DecolandoState(BaseState):
         if px4.local_position is None:
             return None
 
-        # NED: altitude POSITIVA = z NEGATIVO no frame local. Convertemos.
-        altitude_atual = -px4.local_position.z
-        altitude_alvo = self.context.takeoff_altitude
-        tolerancia = self.node.deslocamento_fsm_context.position_tolerance
-
-        if abs(altitude_atual - altitude_alvo) <= tolerancia:
-            self.node.get_logger().info(
-                f"Decolagem concluída! Altitude atual: {altitude_atual:.2f}m."
-            )
+        if self.node.trajectory_profile.is_done() and not px4.is_landed:
+            self.node.deslocamento_fsm_context.last_static_position = list(
+                self.node.trajectory_profile.target)
+            self.node.get_logger().info('Decolagem concluída com velocidade estabilizada.')
             return DS.EM_VOO
 
         return None

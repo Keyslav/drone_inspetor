@@ -1,12 +1,4 @@
-# =================================================================================================
-# MissionFSMDescription — enum dos estados da máquina de MISSÃO (MissionFSM)
-# =================================================================================================
-# Pareado com a MissionFSM (no MissionNode). Faixas numéricas:
-#     0-9    → sistema (DESATIVADO, PRONTO)
-#     10-19  → execução de nível 1 (ARMANDO/DECOLANDO/INSPECIONANDO)
-#     20-29  → sub-fases de inspeção (nível 2)
-#     30-49  → finalização (INSPECAO_FINALIZADA, RETORNANDO)
-# =================================================================================================
+"""Códigos estáveis publicados para os estados de missão."""
 
 from enum import IntEnum
 
