@@ -97,6 +97,7 @@ class DroneActionClient:
             now = self._clock()
             operation = FlightOperation(next(self._ids), command, now, now)
             self._active = operation
+            self._logger.info(f'Comando {operation.operation_id} {command}: enviado: {parameters}')
             try:
                 if not self._client.server_is_ready():
                     self._finish(operation, ActionStatus.FAILED, 'Servidor de voo indisponível')

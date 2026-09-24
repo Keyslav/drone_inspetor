@@ -220,6 +220,17 @@ class DroneNode(DroneActionServerMixin, DronePX4CommandsMixin, Node):
         return (self._position_received is not None
                 and time.monotonic() - self._position_received <= self.navigation_config.telemetry_timeout)
 
+    def telemetry_failure_detail(self):
+        """Distingue silêncio de transporte de amostras recebidas mas inválidas."""
+        now = time.monotonic()
+        received = getattr(self, '_position_last_received', None)
+        valid_age = None if self._position_received is None else now - self._position_received
+        rx_age = None if received is None else now - received
+        return (f'idade_válida={valid_age!r}s; idade_recebida={rx_age!r}s; '
+                f'limite={self.navigation_config.telemetry_timeout:.3f}s; '
+                f'última_rejeição={getattr(self, "_position_last_rejection", None)!r}; '
+                f'intervalo_trajetória={self.trajectory.last_tick_elapsed:.3f}s')
+
     def tick_lifecycle_e_publish_state(self):
         """Serializa transições com o despacho de comandos do ActionServer."""
         with self._control_lock:
@@ -311,10 +322,16 @@ class DroneNode(DroneActionServerMixin, DronePX4CommandsMixin, Node):
     @control_snapshot
     def px4_vehicle_local_position_callback(self, msg) -> None:
         px4 = self.state_px4
+        self._position_last_received = time.monotonic()
         if not all(math.isfinite(value) for value in (msg.x, msg.y, msg.z, msg.vx, msg.vy, msg.vz)):
+            self._position_last_rejection = 'posição/velocidade não finita'
             return
         if not (msg.xy_valid and msg.z_valid and msg.v_xy_valid and msg.v_z_valid):
+            self._position_last_rejection = (
+                f'xy={msg.xy_valid}, z={msg.z_valid}, '
+                f'v_xy={msg.v_xy_valid}, v_z={msg.v_z_valid}')
             return
+        self._position_last_rejection = None
         self._position_received = time.monotonic()
         px4.local_position = msg
         self.pose_history.add(self.get_clock().now().nanoseconds / 1e9,

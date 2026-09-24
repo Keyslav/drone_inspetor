@@ -19,6 +19,9 @@ class MissionFSM(BaseStateMachine):
         if new_id == self.current_state_id:
             return
         old_id = self.current_state_id
+        if self.context.failure_reason:
+            self.node.get_logger().warning(
+                f'Motivo da transição para {new_id.name}: {self.context.failure_reason}')
         if new_id == MS.DESATIVADO:
             self.node.actions.cancel()
             self.node.cv.stop_inspection()

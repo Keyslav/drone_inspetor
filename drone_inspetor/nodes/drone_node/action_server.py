@@ -186,7 +186,8 @@ class DroneActionServerMixin:
         if context.state == DS.OFFBOARD_DESATIVADO:
             return 'Controle OFFBOARD perdido'
         if not self.telemetry_fresh():
-            return 'Telemetria local expirada'
+            detail = self.telemetry_failure_detail()
+            return f'Telemetria local expirada ({detail})'
         if command in ('GOTO', 'TAKEOFF', 'STOP') and self.trajectory.navigation_error:
             return self.trajectory.navigation_error
         if command in ('GOTO', 'TAKEOFF') and not self.state_px4.is_armed:

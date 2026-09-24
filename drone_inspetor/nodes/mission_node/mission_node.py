@@ -1,6 +1,7 @@
 """Composição ROS da missão: domínio, clientes e FSM possuem responsabilidades próprias."""
 
 import time
+from dataclasses import asdict
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -14,6 +15,7 @@ from drone_inspetor.nodes.mission_node.fsm.mission.context import MissionFSMCont
 from drone_inspetor.nodes.mission_node.fsm.mission.machine import MissionFSM
 from drone_inspetor.nodes.mission_node.runtime import MissionRuntime
 from drone_inspetor.nodes.mission_node.session import create_session_directory
+from drone_inspetor.nodes.mission_node.journal import MissionJournal
 from drone_inspetor.ros_interfaces import (
     Topics, create_client_from, create_publisher_from, create_subscription_from,
     make_action_client,
@@ -25,6 +27,8 @@ import rclpy
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rcl_interfaces.msg import Log
+from rosidl_runtime_py.convert import message_to_ordereddict
 
 from .fsm.mission.description import MissionFSMDescription as MS
 
@@ -46,6 +50,10 @@ class MissionNode(Node):
         """Monta repositório, clientes e timers após validar configuração."""
         super().__init__('mission_node', **node_options)
         self.config = MissionConfig.from_node(self)
+        self.journal = MissionJournal(self.get_logger().error)
+        self._journal_session_active = False
+        self._last_drone_message = DroneStateMSG()
+        self._rosout_sub = self.create_subscription(Log, '/rosout', self.record_rosout, 100)
         self.repository = MissionRepository(
             self.config.resolve_missions_file(get_package_share_directory('drone_inspetor')),
             takeoff_altitude_m=self.config.takeoff_altitude,
@@ -94,6 +102,13 @@ class MissionNode(Node):
         """Relógio da missão; timestamps e duração de inspeção acompanham /clock."""
         return self.get_clock().now().nanoseconds / 1e9
 
+    def record_rosout(self, message):
+        """Inclui transições, comandos e diagnósticos dos nós da aplicação."""
+        if message.name in ('drone_node', 'mission_node', 'cv_node'):
+            self.journal.record('rosout', self.ros_time(), node=message.name,
+                                level=message.level, message=message.msg,
+                                source_stamp_s=message.stamp.sec + message.stamp.nanosec / 1e9)
+
     def telemetry_healthy(self):
         """Uma amostra em tempo zero é válida; ausência é representada por None."""
         if self.last_telemetry_at is None:
@@ -137,6 +152,17 @@ class MissionNode(Node):
             message.objeto_alvo = point.inspection.object_name
             message.tipos_anomalia = list(point.inspection.anomaly_types)
         self.mission_state_pub.publish(message)
+        if self._journal_session_active:
+            age = (None if self.last_telemetry_at is None else
+                   time.monotonic() - self.last_telemetry_at)
+            self.journal.observe(self.ros_time(), message_to_ordereddict(message),
+                                 message_to_ordereddict(self._last_drone_message),
+                                 context.failure_reason, age)
+            if not context.mission_folder_path:
+                self.journal.record('session_end', self.ros_time(), state=state.name)
+                self._journal_session_active = False
+                # Mantém o arquivo aberto para os últimos rosout já em trânsito;
+                # snapshots cessam aqui. Fecha no próximo início ou no shutdown.
 
     def verifica_validade_do_comando(self, command):
         """Valida comandos contra a mesma FSM usada na publicação."""
@@ -159,6 +185,7 @@ class MissionNode(Node):
             self.get_logger().warning(reason)
             return
         if command is Command.CANCELAR_MISSAO:
+            self.journal.record('cancel_requested', self.ros_time())
             self.mission_ctx.cancel_mission = True
             return
         if not self.telemetry_healthy():
@@ -171,18 +198,25 @@ class MissionNode(Node):
             self.get_logger().error(f'Não foi possível iniciar missão: {error}')
             return
         self.mission_ctx.start(definition, directory)
+        self.journal.start(directory, asdict(definition), asdict(self.config), self.ros_time())
+        self._journal_session_active = True
+        self.journal.record('drone_initial', self.ros_time(),
+                            drone=message_to_ordereddict(self._last_drone_message))
         self.publish_mission_state()
         self.get_logger().info(f'Sessão iniciada: {definition.name}; pasta {directory}')
 
     def drone_state_callback(self, message: DroneStateMSG):
         """Registra recebimento em tempo monotônico e converte a telemetria."""
         self.drone.update_from_msg(message)
+        self._last_drone_message = message
         self.last_telemetry_at = time.monotonic()
 
     def destroy_node(self):
         """Invalida callbacks e solicita encerramento dos recursos remotos."""
         self.actions.cancel()
         self.cv.stop_inspection()
+        self.journal.record('node_shutdown', self.ros_time())
+        self.journal.close()
         return super().destroy_node()
 
 

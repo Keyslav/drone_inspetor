@@ -273,8 +273,31 @@ def test_message_state_comes_from_machine_after_health_reset():
     machine.tick()
     published = []
     adapter = SimpleNamespace(mission_ctx=context, mission_machine=machine,
+                              _journal_session_active=False,
                               mission_state_pub=SimpleNamespace(publish=published.append))
     MissionNode.publish_mission_state(adapter)
     assert published[0].state == int(machine.current_state_id) == int(MS.DESATIVADO)
     assert published[0].state_name == machine.current_state_id.name
     assert not published[0].on_mission
+
+
+def test_takeoff_stale_telemetry_returns_without_sending_first_waypoint():
+    machine, context, runtime, _ = fixture()
+    machine.tick()
+    context.start(mission(), '/tmp/sessao-teste')
+    machine.tick()
+    machine.tick()
+    assert machine.current_state_id == MS.EXECUTANDO_DECOLANDO
+    runtime.actions.automatic = False
+    machine.tick()
+    runtime.actions.pending.result = ActionResult(ActionStatus.FAILED, 'Telemetria local expirada')
+    runtime.actions.busy = False
+    runtime.drone.state = DS.EM_VOO
+    runtime.drone.is_landed = False
+    runtime.drone.is_armed = True
+    machine.tick()
+    assert machine.current_state_id == MS.RETORNANDO
+    assert context.failure_reason == 'Telemetria local expirada'
+    machine.tick()
+    assert [operation.command for operation, _ in runtime.actions.sent] == ['ARM', 'TAKEOFF', 'RTL']
+    assert any('Telemetria local expirada' in message for message in runtime.logger.messages)

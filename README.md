@@ -81,6 +81,11 @@ nós; um build isolado em outro diretório não atualiza `~/ros2_ws/install`.
 
 ## Execução por contexto
 
+Cada missão grava automaticamente `events.jsonl` em sua pasta de sessão
+(por padrão, `~/Drone_Inspetor_Missoes/mission_.../`). O diário reúne estados,
+telemetria resumida, comandos/resultados e logs de drone/mission/CV. Veja
+[diagnóstico da Flare e formato do diário](docs/DIAGNOSTICO_MISSAO_FLARE.md).
+
 Todos os launchers recebem o YAML de parâmetros e aceitam argumentos, sem precisar
 comentar nós no código:
 
