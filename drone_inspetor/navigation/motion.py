@@ -121,6 +121,8 @@ class SegmentProfile:
         self.origin, self.target = tuple(origin), tuple(target)
         delta = tuple(b - a for a, b in zip(origin, target))
         self.length = math.sqrt(sum(x * x for x in delta))
+        # Ruckig resolve uma coordenada escalar ao longo do segmento. Só ao
+        # produzir a saída ela volta aos três eixos NED, mantendo p/v/a coerentes.
         self.direction = tuple(x / self.length for x in delta) if self.length > 1e-9 else (0., 0., 0.)
         self.velocity, self.accel = velocity, acceleration
 
@@ -148,6 +150,8 @@ class SegmentProfile:
         request.min_acceleration = [-self.deceleration]
         request.max_jerk = [self.jerk]
         if cap <= 1e-5:
+            # Parar onde a frenagem terminar é diferente de alcançar o waypoint.
+            # O modo velocidade evita forçar a chegada quando o corredor fechou.
             request.control_interface = ControlInterface.Velocity
         trajectory = Trajectory(1)
         result = self._generator.calculate(request, trajectory)

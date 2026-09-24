@@ -3,8 +3,34 @@
 import cv2
 import numpy as np
 from PyQt6.QtGui import QImage
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QLabel, QSizePolicy
 
 from ..logging import gui_log_error
+
+
+class ResponsiveImageLabel(QLabel):
+    """Redimensiona o original mesmo quando o próximo frame ainda não chegou."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._source_pixmap = None
+        # A resolução do sensor não deve determinar a largura mínima do painel.
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+    def set_source_pixmap(self, pixmap):
+        self._source_pixmap = pixmap
+        self._fit_source()
+
+    def _fit_source(self):
+        if self._source_pixmap is not None:
+            self.setPixmap(self._source_pixmap.scaled(
+                self.contentsRect().size(), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_source()
 
 
 class ImageProcessor:

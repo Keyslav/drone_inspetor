@@ -152,6 +152,8 @@ class DroneActionServerMixin:
                                 canceled=canceled and goal_handle.is_cancel_requested,
                             )
                     self._publish_command_feedback(goal_handle, command)
+                # Fora do lock: callbacks de telemetria e timers precisam avançar
+                # para confirmar conclusão/frenagem enquanto este goal aguarda.
                 time.sleep(0.05)
         except Exception as error:
             self.get_logger().error(f'Falha na operação {command}: {error}')

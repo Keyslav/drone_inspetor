@@ -1,381 +1,225 @@
-"""
-mission.py
-=================================================================================================
-Gerenciador da interface visual da Máquina de Estados de Missão.
+"""Resumo da missão e diagnóstico recolhível da máquina de estados.
 
-Gerencia a interface visual da Máquina de Estados de Missão do sistema. Esta classe
-é responsável por criar e atualizar os widgets que exibem o estado atual do drone e uma
-representação hierárquica de todos os estados possíveis. Não requer acesso ao node ROS2.
-=================================================================================================
+A apresentação recebe snapshots do MissionNode por sinais Qt. Ela não determina
+se um comando foi aceito: apenas o próximo estado recebido confirma a transição.
 """
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QTreeWidget, QTreeWidgetItem)
 from PyQt6.QtCore import Qt
-from .utils import gui_log_info
+from PyQt6.QtWidgets import (
+    QLabel, QProgressBar, QSizePolicy, QToolButton, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QWidget,
+)
+
+
+STATE_LABELS = {
+    "DESATIVADO": "Desativada",
+    "PRONTO": "Pronta para iniciar",
+    "EXECUTANDO": "Em execução",
+    "EXECUTANDO_ARMANDO": "Armando drone",
+    "EXECUTANDO_DECOLANDO": "Decolando",
+    "EXECUTANDO_INSPECIONANDO": "Inspecionando",
+    "EXECUTANDO_INSPECIONANDO_DETECTANDO": "Buscando equipamento",
+    "EXECUTANDO_INSPECIONANDO_ESCANEANDO": "Escaneando equipamento",
+    "EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO": "Escaneamento concluído",
+    "EXECUTANDO_INSPECIONANDO_FALHA": "Falha na detecção",
+    "INSPECAO_FINALIZADA": "Inspeção finalizada",
+    "RETORNANDO": "Retornando à origem",
+}
+
 
 class MissionManager:
-    """
-    Gerencia a interface visual da Máquina de Estados de Missão do sistema.
+    """Apresenta o estado confirmado sem acoplar widgets ao executor ROS."""
 
-    Esta classe é responsável por criar e atualizar os widgets que exibem o estado atual
-    do drone e uma representação hierárquica de todos os estados possíveis.
-    """
-    
     def __init__(self, signals=None):
-        """
-        Inicializa o gerenciador da Máquina de Missão.
-
-        Args:
-            signals (DashboardSignals.MissionSignals, optional): Objeto de sinais específicos da missão para comunicação com a GUI.
-        """
-        self.signals = signals  # Armazena a referência aos sinais da missão
-        
-        # Inicializa os atributos que armazenarão os widgets da interface da missão.
+        self.signals = signals
         self.mission_tree = None
-        self.mission_states = {} # Dicionário para mapear nomes de estados para itens da árvore.
-        
-        # Dados dinâmicos da missão (atualizados via update_state)
+        self.mission_states = {}
+        self.mission_highlight_items = {}
+        self.current_state = ""
         self.current_mission_data = {
+            "mission_name": "",
             "ponto_de_inspecao_indice_atual": 0,
             "total_pontos_de_inspecao": 0,
             "objeto_alvo": "",
-            "tipos_anomalia": []
+            "tipos_anomalia": [],
         }
-        
-        # Textos base para os itens (sem dados dinâmicos)
-        self.base_texts = {
-            "EXECUTANDO_INSPECIONANDO": "🔍 INSPECIONANDO",
-            "EXECUTANDO_INSPECIONANDO_DETECTANDO": "🔄 DETECTANDO",
-            "EXECUTANDO_INSPECIONANDO_ESCANEANDO": "🔭 ESCANEANDO",
-            "EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO": "✅ ESCANEAMENTO FINALIZADO",
-            "EXECUTANDO_INSPECIONANDO_FALHA": "⚠️ FALHA NA DETECÇÃO"
-        }
+        self.state_label = None
+
+    @staticmethod
+    def _label(text, color="#93a4bb", size=12):
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setMinimumWidth(0)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        label.setStyleSheet(
+            f"color: {color}; font-size: {size}px; background: transparent; border: none;"
+        )
+        return label
 
     def setup_b2_mission(self):
-        """
-        Configura o painel B2, que contém a interface visual da máquina de missão.
-        Cria o layout e todos os widgets necessários para exibir os estados do sistema.
-
-        Returns:
-            QWidget: O widget principal contendo toda a interface da missão.
-        """
-        # Registra o início da configuração do painel B2
-        gui_log_info("MissionManager", "Configurando painel B2 - Missão")
-        
-        # Cria o widget principal para o painel B2 e seu layout vertical.
-        b2_widget = QWidget()
-        b2_layout = QVBoxLayout()
-        
-        # Define as margens e espaçamento do layout.
-        b2_layout.setContentsMargins(2, 2, 2, 2)
-        b2_layout.setSpacing(0)
-        
-        # Cria o QLabel para o título da missão e configura seu alinhamento e altura máxima.
-        mission_title = QLabel("Estados da Missão")
-        mission_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        mission_title.setMaximumHeight(33)
-        
-        # Define o estilo CSS para o título da missão.
-        mission_title.setStyleSheet("""
-            font-weight: bold; 
-            color: #ecf0f1; 
-            background-color: #5D2E0A; 
-            padding: 4px; 
-            border-radius: 3px;
-            font-size: 14px;
-            border: 1px solid #8B4513;
-            margin-bottom: 6px;
+        """Cria o resumo sempre visível e deixa a árvore fora do fluxo principal."""
+        panel = QWidget()
+        panel.setObjectName("missionSummary")
+        panel.setStyleSheet("""
+            QWidget#missionSummary { background: #111c2e; border: 1px solid #26354b;
+                                     border-radius: 12px; }
         """)
-        b2_layout.addWidget(mission_title, 0, Qt.AlignmentFlag.AlignTop)
-        
-        # Configura a árvore de estados da missão.
-        self.setup_mission_tree(b2_layout)
-        
-        # Define o estado inicial da missão (agora apenas destaca na árvore).
-        self.update_state("Iniciando")
-        
-        # Define o layout para o widget principal do painel B2 e o retorna.
-        b2_widget.setLayout(b2_layout)
-        return b2_widget
+        panel.setMinimumWidth(0)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(6)
+        layout.addWidget(self._label("ESTADO DA MISSÃO", size=11))
+        self.state_label = self._label("Aguardando telemetria", "#e6edf5", 20)
+        self.state_label.setAccessibleName("Estado atual da missão")
+        layout.addWidget(self.state_label)
+        self.mission_name_label = self._label("Nenhuma missão informada")
+        layout.addWidget(self.mission_name_label)
+        self.progress_label = self._label("Pontos de inspeção não informados")
+        layout.addWidget(self.progress_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 1)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setFixedHeight(5)
+        self.progress_bar.setAccessibleName("Posição do ponto atual na missão")
+        self.progress_bar.setStyleSheet("""
+            QProgressBar { background: #26354b; border: none; border-radius: 2px; }
+            QProgressBar::chunk { background: #4de0c1; border-radius: 2px; }
+        """)
+        layout.addWidget(self.progress_bar)
+        self.target_label = self._label("")
+        self.anomalies_label = self._label("")
+        layout.addWidget(self.target_label)
+        layout.addWidget(self.anomalies_label)
+        self.details_toggle = QToolButton()
+        self.details_toggle.setText("Máquina de estados")
+        self.details_toggle.setCheckable(True)
+        self.details_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.details_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.details_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_toggle.setMinimumHeight(30)
+        self.details_toggle.setStyleSheet("""
+            QToolButton { color: #93a4bb; background: transparent; border: none;
+                          text-align: left; font-size: 12px; }
+            QToolButton:hover, QToolButton:checked { color: #4de0c1; }
+        """)
+        layout.addWidget(self.details_toggle)
+        self.setup_mission_tree(layout)
+        self.details_toggle.toggled.connect(self._toggle_details)
+        self._toggle_details(False)
+        self.update_state(self.current_state)
+        return panel
+
+    def _toggle_details(self, expanded):
+        self.mission_tree.setVisible(expanded)
+        self.details_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow
+        )
 
     def setup_mission_tree(self, layout):
-        """
-        Configura o QTreeWidget que exibe a estrutura hierárquica dos estados da missão.
-        Define o estilo visual da árvore e popula com os estados possíveis do sistema.
-
-        Args:
-            layout (QLayout): O layout onde a árvore será adicionada.
-        """
-        # Registra o início da configuração da árvore de missão
-        gui_log_info("MissionManager", "Configurando visualização da árvore de missão")
-        
-        # Cria o QTreeWidget e configura suas propriedades.
+        """A árvore mantém os nomes de diagnóstico sem disputar espaço com o resumo."""
         self.mission_tree = QTreeWidget()
-        self.mission_tree.setHeaderHidden(True) # Esconde o cabeçalho da árvore.
-        self.mission_tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection) # Permite apenas uma seleção.
-        self.mission_tree.setFocusPolicy(Qt.FocusPolicy.NoFocus) # Remove o foco do teclado.
-        
-        # Define o estilo CSS para a árvore de estados.
+        self.mission_tree.setHeaderHidden(True)
+        self.mission_tree.setIndentation(12)
+        self.mission_tree.setMinimumWidth(0)
+        self.mission_tree.setMinimumHeight(170)
+        self.mission_tree.setMaximumHeight(220)
         self.mission_tree.setStyleSheet("""
-            QTreeWidget {
-                background-color: #34495e;
-                border: 1px solid #7f8c8d;
-                border-radius: 3px;
-                font-size: 12px;
-                color: #ecf0f1;
-            }
-            QTreeWidget::item {
-                padding: 3px;
-                border-bottom: 1px solid #7f8c8d;
-            }
-            QTreeWidget::item:selected {
-                background-color: #3498db;
-                color: white;
-            }
+            QTreeWidget { background: #0b1321; color: #93a4bb; border: none;
+                          border-radius: 8px; font-size: 11px; }
+            QTreeWidget::item { padding: 5px 2px; }
+            QTreeWidget::item:selected { background: #183c3d; color: #4de0c1; }
         """)
-        
-        # Cria a estrutura de estados na árvore.
         self.create_mission_tree_structure()
-        
-        # Adiciona a árvore de estados ao layout fornecido.
-        layout.addWidget(self.mission_tree, 1)
+        layout.addWidget(self.mission_tree)
 
     def create_mission_tree_structure(self):
-        """
-        Cria a estrutura hierárquica dos estados na árvore visual (QTreeWidget).
-        
-        Os estados compostos (ex: EXECUTANDO_INSPECIONANDO_DETECTANDO) são exibidos
-        como uma hierarquia:
-        - EXECUTANDO
-            - ARMANDO
-            - DECOLANDO
-            - INSPECIONANDO
-                - DETECTANDO
-                - CENTRALIZANDO
-                - ESCANEANDO
-                - FALHA
-        
-        Quando um estado composto está ativo, todos os níveis ancestrais são destacados.
-        """
-        # Limpa a árvore existente antes de recriar a estrutura.
         self.mission_tree.clear()
-        
-        # Cria o item raiz da árvore.
-        root = QTreeWidgetItem(self.mission_tree)
-        root.setText(0, "🤖 Sistema de Inspeção")
-        root.setExpanded(True)
-        
-        # Dicionário principal: mapeia state_name completo para item
-        self.mission_states = {}
-        
-        # Dicionário auxiliar: mapeia state_name para lista de itens a destacar
-        # (o próprio + todos os ancestrais)
-        self.mission_highlight_items = {}
-        
-        # ==================== ESTADOS DE NÍVEL 0 - SISTEMA ====================
-        
-        # Estado: DESATIVADO (0)
-        desativado_item = QTreeWidgetItem(root)
-        desativado_item.setText(0, "⛔ DESATIVADO")
-        self.mission_states["DESATIVADO"] = desativado_item
-        self.mission_highlight_items["DESATIVADO"] = [desativado_item]
-        
-        # Estado: PRONTO (1)
-        pronto_item = QTreeWidgetItem(root)
-        pronto_item.setText(0, "✅ PRONTO")
-        self.mission_states["PRONTO"] = pronto_item
-        self.mission_highlight_items["PRONTO"] = [pronto_item]
-        
-        # ==================== EXECUTANDO (NÍVEL 1) ====================
-        
-        # Nó pai: EXECUTANDO
-        executando_item = QTreeWidgetItem(root)
-        executando_item.setText(0, "🚀 EXECUTANDO")
-        executando_item.setExpanded(True)
-        
-        # Sub-estado: ARMANDO
-        armando_item = QTreeWidgetItem(executando_item)
-        armando_item.setText(0, "⚙️ ARMANDO")
-        self.mission_states["EXECUTANDO_ARMANDO"] = armando_item
-        self.mission_highlight_items["EXECUTANDO_ARMANDO"] = [executando_item, armando_item]
-        
-        # Sub-estado: DECOLANDO
-        decolando_item = QTreeWidgetItem(executando_item)
-        decolando_item.setText(0, "⬆️ DECOLANDO")
-        self.mission_states["EXECUTANDO_DECOLANDO"] = decolando_item
-        self.mission_highlight_items["EXECUTANDO_DECOLANDO"] = [executando_item, decolando_item]
-        
-        # ==================== INSPECIONANDO (NÍVEL 2) ====================
-        
-        # Nó pai: INSPECIONANDO (filho de EXECUTANDO)
-        inspecionando_item = QTreeWidgetItem(executando_item)
-        inspecionando_item.setText(0, "🔍 INSPECIONANDO")
-        inspecionando_item.setExpanded(True)
-        self.mission_states["EXECUTANDO_INSPECIONANDO"] = inspecionando_item
-        self.mission_highlight_items["EXECUTANDO_INSPECIONANDO"] = [executando_item, inspecionando_item]
-        
-        # Sub-sub-estado: DETECTANDO (20)
-        detectando_item = QTreeWidgetItem(inspecionando_item)
-        detectando_item.setText(0, "🔄 DETECTANDO")
-        self.mission_states["EXECUTANDO_INSPECIONANDO_DETECTANDO"] = detectando_item
-        self.mission_highlight_items["EXECUTANDO_INSPECIONANDO_DETECTANDO"] = [executando_item, inspecionando_item, detectando_item]
-        
-        # Sub-sub-estado: ESCANEANDO (22)
-        escaneando_item = QTreeWidgetItem(inspecionando_item)
-        escaneando_item.setText(0, "🔭 ESCANEANDO")
-        self.mission_states["EXECUTANDO_INSPECIONANDO_ESCANEANDO"] = escaneando_item
-        self.mission_highlight_items["EXECUTANDO_INSPECIONANDO_ESCANEANDO"] = [executando_item, inspecionando_item, escaneando_item]
-        
-        # Sub-sub-estado: ESCANEAMENTO_FINALIZADO (23)
-        escaneamento_finalizado_item = QTreeWidgetItem(inspecionando_item)
-        escaneamento_finalizado_item.setText(0, "✅ ESCANEAMENTO FINALIZADO")
-        self.mission_states["EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO"] = escaneamento_finalizado_item
-        self.mission_highlight_items["EXECUTANDO_INSPECIONANDO_ESCANEAMENTO_FINALIZADO"] = [executando_item, inspecionando_item, escaneamento_finalizado_item]
-        
-        # Sub-sub-estado: FALHA (25)
-        falha_item = QTreeWidgetItem(inspecionando_item)
-        falha_item.setText(0, "⚠️ FALHA NA DETECÇÃO")
-        self.mission_states["EXECUTANDO_INSPECIONANDO_FALHA"] = falha_item
-        self.mission_highlight_items["EXECUTANDO_INSPECIONANDO_FALHA"] = [executando_item, inspecionando_item, falha_item]
-        
-        # ==================== ESTADOS DE FINALIZAÇÃO ====================
-        
-        # Estado: INSPECAO_FINALIZADA (30)
-        finalizada_item = QTreeWidgetItem(root)
-        finalizada_item.setText(0, "✅ INSPECAO_FINALIZADA")
-        self.mission_states["INSPECAO_FINALIZADA"] = finalizada_item
-        self.mission_highlight_items["INSPECAO_FINALIZADA"] = [finalizada_item]
-        
-        # Estado: RETORNANDO (40)
-        retornando_item = QTreeWidgetItem(root)
-        retornando_item.setText(0, "🏠 RETORNANDO")
-        self.mission_states["RETORNANDO"] = retornando_item
-        self.mission_highlight_items["RETORNANDO"] = [retornando_item]
-        
-        # Expande todos os itens da árvore para que todos os estados sejam visíveis.
+        self.mission_states.clear()
+        self.mission_highlight_items.clear()
+        root = QTreeWidgetItem(self.mission_tree, ["Ciclo da missão"])
+        # A hierarquia é explícita: separar por '_' quebraria ESCANEAMENTO_FINALIZADO.
+        parents = {
+            "EXECUTANDO_ARMANDO": "EXECUTANDO",
+            "EXECUTANDO_DECOLANDO": "EXECUTANDO",
+            "EXECUTANDO_INSPECIONANDO": "EXECUTANDO",
+            **{
+                state: "EXECUTANDO_INSPECIONANDO"
+                for state in STATE_LABELS if state.startswith("EXECUTANDO_INSPECIONANDO_")
+            },
+        }
+        for state, label in STATE_LABELS.items():
+            parent_state = parents.get(state)
+            parent = self.mission_states[parent_state] if parent_state else root
+            item = QTreeWidgetItem(parent, [label])
+            item.setToolTip(0, state)
+            self.mission_states[state] = item
+            ancestors = self.mission_highlight_items.get(parent_state, [])
+            self.mission_highlight_items[state] = [*ancestors, item]
         self.mission_tree.expandAll()
 
     def highlight_current_state_in_tree(self, state):
-        """
-        Destaca visualmente o estado atual na árvore de estados (QTreeWidget).
-        Para estados compostos, destaca todos os níveis hierárquicos (ancestrais).
-        
-        Por exemplo, para EXECUTANDO_INSPECIONANDO_DETECTANDO, destaca:
-        - EXECUTANDO (nível 1)
-        - INSPECIONANDO (nível 2)
-        - DETECTANDO (nível 3)
-
-        Args:
-            state (str): O nome do estado a ser destacado na árvore.
-        """
-        # Primeiro, remove o destaque de todos os itens
-        for state_name, state_item in self.mission_states.items():
-            font = state_item.font(0)
-            font.setBold(False)
-            state_item.setFont(0, font)
-            state_item.setSelected(False)
-        
-        # Obtém a lista de itens a destacar para este estado
-        items_to_highlight = self.mission_highlight_items.get(state, [])
-        
-        if items_to_highlight:
-            # Limpa qualquer seleção anterior na árvore.
-            self.mission_tree.clearSelection()
-            
-            # Destaca todos os itens da hierarquia
-            for item in items_to_highlight:
-                font = item.font(0)
-                font.setBold(True)
-                item.setFont(0, font)
-                item.setSelected(True)
-            
-            # Define o último item (mais específico) como o item atual
-            self.mission_tree.setCurrentItem(items_to_highlight[-1])
+        if self.mission_tree is None:
+            return
+        self.mission_tree.clearSelection()
+        active_items = self.mission_highlight_items.get(state, [])
+        for item in self.mission_states.values():
+            font = item.font(0)
+            font.setBold(item in active_items)
+            item.setFont(0, font)
+        if active_items:
+            self.mission_tree.setCurrentItem(active_items[-1])
 
     def mission_state_callback(self, msg):
-        """
-        Callback ROS2 para receber mensagens de mudança de estado da missão.
-        Esta função é automaticamente invocada quando uma nova mensagem é recebida no tópico ROS2.
-
-        Args:
-            msg: Mensagem ROS2 contendo o novo estado da missão (dict via sinal PyQt).
-        """
-        # Registra a mensagem de estado recebida
-        if isinstance(msg, dict):
-            state_name = msg.get("state_name", "")
-        else:
-            state_name = str(msg)
-        gui_log_info("MissionManager", f"Estado de missão recebido: {state_name}")
-        
-        # Atualiza o estado da interface com o novo estado recebido.
+        """Compatibilidade com conexões antigas do sinal da missão."""
         self.update_state(msg)
 
-
     def update_state(self, state_data):
-        """
-        Atualiza a interface visual da missão com dados do novo estado.
-        Este método é chamado sempre que o estado do sistema muda.
-        
-        Aceita tanto dict (formato de MissionStateMSG) quanto str (legado).
-
-        Args:
-            state_data: Dados do estado - pode ser dict com campos de MissionStateMSG ou str com state_name
-        """
-        # Extrai state_name do dict ou usa string diretamente
+        """Mostra o snapshot recebido; cliques em Iniciar/Cancelar não o alteram."""
         if isinstance(state_data, dict):
-            state = state_data.get("state_name", "")
-            
-            # Atualiza dados dinâmicos da missão
-            self.current_mission_data["ponto_de_inspecao_indice_atual"] = state_data.get("ponto_de_inspecao_indice_atual", 0)
-            self.current_mission_data["total_pontos_de_inspecao"] = state_data.get("total_pontos_de_inspecao", 0)
-            self.current_mission_data["objeto_alvo"] = state_data.get("objeto_alvo", "")
-            self.current_mission_data["tipos_anomalia"] = state_data.get("tipos_anomalia", [])
+            self.current_state = state_data.get("state_name", "")
+            for key, default in (
+                ("mission_name", ""), ("ponto_de_inspecao_indice_atual", 0),
+                ("total_pontos_de_inspecao", 0), ("objeto_alvo", ""),
+                ("tipos_anomalia", []),
+            ):
+                self.current_mission_data[key] = state_data.get(key, default)
         else:
-            state = str(state_data)
-        
-        # Atualiza textos dinâmicos dos itens da árvore
+            self.current_state = str(state_data)
+        if self.state_label is None:
+            return
+        label = STATE_LABELS.get(
+            self.current_state,
+            self.current_state.replace("_", " ").capitalize() or "Aguardando telemetria",
+        )
+        self.state_label.setText(label)
+        self.state_label.setToolTip(self.current_state)
+        color = "#ff7f88" if "FALHA" in self.current_state else "#e6edf5"
+        self.state_label.setStyleSheet(
+            f"color: {color}; font-size: 20px; font-weight: 600; border: none;"
+            "background: transparent;"
+        )
         self._update_dynamic_labels()
-        
-        # Destaca o estado atual na árvore de estados.
-        self.highlight_current_state_in_tree(state)
-    
+        self.highlight_current_state_in_tree(self.current_state)
+
     def _update_dynamic_labels(self):
-        """
-        Atualiza os textos dinâmicos dos itens INSPECIONANDO, DETECTANDO e ESCANEANDO
-        com informações da missão atual.
-        """
-        idx = self.current_mission_data["ponto_de_inspecao_indice_atual"]
-        total = self.current_mission_data["total_pontos_de_inspecao"]
-        objeto_alvo = self.current_mission_data["objeto_alvo"]
-        tipos_anomalia = self.current_mission_data["tipos_anomalia"]
-        
-        # INSPECIONANDO: mostra índice atual / total (ex: "🔍 INSPECIONANDO (2/4)")
-        inspecionando_item = self.mission_states.get("EXECUTANDO_INSPECIONANDO")
-        if inspecionando_item:
-            if total > 0:
-                # Índice é 0-based, exibimos como 1-based
-                text = f"🔍 INSPECIONANDO ({idx + 1}/{total})"
-            else:
-                text = self.base_texts["EXECUTANDO_INSPECIONANDO"]
-            inspecionando_item.setText(0, text)
-        
-        # DETECTANDO: mostra objeto alvo (ex: "🔄 DETECTANDO: Flare")
-        detectando_item = self.mission_states.get("EXECUTANDO_INSPECIONANDO_DETECTANDO")
-        if detectando_item:
-            if objeto_alvo:
-                text = f"🔄 DETECTANDO: {objeto_alvo}"
-            else:
-                text = self.base_texts["EXECUTANDO_INSPECIONANDO_DETECTANDO"]
-            detectando_item.setText(0, text)
-        
-        # ESCANEANDO: mostra tipos de anomalia (ex: "🔭 ESCANEANDO: corrosion, crack")
-        escaneando_item = self.mission_states.get("EXECUTANDO_INSPECIONANDO_ESCANEANDO")
-        if escaneando_item:
-            if tipos_anomalia:
-                # Formata lista de anomalias (remove prefixos comuns para legibilidade)
-                anomalias_formatadas = [a.replace("_", " ").replace("corrosion", "corr.") for a in tipos_anomalia]
-                text = f"🔭 ESCANEANDO: {', '.join(anomalias_formatadas)}"
-            else:
-                text = self.base_texts["EXECUTANDO_INSPECIONANDO_ESCANEANDO"]
-            escaneando_item.setText(0, text)
+        data = self.current_mission_data
+        self.mission_name_label.setText(data["mission_name"] or "Nenhuma missão informada")
+        total = max(0, int(data["total_pontos_de_inspecao"]))
+        # O índice informa o ponto atual, não o número de inspeções concluídas.
+        # Por isso a barra não é apresentada como uma porcentagem de conclusão.
+        current = min(total, max(0, int(data["ponto_de_inspecao_indice_atual"])) + 1)
+        self.progress_label.setText(
+            f"Ponto atual · {current} de {total}" if total else "Pontos de inspeção não informados"
+        )
+        self.progress_bar.setRange(0, max(1, total))
+        self.progress_bar.setValue(current)
+        # Sem pontos recebidos, o estado de espera já comunica a ausência de dados.
+        self.progress_label.setVisible(total > 0)
+        self.progress_bar.setVisible(total > 0)
+        target = data["objeto_alvo"]
+        anomalies = ", ".join(str(value).replace("_", " ") for value in data["tipos_anomalia"])
+        self.target_label.setText(f"Equipamento · {target}" if target else "")
+        self.target_label.setVisible(bool(target))
+        self.anomalies_label.setText(f"Análises · {anomalies}" if anomalies else "")
+        self.anomalies_label.setVisible(bool(anomalies))

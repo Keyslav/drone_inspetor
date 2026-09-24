@@ -56,6 +56,8 @@ class NavigationSensors:
         if age is None or not self.node.telemetry_fresh():
             return
         now_ros = self.node.get_clock().now().nanoseconds / 1e9
+        # Associa o scan à pose próxima de sua aquisição. Usar só a pose atual
+        # deslocaria obstáculos no mapa quando o veículo gira ou se move.
         pose = self.node.pose_history.at(now_ros - age, self.config.sensor_pose_max_skew)
         if pose is None:
             self.map.scans.pop(source, None)
@@ -63,6 +65,8 @@ class NavigationSensors:
         pos, yaw = pose.position, pose.yaw
         offset_ned = body_flu_offset_to_ned((forward, left, 0.), yaw)
         origin = tuple(value + offset for value, offset in zip(pos, offset_ned))
+        # O mapa expira em tempo monotônico; descontar a idade ROS conserva
+        # o atraso anterior à recepção em vez de dar validade nova a um scan velho.
         self.map.update(source, msg.ranges, msg.angle_min, msg.angle_increment,
                         msg.range_min, msg.range_max, origin, yaw,
                         time.monotonic() - age, mount_yaw)

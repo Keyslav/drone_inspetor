@@ -4,12 +4,13 @@
 # DroneFSMDescription.DECOLANDO
 #
 # Significado: manobra de decolagem em curso. O drone sobe verticalmente até atingir a
-# altitude alvo definida no TAKEOFF. A subida em si é executada pela DeslocamentoFSM
-# (estado DESLOCANDO com target apenas em Z); este estado lifecycle apenas observa
-# a altitude atual e transiciona para EM_VOO ao atingir o alvo.
+# altura definida no TAKEOFF, relativa ao HOME. Trajectory.compute_vertical_takeoff
+# gera a subida; a DeslocamentoFSM permanece em PLANANDO durante este estado.
+# A chegada exige fim da referência, tolerâncias de posição e velocidade medidas
+# satisfeitas no TrajectoryProfile, além de o PX4 deixar de indicar pouso.
 #
 # Transições:
-#     Altitude atual chegou à altitude alvo (tolerância) → EM_VOO.
+#     Perfil concluído e PX4 indica que não está pousado → EM_VOO.
 #     Drone desarmado em meio à decolagem → POUSADO_DESARMADO.
 #     PX4 saiu do modo OFFBOARD → OFFBOARD_DESATIVADO.
 # =================================================================================================
@@ -29,16 +30,15 @@ class DecolandoState(BaseState):
         )
 
     def on_step(self):
-        # `self.context` é o DroneFSMContext (lifecycle).
-        # Variáveis de manobra (position_tolerance) vivem no DeslocamentoFSMContext —
-        # acesso via self.node.deslocamento_fsm_context.
+        # O contexto de lifecycle guarda a altura solicitada; o perfil e a
+        # telemetria decidem a conclusão, sem estimá-la apenas pelo tempo decorrido.
         px4 = self.node.state_px4
 
         # Saiu do OFFBOARD durante a decolagem: aborta.
         if px4.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
             return DS.OFFBOARD_DESATIVADO
 
-        # Drone desarmou em pleno voo: falha de segurança, volta ao chão.
+        # Reflete o desarmamento observado; esta transição não comanda um pouso.
         if not px4.is_armed:
             self.node.get_logger().warn("Drone desarmou durante decolagem.")
             return DS.POUSADO_DESARMADO

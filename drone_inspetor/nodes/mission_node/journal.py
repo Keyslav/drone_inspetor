@@ -7,7 +7,12 @@ import time
 
 
 class MissionJournal:
-    """Eventos pequenos, gravados e descarregados por linha para análise posterior."""
+    """Eventos pequenos, gravados e descarregados por linha para análise posterior.
+
+    UTC relaciona o diário a outros logs; elapsed_s mede tempo real monotônico;
+    ros_time_s acompanha a simulação e pode pausar. O buffer por linha reduz
+    perdas no encerramento, mas não equivale a fsync nem substitui um rosbag.
+    """
 
     def __init__(self, on_error, clock=time.monotonic):
         self._on_error = on_error
@@ -41,6 +46,7 @@ class MissionJournal:
             self._on_error(f'Diário da missão interrompido: {error}')
 
     def observe(self, ros_time, mission, drone, failure_reason, telemetry_age_s):
+        """Registra transições imediatamente e limita snapshots estáveis a 1 Hz."""
         now = self._clock()
         state = (mission['state_name'], drone['state_name'], failure_reason,
                  mission['ponto_de_inspecao_indice_atual'])

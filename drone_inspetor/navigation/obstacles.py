@@ -22,6 +22,8 @@ def wrap(angle):
 
 @dataclass(frozen=True)
 class Scan:
+    """Raios horizontais: origem NED, rumos em radianos e stamp monotônico."""
+
     origin: tuple
     stamp: float
     bearings: tuple
@@ -56,7 +58,12 @@ class Scan:
 
 
 class ObstacleMap:
-    """Observações por sensor, com expiração e inflação do volume do veículo."""
+    """Observações por sensor, com expiração e inflação do volume do veículo.
+
+    Retornos de todas as fontes ativas restringem o corredor. Apenas as fontes
+    obrigatórias precisam comprovar cobertura livre: por padrão, o LiDAR.
+    O depth é complementar e sua ausência não substitui essa cobertura.
+    """
 
     def __init__(self, radius=0.8, timeout=0.75, required_sources=('lidar',)):
         if radius <= 0 or timeout <= 0:
@@ -190,6 +197,8 @@ class LocalPlanner:
                if obstructed else self.cruise)
         nearest = obstacles.nearest(position, now)
         if nearest < self.planning_distance:
+            # near_speed é a ponta lenta desta interpolação de proximidade,
+            # não um teto fixo em todo o raio; o envelope de parada pode exigir zero.
             ratio = max(0., min(1., (nearest - obstacles.radius) /
                                 (self.planning_distance - obstacles.radius)))
             cap = min(cap, self.near_speed + (self.cruise - self.near_speed) * ratio)

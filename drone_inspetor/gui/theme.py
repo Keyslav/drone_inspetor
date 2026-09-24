@@ -10,11 +10,11 @@ IMAGE_QUALITY = {
 }
 
 COMMON_STYLES = {
-    "dark_background": "#2c3e50",
-    "light_background": "#34495e",
-    "text_color": "#ecf0f1",
-    "border_color": "#7f8c8d",
-    "accent_color": "#3498db",
-    "error_color": "#e74c3c",
-    "success_color": "#27ae60"
+    "dark_background": "#0b1321",
+    "light_background": "#111c2e",
+    "text_color": "#e6edf5",
+    "border_color": "#26354b",
+    "accent_color": "#249eac",
+    "error_color": "#ff7f88",
+    "success_color": "#269f8b"
 }

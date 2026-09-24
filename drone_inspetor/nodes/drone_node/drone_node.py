@@ -20,8 +20,10 @@
 # Subsistemas comuns (state_px4, obstacles) ficam como atributos do DroneNode em vez
 # de viverem em algum dos Contexts. Os Contexts acessam-nos via `self.node.<atributo>`.
 #
-# Cálculo de trajetória: classe `Trajectory` (composta no nó) escolhe o método correto com
-# base no estado das duas FSMs e gera o TrajectorySetpoint a 50 Hz.
+# Cálculo de trajetória: `Trajectory` escolhe referências NED de posição, velocidade e
+# aceleração conforme as FSMs. O timer padrão é 50 Hz; não é uma garantia de tempo real.
+# DECOLANDO usa seu próprio perfil vertical; a DeslocamentoFSM só avança em EM_VOO.
+# LAND/RTL transferem a autoridade ao PX4 e suspendem os setpoints ROS enquanto armado.
 # =================================================================================================
 
 import math
@@ -109,6 +111,8 @@ class DroneNode(DroneActionServerMixin, DronePX4CommandsMixin, Node):
             raise ValueError('px4_target_system_id deve estar entre 1 e 255')
         self.navigation_config = NavigationConfig.from_node(self)
         self.pose_history = PoseHistory()
+        # O ActionServer pode executar junto dos timers. O mesmo lock protege
+        # telemetria, transições e despacho para cada comando ver um estado coerente.
         self._control_lock = RLock()
         self._position_received = None
         self._setpoint_published = None
@@ -217,6 +221,7 @@ class DroneNode(DroneActionServerMixin, DronePX4CommandsMixin, Node):
     # =============================================================================================
 
     def telemetry_fresh(self):
+        """Idade da última amostra válida em tempo real, mesmo com /clock pausado."""
         return (self._position_received is not None
                 and time.monotonic() - self._position_received <= self.navigation_config.telemetry_timeout)
 
@@ -322,6 +327,8 @@ class DroneNode(DroneActionServerMixin, DronePX4CommandsMixin, Node):
     @control_snapshot
     def px4_vehicle_local_position_callback(self, msg) -> None:
         px4 = self.state_px4
+        # Receber uma mensagem não prova que o estimador a considera utilizável.
+        # Manter as duas idades permite distinguir silêncio de dados rejeitados.
         self._position_last_received = time.monotonic()
         if not all(math.isfinite(value) for value in (msg.x, msg.y, msg.z, msg.vx, msg.vy, msg.vz)):
             self._position_last_rejection = 'posição/velocidade não finita'

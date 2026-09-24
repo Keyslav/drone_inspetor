@@ -170,6 +170,8 @@ class CVNode(Node):
                 return
             self._last_annotated_image = annotated
             self._last_frame_time = received_at
+            # A inferência não renova a idade do frame. Um resultado que levou
+            # tempo demais pode aparecer na GUI, mas não confirma uma inspeção.
             self._detections.publish(detections, received_at)
             processed = self.bridge.cv2_to_compressed_imgmsg(annotated, dst_format='jpeg')
             processed.header = msg.header
@@ -234,6 +236,8 @@ class CVNode(Node):
             return
         folder_changed = msg.mission_folder_path != self._mission_folder
         if msg.on_mission and (not self._on_mission or folder_changed):
+            # Uma nova sessão pode usar o mesmo nome de missão; a pasta é que
+            # separa os artefatos e impede continuar um vídeo da sessão anterior.
             self._recorder.close()
             self._detections.invalidate()
             self._photo_counter = 0

@@ -157,32 +157,9 @@ class CameraScreen(BaseScreen):
         
         # Atualiza o título com o indicador
         if self.title_label:
-            if is_recording:
-                new_title = f"🔴 REC | {self._base_title}"
-                self.title_label.setStyleSheet(f"""
-                    font-weight: bold; 
-                    color: {COMMON_STYLES["text_color"]};
-                    background-color: #c0392b;
-                    padding: 4px; 
-                    border-radius: 3px;
-                    font-size: 13px;
-                    border: 1px solid #e74c3c;
-                    margin-bottom: 6px;
-                """)
-            else:
-                new_title = f"⚫ | {self._base_title}"
-                self.title_label.setStyleSheet(f"""
-                    font-weight: bold; 
-                    color: {COMMON_STYLES["text_color"]};
-                    background-color: {COMMON_STYLES["accent_color"]};
-                    padding: 4px; 
-                    border-radius: 3px;
-                    font-size: 13px;
-                    border: 1px solid {COMMON_STYLES["border_color"]};
-                    margin-bottom: 6px;
-                """)
-            
-            self.title_label.setText(new_title)
+            self.title_label.setText(f'● REC · {self._base_title}' if is_recording else self._base_title)
+            self.title_label.setStyleSheet(
+                'color: #ff7f88; font-weight: 600;' if is_recording else '')
             gui_log_info("CameraScreen", f"Indicador de gravação: {'ATIVO' if is_recording else 'INATIVO'}")
     
     def set_camera_status(self, status_text, is_error=False):

@@ -81,6 +81,10 @@ nós; um build isolado em outro diretório não atualiza `~/ros2_ws/install`.
 
 ## Execução por contexto
 
+O dashboard possui resumo de telemetria, painéis adaptáveis e radar Qt nativo.
+Veja [layout, radar e responsividade](docs/DASHBOARD_V2.md) e o
+[guia de leitura do código](docs/GUIA_LEITURA_CODIGO.md).
+
 Cada missão grava automaticamente `events.jsonl` em sua pasta de sessão
 (por padrão, `~/Drone_Inspetor_Missoes/mission_.../`). O diário reúne estados,
 telemetria resumida, comandos/resultados e logs de drone/mission/CV. Veja

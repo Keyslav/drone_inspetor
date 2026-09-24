@@ -34,7 +34,12 @@ from .fsm.mission.description import MissionFSMDescription as MS
 
 
 class MissionNode(Node):
-    """Adapta comandos/telemetria ROS e publica o único estado mantido pela FSM."""
+    """Adapta comandos/telemetria ROS e publica o único estado mantido pela FSM.
+
+    A missão ordena ações; somente DroneNode publica comandos de voo no PX4.
+    Callbacks neste nó usam o grupo padrão mutuamente exclusivo, portanto a FSM
+    e o diário observam atualizações serializadas da sessão.
+    """
 
     VALID_DASHBOARD_COMMANDS = {
         Command.INICIAR_MISSAO: (MS.PRONTO,),
@@ -110,7 +115,11 @@ class MissionNode(Node):
                                 source_stamp_s=message.stamp.sec + message.stamp.nanosec / 1e9)
 
     def telemetry_healthy(self):
-        """Uma amostra em tempo zero é válida; ausência é representada por None."""
+        """Saúde do tópico agregado, não das estimativas individuais do PX4.
+
+        DroneNode verifica a validade da posição usada no controle. Aqui basta
+        saber se seu status chega; tempo ROS zero não significa ausência.
+        """
         if self.last_telemetry_at is None:
             return False
         age = time.monotonic() - self.last_telemetry_at

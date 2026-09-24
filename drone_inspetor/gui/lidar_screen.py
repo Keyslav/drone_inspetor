@@ -1,158 +1,38 @@
-"""
-lidar_screen.py
-=================================================================================================
-Tela de visualização dos dados do sensor LiDAR.
+"""Adaptador dos sinais do dashboard para o radar Qt, sem dependência de navegador."""
 
-Responsável por exibir a página HTML do dashboard LiDAR e gerenciar as interações.
-Esta classe é um componente da interface gráfica (GUI) e não se comunica diretamente
-com o ROS2. Ela recebe os dados processados pelo DashboardNode através de sinais PyQt6.
-=================================================================================================
-"""
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-# Importações do PyQt6 para interface gráfica
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtCore import pyqtSignal, QUrl
-from PyQt6.QtGui import QFont
+from .widgets.lidar_radar import LidarRadar
 
-# Importações do sistema para manipulação de arquivos
-import os
-import json
-
-# Importações de utilitários
-from .utils import gui_log_info, gui_log_error
 
 class LidarScreen(QWidget):
-    """
-    Classe responsável pela tela de visualização dos dados do sensor LiDAR.
-    
-    Recebe dados já processados em tipos nativos do Python através de sinais PyQt6.
-    """
-    
+    """Preserva os callbacks públicos; ROS entrega apenas tipos nativos à GUI."""
+
     point_vector_received = pyqtSignal(object)
     statistics_received = pyqtSignal(object)
     obstacle_detections_received = pyqtSignal(object)
-    
+
     def __init__(self, signals, original_label: QLabel):
-        """
-        Inicializa a tela do LiDAR.
-        
-        Args:
-            signals: Objeto de sinais PyQt6 para comunicação (não utilizado diretamente aqui)
-            original_label (QLabel): O widget QLabel onde o dashboard LiDAR será exibido.
-        """
         super().__init__()
-        
         self.original_label = original_label
-        self.is_page_loaded = False
-        self.setup_ui()
-        self.load_lidar_dashboard()
-    
-    def setup_ui(self):
-        # (Método sem alterações)
-        layout = QVBoxLayout()
+        self.radar = LidarRadar(original_label)
+        layout = original_label.layout() or QVBoxLayout(original_label)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        self.web_view = QWebEngineView()
-        self.web_view.setStyleSheet("QWebEngineView { background-color: transparent; border: 2px solid #e67e22; border-radius: 5px; }")
-        layout.addWidget(self.web_view)
-        self.original_label.setLayout(layout)
-        self.original_label.setText("")
-    
-    def load_lidar_dashboard(self):
-        """
-        Carrega o arquivo HTML do dashboard LiDAR.
-        
-        Ordem de busca:
-        1. Diretório share do pacote ROS2 (instalação via colcon)
-        2. Diretório do arquivo fonte (desenvolvimento)
-        3. Diretório pai do arquivo fonte
-        """
-        html_path = None
-        
-        # Tenta o diretório share do pacote ROS2 primeiro
-        try:
-            from ament_index_python.packages import get_package_share_directory
-            package_share_dir = get_package_share_directory('drone_inspetor')
-            share_path = os.path.join(package_share_dir, 'gui', 'lidar_dashboard.html')
-            if os.path.exists(share_path):
-                html_path = share_path
-        except Exception:
-            pass
-        
-        # Fallback para diretório do arquivo fonte (desenvolvimento)
-        if html_path is None:
-            source_path = os.path.join(os.path.dirname(__file__), 'lidar_dashboard.html')
-            if os.path.exists(source_path):
-                html_path = source_path
-        
-        if html_path:
-            gui_log_info("LidarScreen", f"Carregando lidar_dashboard de: {html_path}")
-            self.web_view.loadFinished.connect(self.on_load_finished)
-            self.web_view.load(QUrl.fromLocalFile(os.path.abspath(html_path)))
-        else:
-            self.web_view.setHtml("<h1>Erro: lidar_dashboard.html não encontrado.</h1>")
-            gui_log_error("LidarScreen", "Arquivo lidar_dashboard.html não encontrado")
-
-    def on_load_finished(self, success: bool):
-        # (Método sem alterações)
-        if not success:
-            gui_log_error("LidarScreen", "Falha ao carregar a página do dashboard LiDAR")
-            return
-        self.is_page_loaded = True
-        self.web_view.page().runJavaScript("startRadarInitialization();")
+        layout.addWidget(self.radar)
+        original_label.setText('')
 
     def update_point_vector(self, point_vector: list):
-        """
-        Recebe o vetor de pontos JÁ COMO UMA LISTA PYTHON e o envia para o JavaScript.
-
-        Args:
-            point_vector (list[float]): A lista de floats [dist1, ang1, dist2, ang2, ...].
-        """
-        if not self.is_page_loaded:
-            return
-
-        try:
-            # 1. A conversão já foi feita no subscriber. Agora só precisamos serializar.
-            # Serializa a lista Python para uma string no formato JSON.
-            json_vector = json.dumps(point_vector)
-
-            # 2. Constrói e executa o comando JavaScript.
-            js_command = f"dashboard_update_point_vector({json_vector});"
-
-            # 3. Executa o comando JavaScript na página carregada.
-            self.web_view.page().runJavaScript(js_command)
-
-        except Exception as e:
-            gui_log_error("LidarScreen", f"Erro ao enviar vetor de pontos para o JavaScript: {e}")
-
-    def update_lidar_statistics(self, statistics: dict):
-        # (Placeholder)
-        pass
-    
-    def update_obstacle_detections(self, detections: dict):
-        # (Placeholder)
-        pass
+        """Vetor alterna distância em metros e ângulo em radianos no frame FLU."""
+        self.radar.set_points(point_vector)
 
     def update_ground_distance(self, distance: float):
-        """
-        Atualiza o indicador de distância inferior (LiDAR de altitude).
+        """Distância ao obstáculo abaixo, distinta da altitude no referencial PX4."""
+        self.radar.set_ground_distance(distance)
 
-        Args:
-            distance (float): Distância em metros até o solo/obstáculo abaixo do drone.
-                              Pode ser None ou NaN se não houver dados válidos.
-        """
-        if not self.is_page_loaded:
-            return
+    def update_lidar_statistics(self, statistics: dict):
+        """Compatibilidade: estatísticas visuais são derivadas do próprio scan."""
 
-        try:
-            # Trata valores inválidos
-            if distance is None or (isinstance(distance, float) and not distance == distance):  # NaN check
-                js_command = "dashboard_update_ground_distance(null);"
-            else:
-                js_command = f"dashboard_update_ground_distance({distance});"
-
-            self.web_view.page().runJavaScript(js_command)
-
-        except Exception as e:
-            gui_log_error("LidarScreen", f"Erro ao enviar distância inferior para o JavaScript: {e}")
+    def update_obstacle_detections(self, detections: dict):
+        """Flags legadas não substituem distâncias ou certificam espaço livre."""

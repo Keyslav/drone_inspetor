@@ -72,7 +72,10 @@ class BaseScreen:
         width, height = self.video_label.width(), self.video_label.height()
         if width <= 0 or height <= 0:
             width, height = self._target_size
-        self.video_label.setPixmap(self._fit(self._last_pixmap, width, height))
+        if hasattr(self.video_label, 'set_source_pixmap'):
+            self.video_label.set_source_pixmap(self._last_pixmap)
+        else:
+            self.video_label.setPixmap(self._fit(self._last_pixmap, width, height))
         self.update_expanded_windows(self._last_pixmap)
 
     def update_expanded_windows(self, pixmap):

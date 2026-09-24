@@ -39,6 +39,8 @@ class DetectionBuffer:
         deadline = requested_at + timeout
         target = object_name.casefold().strip()
         with self._condition:
+            # Uma troca de missão/modelo invalida também a consulta em espera.
+            # Ela não pode consumir, ao acordar, um resultado de outra configuração.
             generation = self._generation
             while not self._closed and generation == self._generation:
                 now = time.monotonic()
