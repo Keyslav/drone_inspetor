@@ -59,6 +59,26 @@ artefatos externos, ignorados pelo Git. O catálogo `models.json` descreve os ar
 esperados; instalar o pacote não baixa pesos automaticamente. Disponibilize os pesos
 antes de habilitar CV. Gazebo, PX4 SITL e Micro XRCE-DDS Agent são processos externos.
 
+### Atualização de um workspace existente para v2
+
+Trocar a branch não recompila as mensagens ROS. Atualize **os dois pacotes** na
+instalação que será usada para executar o dashboard, mesmo usando `--symlink-install`:
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/jazzy/setup.bash
+# Ative o mesmo ambiente Python preparado acima, se estiver usando venv.
+python3 -c 'import ruckig'  # deve estar instalado nesse Python
+colcon build --symlink-install --packages-select drone_inspetor_msgs drone_inspetor
+source install/setup.bash
+python3 -c 'from drone_inspetor_msgs.msg import DashboardMissionCommandMSG'
+ros2 launch drone_inspetor dashboard_launch.py
+```
+
+Se as bridges já estiverem rodando, acrescente `bridges:=false` ao launch para
+não duplicá-las. O launch verifica as interfaces e o Ruckig antes de iniciar os
+nós; um build isolado em outro diretório não atualiza `~/ros2_ws/install`.
+
 ## Execução por contexto
 
 Todos os launchers recebem o YAML de parâmetros e aceitam argumentos, sem precisar

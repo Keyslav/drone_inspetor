@@ -48,8 +48,10 @@ class ModelRegistry:
         entry = self._by_name.get(filename)
         if entry is None or entry['object_type'] != kind:
             raise ValueError(f'Modelo {filename!r} não cadastrado como {kind}')
-        path = (self.directory / filename).resolve()
-        if path.parent != self.directory or not path.is_file():
+        # O catálogo já exige basename. O colcon --symlink-install aponta os
+        # recursos de share para build/source; esse destino externo é válido.
+        path = self.directory / filename
+        if not path.is_file():
             raise FileNotFoundError(f'Arquivo do modelo não encontrado: {filename}')
         return path
 

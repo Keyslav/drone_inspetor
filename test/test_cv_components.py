@@ -97,6 +97,21 @@ def test_registry_validates_category_and_prevents_arbitrary_path(tmp_path):
     assert len(catalog.entries) == 4
 
 
+def test_registry_accepts_colcon_symlink_install(tmp_path):
+    build = tmp_path / 'build'
+    build.mkdir()
+    registry(build)
+    share = tmp_path / 'share'
+    share.mkdir()
+    for resource in build.iterdir():
+        (share / resource.name).symlink_to(resource)
+    installed = ModelRegistry(share)
+    assert installed.path('object.pt', 'equipment').samefile(build / 'object.pt')
+    (build / 'object.pt').unlink()
+    with pytest.raises(FileNotFoundError):
+        installed.path('object.pt', 'equipment')
+
+
 def test_failed_pair_replacement_preserves_both_models(tmp_path):
     def loader(path):
         if Path(path).name == 'failed.pt':

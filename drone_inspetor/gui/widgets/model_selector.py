@@ -298,7 +298,7 @@ class ModelSelector:
                     self._equipment_dropdown.setCurrentIndex(index)
                 self._equipment_dropdown.blockSignals(False)
             else:
-                gui_log_warn("CVScreen", "Dropdown Equipamentos não encontrado para atualização")
+                gui_log_debug("ModelSelector", "Catálogo de equipamentos armazenado antes de abrir a janela")
 
             # Atualiza Dropdown de Anomalias
             if self._anomaly_dropdown:
@@ -314,7 +314,7 @@ class ModelSelector:
                     self._anomaly_dropdown.setCurrentIndex(index)
                 self._anomaly_dropdown.blockSignals(False)
             else:
-                gui_log_warn("CVScreen", "Dropdown Anomalias não encontrado para atualização")
+                gui_log_debug("ModelSelector", "Catálogo de anomalias armazenado antes de abrir a janela")
 
         except Exception as e:
             gui_log_error("CVScreen", f"Erro ao atualizar modelos na GUI: {e}")
@@ -334,4 +334,3 @@ class ModelSelector:
                 QTimer.singleShot(1000, self.signals.models_requested.emit)
         else:
             gui_log_warn("CVScreen", "Signals não configurados - não foi possível enviar seleção")
-

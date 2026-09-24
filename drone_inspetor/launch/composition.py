@@ -2,11 +2,12 @@
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, Shutdown
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, Shutdown
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from .preflight import check_launch
 
 
 APPLICATION_NODES = ('camera', 'cv', 'depth', 'lidar', 'drone', 'mission', 'dashboard')
@@ -81,4 +82,8 @@ def create_launch(*, simulation=False, bridges=False, application=True):
         parameters=[{'use_sim_time': use_sim_time, 'qos': 'sensor_data'}],
         arguments=[topic for topic, _ in image_topics], remappings=remappings,
     ))
-    return LaunchDescription([*declarations, *nodes])
+    return LaunchDescription([
+        *declarations,
+        OpaqueFunction(function=check_launch, args=[APPLICATION_NODES]),
+        *nodes,
+    ])
