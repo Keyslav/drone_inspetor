@@ -9,19 +9,17 @@ os dados de imagem e análise processados pelo DashboardNode através de sinais 
 =================================================================================================
 """
 
-from PyQt6.QtWidgets import (QLabel, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QSizePolicy)
-from PyQt6.QtGui import QPixmap, QCursor
+from PyQt6.QtWidgets import QMenu
+from PyQt6.QtGui import QCursor, QShortcut, QKeySequence
 from PyQt6.QtCore import Qt
 from .widgets.screens import ExpandedWindow, BaseScreen
-from .widgets.images import ImageProcessor
+from .widgets.images import ImageProcessor, ResponsiveImageLabel
 from .widgets.model_selector import ModelSelector
 from .widgets.analysis_window import AnalysisWindow
-from .theme import COMMON_STYLES, IMAGE_QUALITY
+from .theme import COMMON_STYLES
 from .logging import gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
 from .presentation.detections import DetectionFrame, format_analysis_report
 from datetime import datetime
-import os
 
 class CVScreen(BaseScreen):
     """
@@ -45,7 +43,8 @@ class CVScreen(BaseScreen):
         
         # Armazena referência aos signals para publicação de comandos
         self.signals = signals
-        self.model_selector = ModelSelector(signals)
+        self.model_selector = ModelSelector(signals, video_label)
+        self._video_window = None
         
         # Instancia o ImageProcessor para converter mensagens de imagem ROS para formatos PyQt
         self.image_processor = ImageProcessor()
@@ -90,118 +89,45 @@ class CVScreen(BaseScreen):
             
             gui_log_info("CVScreen", "Display CV configurado")
     
-    def expand_screen(self, event=None):
-        """
-        Expande a tela em janela separada com dropdowns para seleção de modelos.
-        Sobrescreve o método da classe base para adicionar controles customizados.
-        
-        Args:
-            event: Evento de clique (opcional)
-        """
-        # Limpa janelas fechadas da lista
-        self.expanded_windows = [w for w in self.expanded_windows if w.isVisible()]
-        
-        # Se já existe uma janela expandida, apenas foca nela
-        if self.expanded_windows:
-            existing_window = self.expanded_windows[0]
-            existing_window.raise_()
-            existing_window.activateWindow()
-            gui_log_info("CVScreen", f"Focando janela existente de {self.screen_name}")
-            return
-        
-        gui_log_info("CVScreen", f"Expandindo {self.screen_name} com controles de modelo")
+    def show_model_selector(self, parent=None):
+        """Catálogo em janela própria; o vídeo ampliado continua visível."""
+        self.model_selector.open(parent or self.video_label.window())
 
-        # Solicita atualização dos modelos ao abrir
-        if hasattr(self.signals, 'models_requested'):
-            self.signals.models_requested.emit()
-        
-        
-        # Cria container principal
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
-        
-        # Área de controles (dropdowns de modelos)
-        controls_widget = self.model_selector.create_widget()
-        layout.addWidget(controls_widget)
-        
-        # Label para imagem expandida
-        self._expanded_label = QLabel()
-        self._expanded_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+    def expand_screen(self, event=None):
+        """A ampliação dedica toda a área à imagem original, sem formulários."""
+        if self._video_window is not None and self._video_window.isVisible():
+            self._video_window.raise_()
+            self._video_window.activateWindow()
+            return
+        self._expanded_label = ResponsiveImageLabel(f'Aguardando {self.screen_name}…')
         self._expanded_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._expanded_label.setStyleSheet(f"""
-            background-color: {COMMON_STYLES["dark_background"]}; 
-            color: {COMMON_STYLES["text_color"]}; 
-            border: 2px solid {COMMON_STYLES["border_color"]};
-            border-radius: 5px;
-            font-size: 20px;
-        """)
-        
-        # Copia conteúdo atual se disponível
-        if self.video_label and self.video_label.pixmap():
-            expanded_size = IMAGE_QUALITY["expanded_display_size"]
-            original_pixmap = self.video_label.pixmap()
-            self._expanded_label.setPixmap(original_pixmap.scaled(
-                expanded_size[0], expanded_size[1], 
-                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        else:
-            self._expanded_label.setText(f"Aguardando {self.screen_name}...")
-        
-        layout.addWidget(self._expanded_label, stretch=1)
-        
-        # Estilo do container
-        container.setStyleSheet(f"""
-            QWidget {{
-                background-color: {COMMON_STYLES["dark_background"]};
-            }}
-        """)
-        
-        # Cria janela expandida
-        window = ExpandedWindow(self.screen_name, container, None)
+        self._expanded_label.setStyleSheet('background: #090f1a; color: #93a4bb;')
+        if self._last_pixmap is not None:
+            self._expanded_label.set_source_pixmap(self._last_pixmap)
+        window = ExpandedWindow(self.screen_name, self._expanded_label)
+        self._video_window = window
         self.expanded_windows.append(window)
+        # Atalho e menu contextual permitem trocar a rede sem abandonar o vídeo.
+        shortcut = QShortcut(QKeySequence('Ctrl+R'), window)
+        shortcut.activated.connect(lambda: self.show_model_selector(window))
+        self._expanded_label.setToolTip('Botão direito ou Ctrl+R: selecionar redes CV')
+        self._expanded_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        def menu(position):
+            popup = QMenu(window)
+            popup.addAction('Selecionar redes CV…', lambda: self.show_model_selector(window))
+            popup.exec(self._expanded_label.mapToGlobal(position))
+        self._expanded_label.customContextMenuRequested.connect(menu)
         window.show()
 
     def update_expanded_windows(self, pixmap):
-        """
-        Atualiza a janela expandida customizada com novo conteúdo.
-        Sobrescreve o método base para atualizar o _expanded_label.
-        Implementa redimensionamento dinâmico.
-        
-        Args:
-            pixmap: QPixmap para exibir na janela expandida
-        """
-        if not self.expanded_windows:
-            return
-            
-        # Remove janelas fechadas da lista
-        self.expanded_windows = [w for w in self.expanded_windows if w.isVisible()]
-        
-        if not self.expanded_windows:
-            self._expanded_label = None
-            return
-        
-        try:
-            # Verifica se o label ainda é válido (não foi deletado pelo C++)
-            if self._expanded_label and self._expanded_label.isVisible():
-                # Use o tamanho atual do label para responsividade
-                target_size = self._expanded_label.size()
-                
-                # Se o tamanho for muito pequeno (ex: inicialização), usa o tamanho original da imagem
-                if target_size.width() < 10 or target_size.height() < 10:
-                    scaled_pixmap = pixmap
-                else:
-                    scaled_pixmap = pixmap.scaled(
-                        target_size, 
-                        Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                
-                self._expanded_label.setPixmap(scaled_pixmap)
-        except RuntimeError:
-            # Objeto já foi deletado
-            self._expanded_label = None
-        except Exception as e:
-            gui_log_warn(self.screen_name, f"Erro ao atualizar janela expandida: {e}")
-    
+        """A janela de análise não disputa a referência da janela de vídeo."""
+        if self._video_window is not None and self._video_window.isVisible():
+            self._expanded_label.set_source_pixmap(pixmap)
+
+    def close(self):
+        self.model_selector.close()
+        super().close()
+
     def update_processed_image(self, cv_image):
         """
         Atualiza a exibição com uma nova imagem processada por visão computacional.

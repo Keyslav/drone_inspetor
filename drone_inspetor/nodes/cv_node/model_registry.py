@@ -7,6 +7,12 @@ from pathlib import Path
 from threading import RLock
 
 
+def resolve_models_directory(configured, package_share):
+    """Pesos podem viver fora do build; vazio mantém instalações existentes."""
+    return (Path(configured).expanduser() if configured else
+            Path(package_share) / 'redes_treinadas').resolve()
+
+
 class ModelRegistry:
     """Mantém o catálogo do dashboard compatível com formatos plano e agrupado."""
 
@@ -36,7 +42,16 @@ class ModelRegistry:
     @property
     def entries(self):
         """Cópia do catálogo; a serialização não modifica o registro."""
-        return deepcopy(self._entries)
+        entries = deepcopy(self._entries)
+        for entry in entries:
+            path = self.directory / entry['file_name']
+            entry['storage_directory'] = str(self.directory)
+            try:
+                entry['available'] = path.is_file()
+                entry['size_bytes'] = path.stat().st_size if entry['available'] else None
+            except OSError:
+                entry['available'], entry['size_bytes'] = False, None
+        return entries
 
     def first(self, kind):
         """Primeiro modelo cadastrado de cada categoria."""

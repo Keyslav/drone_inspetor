@@ -103,6 +103,11 @@ class DashboardGUI(QWidget):
         subtitles = ('Imagem do sensor', 'Detecções e análise de equipamentos', 'Distância medida pela câmera', 'Posição global · altitude AMSL')
         for index, (title, subtitle) in enumerate(zip(titles, subtitles)):
             panel = Panel(title, subtitle, lambda _=False, i=index: self.expand_sensor(i))
+            if index == 1:
+                self.models_button = QPushButton('Redes CV')
+                self.models_button.setToolTip('Escolher redes de equipamentos e anomalias')
+                self.models_button.clicked.connect(lambda: self.cv_screen.show_model_selector())
+                panel.header.insertWidget(2, self.models_button)
             label = ResponsiveImageLabel('Aguardando imagem do sensor' if index != 3 else '')
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setMinimumSize(200, 150)
@@ -439,4 +444,3 @@ class DashboardGUI(QWidget):
         window = ExpandedWindow("Mapa GPS", expanded_map, None)
         self.expanded_windows.append(window)
         window.show()
-

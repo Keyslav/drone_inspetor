@@ -1,336 +1,243 @@
-"""Seleção de modelos e detalhes visuais, independentes da tela de vídeo."""
+"""Seleção de redes separada do vídeo; modelos ativos vêm da confirmação ROS."""
 
 import json
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QComboBox, QPushButton, QGroupBox
-from PyQt6.QtGui import QCursor
-from PyQt6.QtCore import Qt
-from ..theme import COMMON_STYLES
-from ..logging import gui_log_info, gui_log_error, gui_log_warn, gui_log_debug
+from PyQt6.QtCore import QObject, QTimer, Qt
+from PyQt6.QtWidgets import (
+    QComboBox, QDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QLineEdit, QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
+)
+from .cockpit import DASHBOARD_STYLE
+from ..logging import gui_log_error
+
 
 class ModelDetails(QGroupBox):
+    """Metadados do candidato; selecionar não significa que ele já está ativo."""
+
     def __init__(self, title):
-        """Cria um grupo estilizado para exibir detalhes do modelo."""
-        from PyQt6.QtWidgets import QGridLayout
-
         super().__init__(title)
-        group = self
-        group.setStyleSheet(f"""
-            QGroupBox {{
-                color: {COMMON_STYLES["text_color"]};
-                font-weight: bold;
-                border: 1px solid #555555;
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 15px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-                background-color: {COMMON_STYLES["dark_background"]};
-            }}
-        """)
+        layout = QFormLayout(self)
+        layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.field_labels = {}
+        for key, caption in (
+            ('name', 'Nome'), ('file_name', 'Arquivo'), ('availability', 'Disponibilidade'),
+            ('model', 'Arquitetura'), ('type', 'Tarefa'), ('dataset', 'Dataset'),
+            ('classes', 'Classes'), ('validation_warning', 'Observações'),
+            ('storage_directory', 'Pasta dos pesos'),
+        ):
+            value = QLabel('—')
+            value.setWordWrap(True)
+            value.setMinimumWidth(0)
+            value.setTextFormat(Qt.TextFormat.PlainText)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addRow(caption, value)
+            self.field_labels[key] = value
 
-        layout = QGridLayout(group)
-        layout.setContentsMargins(10, 15, 10, 10)
-        layout.setSpacing(5)
+    def set_model(self, model):
+        values = dict(model)
+        available = model.get('available')
+        values['availability'] = ('Arquivo disponível' if available is True else
+                                  'Arquivo ausente' if available is False else 'Não informada')
+        if available and model.get('size_bytes') is not None:
+            values['availability'] += f" · {model['size_bytes'] / 1024**2:.1f} MiB"
+        for key, label in self.field_labels.items():
+            value = values.get(key) or '—'
+            if isinstance(value, list):
+                value = ', '.join(map(str, value))
+            label.setText(str(value))
 
-        # Labels estáticos e dinâmicos (armazenados em dict no objeto group para acesso fácil)
-        group.field_labels = {}
-        fields = [
-            ("Name", "name"),
-            ("Dataset", "dataset"),
-            ("Classes", "classes"),
-            ("Model", "model"),
-            ("File", "file_name"),
-            ("Type", "type")
-        ]
 
-        for i, (display_name, key) in enumerate(fields):
-            lbl_key = QLabel(f"{display_name}:")
-            lbl_key.setStyleSheet("color: #aaaaaa; font-weight: bold; font-size: 11px;")
+class ModelSelector(QObject):
+    """Mantém catálogo, rascunho e modelos ativos como estados distintos."""
 
-            lbl_val = QLabel("-")
-            lbl_val.setStyleSheet("color: #ffffff; font-size: 11px;")
-            lbl_val.setWordWrap(True)
-
-            layout.addWidget(lbl_key, i, 0)
-            layout.addWidget(lbl_val, i, 1)
-
-            group.field_labels[key] = lbl_val
-
-    def set_model(self, model_data):
-        """Atualiza os labels de um grupo de detalhes com os dados do modelo."""
-        group = self
-        if not model_data:
-            return
-
-        for key, label_widget in group.field_labels.items():
-            val = model_data.get(key, "-")
-            if isinstance(val, list):
-                val = ", ".join(val)
-            label_widget.setText(str(val))
-
-class ModelSelector:
-    """Possui catálogo, seleção e widgets; transmite escolhas pelos sinais existentes."""
-
-    def __init__(self, signals):
+    def __init__(self, signals, parent=None):
+        super().__init__(parent)
         self.signals = signals
-        self._equipment_models = []
-        self._anomaly_models = []
-        self._selected_equipment_model = ''
-        self._selected_anomaly_model = ''
-        self._equipment_dropdown = None
-        self._anomaly_dropdown = None
-        self.equip_details_group = None
-        self.anom_details_group = None
-        if hasattr(signals, 'models_received'):
-            signals.models_received.connect(self.update_models)
+        self.dialog = None
+        self.models = {'equipment': [], 'anomaly': []}
+        self.active = ('', '')
+        self.selected = ['', '']
+        self.pending = None
+        self._polls = 0
+        self._dirty = False
+        self.dropdowns, self.details, self.filters = {}, {}, {}
+        self.timer = QTimer(self)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self._poll_confirmation)
+        signals.models_received.connect(self.update_models)
 
-    def create_widget(self):
-        """
-        Cria widget com dropdowns para seleção de modelos de detecção e exibição detalhada.
-        Layout: 3 Colunas (Detalhes Equip, Detalhes Anom, Seleção/Controles)
+    def open(self, parent=None):
+        if self.dialog is None:
+            self._create_dialog(parent)
+        if not self.dialog.isVisible() and self.pending is None:
+            self.selected = list(self.active)
+            self._dirty = False
+            self._refresh_lists()
+        self.dialog.show()
+        self.dialog.raise_()
+        self.dialog.activateWindow()
+        self.signals.models_requested.emit()
 
-        Returns:
-            QWidget: Widget contendo os controles de seleção de modelos.
-        """
-        controls = QWidget()
-        main_layout = QHBoxLayout(controls)
-        main_layout.setContentsMargins(5, 5, 5, 5)
-        main_layout.setSpacing(15)
+    def _create_dialog(self, parent):
+        self.dialog = QDialog(parent)
+        self.dialog.setWindowTitle('Redes de visão computacional')
+        self.dialog.resize(700, 650)
+        self.dialog.setMinimumSize(460, 400)
+        self.dialog.setStyleSheet(DASHBOARD_STYLE + '''
+            QComboBox, QLineEdit { background: #111c2e; color: #e6edf5;
+                border: 1px solid #30425b; border-radius: 6px; padding: 8px; }
+            QGroupBox { border: 1px solid #26354b; border-radius: 8px;
+                margin-top: 12px; padding-top: 15px; }
+            QTabBar::tab { padding: 10px 18px; background: #111c2e; }
+            QTabBar::tab:selected { color: #4de0c1; border-bottom: 2px solid #4de0c1; }
+            QPushButton:disabled, QPushButton#primary:disabled {
+                color: #68768a; background: #17263c; }
+        ''')
+        layout = QVBoxLayout(self.dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        heading = QLabel('Selecionar redes CV')
+        heading.setObjectName('heading')
+        layout.addWidget(heading)
+        self.active_label = QLabel()
+        self.active_label.setWordWrap(True)
+        self.active_label.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.active_label)
+        tabs = QTabWidget()
+        for kind, caption in (('equipment', 'Equipamentos'), ('anomaly', 'Anomalias')):
+            page = QWidget()
+            body = QVBoxLayout(page)
+            search = QLineEdit()
+            search.setPlaceholderText('Filtrar por nome, arquivo ou classe…')
+            combo = QComboBox()
+            combo.setMinimumWidth(0)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(16)
+            details = ModelDetails('Modelo selecionado')
+            self.filters[kind], self.dropdowns[kind], self.details[kind] = search, combo, details
+            body.addWidget(search)
+            body.addWidget(combo)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(details)
+            body.addWidget(scroll, 1)
+            tabs.addTab(page, caption)
+            search.textChanged.connect(lambda _, k=kind: self._populate(k))
+            combo.currentIndexChanged.connect(lambda _, k=kind: self._selected(k))
+        layout.addWidget(tabs, 1)
+        self.status = QLabel('Aguardando catálogo do nó CV…')
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        buttons = QHBoxLayout()
+        refresh = QPushButton('Atualizar catálogo')
+        refresh.clicked.connect(self.signals.models_requested.emit)
+        buttons.addWidget(refresh)
+        buttons.addStretch()
+        self.apply_button = QPushButton('Aplicar seleção')
+        self.apply_button.setObjectName('primary')
+        self.apply_button.clicked.connect(self.apply)
+        buttons.addWidget(self.apply_button)
+        close = QPushButton('Fechar')
+        close.clicked.connect(self.dialog.close)
+        buttons.addWidget(close)
+        layout.addLayout(buttons)
+        self._refresh_lists()
 
-        # Estilo comum para labels
-        label_style = f"""
-            color: {COMMON_STYLES["text_color"]};
-            font-weight: bold;
-            font-size: 12px;
-        """
+    def _populate(self, kind):
+        index = 0 if kind == 'equipment' else 1
+        combo = self.dropdowns[kind]
+        query = self.filters[kind].text().casefold()
+        combo.blockSignals(True)
+        combo.clear()
+        for model in self.models[kind]:
+            if query and query not in str(model).casefold():
+                continue
+            missing = model.get('available') is False
+            combo.addItem(model.get('name', model['file_name']) + (' · arquivo ausente' if missing else ''), model['file_name'])
+            if missing:
+                combo.model().item(combo.count() - 1).setEnabled(False)
+        combo.setCurrentIndex(combo.findData(self.selected[index]))
+        combo.blockSignals(False)
+        self._update_details(kind)
+        self._update_apply()
 
-        # Estilo comum para dropdowns
-        dropdown_style = f"""
-            QComboBox {{
-                background-color: #2b2b2b;
-                color: #ffffff;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 5px;
-                font-size: 11px;
-            }}
-            QComboBox::drop-down {{
-                border: none;
-                width: 20px;
-            }}
-        """
+    def _selected(self, kind):
+        index = 0 if kind == 'equipment' else 1
+        self.selected[index] = self.dropdowns[kind].currentData() or ''
+        self._dirty = True
+        self._update_details(kind)
+        self._update_apply()
 
-        # --- Coluna 1: Detalhes Equipamento ---
-        self.equip_details_group = ModelDetails("Equipamento Ativo")
-        main_layout.addWidget(self.equip_details_group, stretch=1)
+    def _update_details(self, kind):
+        filename = self.dropdowns[kind].currentData()
+        model = next((m for m in self.models[kind] if m['file_name'] == filename), {})
+        self.details[kind].set_model(model)
 
-        # --- Coluna 2: Detalhes Anomalia ---
-        self.anom_details_group = ModelDetails("Anomalia Ativa")
-        main_layout.addWidget(self.anom_details_group, stretch=1)
+    def _refresh_lists(self):
+        if self.dialog is None:
+            return
+        self.active_label.setText(f'Em uso · Equipamentos: {self.active[0] or "nenhum"}\n'
+                                  f'Anomalias: {self.active[1] or "nenhum"}')
+        for kind in self.models:
+            self._populate(kind)
 
-        # --- Coluna 3: Seleção e Controles ---
-        selection_group = QGroupBox("Selecionar Modelos")
-        selection_group.setStyleSheet(f"""
-            QGroupBox {{
-                color: {COMMON_STYLES["text_color"]};
-                font-weight: bold;
-                border: 1px solid #555555;
-                border-radius: 5px;
-                margin-top: 10px;
-                padding-top: 15px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
-                background-color: {COMMON_STYLES["dark_background"]};
-            }}
-        """)
-
-        selection_layout = QVBoxLayout(selection_group)
-        selection_layout.setContentsMargins(10, 15, 10, 10)
-        selection_layout.setSpacing(10)
-
-        # Label Equipamento
-        equip_label = QLabel("Selecionar Modelo de Equipamento:")
-        equip_label.setStyleSheet(label_style)
-        selection_layout.addWidget(equip_label)
-
-        # Dropdown Equipamento
-        self._equipment_dropdown = QComboBox()
-        self._equipment_dropdown.setStyleSheet(dropdown_style)
-        self._equipment_dropdown.currentIndexChanged.connect(self._on_equipment_model_changed)
-        selection_layout.addWidget(self._equipment_dropdown)
-
-        # Popular dropdown de equipamentos se já houver dados
-        if self._equipment_models:
-            self._equipment_dropdown.blockSignals(True)
-            for m in self._equipment_models:
-                self._equipment_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
-
-            # Tenta selecionar o modelo atual
-            if self._selected_equipment_model:
-                idx = self._equipment_dropdown.findData(self._selected_equipment_model)
-                if idx >= 0:
-                    self._equipment_dropdown.setCurrentIndex(idx)
-            self._equipment_dropdown.blockSignals(False)
-
-        # Spacer pequeno
-        selection_layout.addSpacing(5)
-
-        # Label Anomalia
-        anom_label = QLabel("Selecionar Modelo de Anomalia:")
-        anom_label.setStyleSheet(label_style)
-        selection_layout.addWidget(anom_label)
-
-        # Dropdown Anomalia
-        self._anomaly_dropdown = QComboBox()
-        self._anomaly_dropdown.setStyleSheet(dropdown_style)
-        self._anomaly_dropdown.currentIndexChanged.connect(self._on_anomaly_model_changed)
-        selection_layout.addWidget(self._anomaly_dropdown)
-
-        # Popular dropdown de anomalias se já houver dados
-        if self._anomaly_models:
-            self._anomaly_dropdown.blockSignals(True)
-            for m in self._anomaly_models:
-                self._anomaly_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
-
-            # Tenta selecionar o modelo atual
-            if self._selected_anomaly_model:
-                idx = self._anomaly_dropdown.findData(self._selected_anomaly_model)
-                if idx >= 0:
-                    self._anomaly_dropdown.setCurrentIndex(idx)
-            self._anomaly_dropdown.blockSignals(False)
-
-        # Spacer expansível para empurrar o botão para baixo (opcional, mas bom pra alinhar)
-        selection_layout.addStretch()
-
-        # Botão Aplicar
-        apply_button = QPushButton("APLICAR NOVOS MODELOS")
-        apply_button.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
-        apply_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {COMMON_STYLES["success_color"]};
-                color: white;
-                border: 1px solid #1e8449;
-                padding: 12px 20px;
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 13px;
-            }}
-            QPushButton:hover {{
-                background-color: #2ecc71;
-                border: 1px solid #27ae60;
-            }}
-            QPushButton:pressed {{
-                background-color: #196f3d;
-            }}
-        """)
-        apply_button.clicked.connect(self._apply_model_selection)
-        selection_layout.addWidget(apply_button)
-
-        # Adiciona grupo de seleção ao layout principal
-        main_layout.addWidget(selection_group, stretch=1)
-
-        self.equip_details_group.set_model(next((m for m in self._equipment_models if m.get('file_name') == self._selected_equipment_model), {}))
-        self.anom_details_group.set_model(next((m for m in self._anomaly_models if m.get('file_name') == self._selected_anomaly_model), {}))
-        return controls
-
-    def _on_equipment_model_changed(self, index):
-        """Callback quando o modelo de equipamentos é alterado."""
-        if self._equipment_dropdown and index >= 0:
-            self._selected_equipment_model = self._equipment_dropdown.currentData()
-            gui_log_info("CVScreen", f"Modelo de equipamentos selecionado: {self._selected_equipment_model}")
-
-    def _on_anomaly_model_changed(self, index):
-        """Callback quando o modelo de anomalias é alterado."""
-        if self._anomaly_dropdown and index >= 0:
-            self._selected_anomaly_model = self._anomaly_dropdown.currentData()
-            gui_log_info("CVScreen", f"Modelo de anomalias selecionado: {self._selected_anomaly_model}")
+    def _update_apply(self):
+        if not hasattr(self, 'apply_button'):
+            return
+        pair = tuple(self.dropdowns[k].currentData() or '' for k in self.models)
+        changed = any(name and name != current for name, current in zip(pair, self.active))
+        valid = all(not name or any(m['file_name'] == name and m.get('available') is not False
+                                   for m in self.models[kind])
+                    for kind, name in zip(self.models, pair))
+        self.apply_button.setEnabled(changed and valid and self.pending is None)
 
     def update_models(self, data):
-        """
-        Recebe a lista de modelos disponíveis e atuais do ROS.
-        Atualiza a interface gráfica.
-        """
         try:
-            models_json_str = data.get('models_data_json', '[]')
-            all_models = json.loads(models_json_str)
+            entries = json.loads(data.get('models_data_json', '[]'))
+            if not isinstance(entries, list) or not all(isinstance(m, dict) and m.get('file_name') for m in entries):
+                raise ValueError('Formato de catálogo inválido')
+        except (ValueError, TypeError) as error:
+            gui_log_error('ModelSelector', str(error))
+            if self.dialog:
+                self.status.setText('Não foi possível ler o catálogo. Tente atualizar.')
+            return
+        self.models = {kind: [m for m in entries if m.get('object_type') == kind] for kind in self.models}
+        self.active = (data.get('current_object_model', ''), data.get('current_anomaly_model', ''))
+        confirmed = self.pending is not None and self.pending == self.active
+        if confirmed:
+            self.pending = None
+            self.timer.stop()
+            self._dirty = False
+        if not self._dirty:
+            self.selected = list(self.active)
+        if self.dialog:
+            if confirmed:
+                self.status.setText('Redes ativas confirmadas pelo nó CV.')
+            elif self.pending is None:
+                self.status.setText('Selecione os modelos e aplique. Fechar não altera as redes em uso.')
+            self._refresh_lists()
 
-            # Filtra modelos por tipo
-            self._equipment_models = [m for m in all_models if m.get("object_type") == "equipment"]
-            self._anomaly_models = [m for m in all_models if m.get("object_type") == "anomaly"]
+    def apply(self):
+        if not self.apply_button.isEnabled():
+            return
+        pair = tuple(self.dropdowns[k].currentData() or '' for k in self.models)
+        # Campo vazio preserva o modelo da categoria no protocolo atual.
+        self.pending = tuple(name or current for name, current in zip(pair, self.active))
+        self._polls = 0
+        self.status.setText('Seleção enviada. Aguardando confirmação do nó CV…')
+        self.signals.send_model_selection(*pair)
+        self._update_apply()
+        if self.pending is not None:
+            self.timer.start()
 
-            curr_obj = data.get('current_object_model', '')
-            curr_anom = data.get('current_anomaly_model', '')
+    def _poll_confirmation(self):
+        self._polls += 1
+        if self._polls >= 15:
+            self.timer.stop()
+            self.pending = None
+            self.status.setText('Troca ainda não confirmada. Atualize o catálogo e consulte os logs do nó CV.')
+            self._update_apply()
+        self.signals.models_requested.emit()
 
-            self._selected_equipment_model = curr_obj
-            self._selected_anomaly_model = curr_anom
-
-            gui_log_info("CVScreen", f"Modelos recebidos via serviço: {len(self._equipment_models)} equip, {len(self._anomaly_models)} anom")
-            gui_log_info("CVScreen", f"Modelos atuais: {curr_obj} obj, {curr_anom} anom")
-
-            # --- Atualiza displays de detalhes ---
-            # Encontra os objetos completos dos modelos atuais
-            curr_obj_data = next((m for m in self._equipment_models if m["file_name"] == curr_obj), {})
-            curr_anom_data = next((m for m in self._anomaly_models if m["file_name"] == curr_anom), {})
-
-            if self.equip_details_group is not None:
-                self.equip_details_group.set_model(curr_obj_data)
-            if self.anom_details_group is not None:
-                self.anom_details_group.set_model(curr_anom_data)
-
-            # --- Atualiza Dropdowns ---
-            if self._equipment_dropdown:
-                gui_log_debug("CVScreen", f"Atualizando Dropdown Equipamentos com {len(self._equipment_models)} itens")
-                self._equipment_dropdown.blockSignals(True)
-                self._equipment_dropdown.clear()
-                for m in self._equipment_models:
-                    # Usa 'name' para exibição e 'file_name' como dado
-                    self._equipment_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
-
-                # Seleciona o atual
-                index = self._equipment_dropdown.findData(curr_obj)
-                if index >= 0:
-                    self._equipment_dropdown.setCurrentIndex(index)
-                self._equipment_dropdown.blockSignals(False)
-            else:
-                gui_log_debug("ModelSelector", "Catálogo de equipamentos armazenado antes de abrir a janela")
-
-            # Atualiza Dropdown de Anomalias
-            if self._anomaly_dropdown:
-                gui_log_debug("CVScreen", f"Atualizando Dropdown Anomalias com {len(self._anomaly_models)} itens")
-                self._anomaly_dropdown.blockSignals(True)
-                self._anomaly_dropdown.clear()
-                for m in self._anomaly_models:
-                    self._anomaly_dropdown.addItem(m.get("name", "Unknown"), m.get("file_name", ""))
-
-                # Seleciona o atual
-                index = self._anomaly_dropdown.findData(curr_anom)
-                if index >= 0:
-                    self._anomaly_dropdown.setCurrentIndex(index)
-                self._anomaly_dropdown.blockSignals(False)
-            else:
-                gui_log_debug("ModelSelector", "Catálogo de anomalias armazenado antes de abrir a janela")
-
-        except Exception as e:
-            gui_log_error("CVScreen", f"Erro ao atualizar modelos na GUI: {e}")
-            import traceback
-            traceback.print_exc()
-
-    def _apply_model_selection(self):
-        """Aplica a seleção de modelos e envia para o cv_node via signal."""
-        gui_log_info("CVScreen", f"Aplicando modelos: equip={self._selected_equipment_model}, anom={self._selected_anomaly_model}")
-
-        if self.signals:
-            self.signals.send_model_selection(self._selected_equipment_model, self._selected_anomaly_model)
-
-            # Solicita atualização da tela após um breve delay para dar tempo do nó processar
-            if hasattr(self.signals, 'models_requested'):
-                from PyQt6.QtCore import QTimer
-                QTimer.singleShot(1000, self.signals.models_requested.emit)
-        else:
-            gui_log_warn("CVScreen", "Signals não configurados - não foi possível enviar seleção")
+    def close(self):
+        self.timer.stop()
+        if self.dialog:
+            self.dialog.close()

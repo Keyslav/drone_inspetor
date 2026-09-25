@@ -60,6 +60,9 @@ mission_node:
 # =================================================================================================
 cv_node:
   ros__parameters:
+    # Pasta com models.json e pesos .pt no computador do nó CV.
+    # Vazio usa share/drone_inspetor/redes_treinadas (compatibilidade).
+    models_directory: ""
     # Intervalos e confiança
     detection_max_frame_age_seconds: 1.0
     inference_device: "auto"

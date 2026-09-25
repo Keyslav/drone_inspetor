@@ -59,6 +59,10 @@ artefatos externos, ignorados pelo Git. O catálogo `models.json` descreve os ar
 esperados; instalar o pacote não baixa pesos automaticamente. Disponibilize os pesos
 antes de habilitar CV. Gazebo, PX4 SITL e Micro XRCE-DDS Agent são processos externos.
 
+Use **Redes CV** para escolher equipamentos/anomalias em um popup independente.
+A imagem ampliada fica dedicada ao vídeo. O parâmetro `models_directory` permite
+armazenar pesos fora do build; veja [seleção e armazenamento de redes](docs/MODELOS_CV.md).
+
 ### Atualização de um workspace existente para v2
 
 Trocar a branch não recompila as mensagens ROS. Atualize **os dois pacotes** na

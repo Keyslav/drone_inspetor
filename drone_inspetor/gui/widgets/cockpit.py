@@ -35,6 +35,7 @@ class Panel(QFrame):
         self.body.setContentsMargins(12, 10, 12, 12)
         self.body.setSpacing(8)
         header = QHBoxLayout()
+        self.header = header
         self.title = QLabel(title)
         self.title.setObjectName('panelTitle')
         header.addWidget(self.title)

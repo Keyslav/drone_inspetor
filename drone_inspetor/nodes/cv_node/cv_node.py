@@ -24,7 +24,9 @@ from drone_inspetor.media.photos import filename_component, save_photo
 from drone_inspetor.media.recorder import VideoRecorder
 from drone_inspetor.nodes.cv_node.detection_buffer import DetectionBuffer
 from drone_inspetor.nodes.cv_node.inference import DetectionPipeline, InferenceOptions
-from drone_inspetor.nodes.cv_node.model_registry import ModelManager, ModelRegistry
+from drone_inspetor.nodes.cv_node.model_registry import (
+    ModelManager, ModelRegistry, resolve_models_directory,
+)
 from drone_inspetor.ros_interfaces import (
     Topics, create_publisher_from, create_service_from, create_subscription_from,
 )
@@ -128,7 +130,9 @@ class CVNode(Node):
         """Carrega cada categoria; indisponibilidade de anomalias não impede objetos."""
         try:
             from ultralytics import YOLO
-            directory = Path(get_package_share_directory('drone_inspetor')) / 'redes_treinadas'
+            directory = resolve_models_directory(
+                load_param(self, 'models_directory', ''),
+                get_package_share_directory('drone_inspetor'))
             self._registry = ModelRegistry(directory)
             self._models = ModelManager(self._registry, YOLO)
             self._pipeline = DetectionPipeline(self._models)

@@ -95,12 +95,15 @@ def test_model_selection_persists_when_expanded_window_reopens(qt_app):
                             '"object_type":"anomaly","name":"Anomalia"}]',
         'current_object_model': 'equip.pt', 'current_anomaly_model': 'anom.pt',
     })
+    screen.show_model_selector()
+    assert screen.model_selector.active == ('equip.pt', 'anom.pt')
+    assert screen.model_selector.details['equipment'].field_labels['name'].text() == 'Equipamento'
+    screen.model_selector.dialog.close()
     screen.expand_screen()
-    assert screen.model_selector._selected_equipment_model == 'equip.pt'
-    assert screen.model_selector._selected_anomaly_model == 'anom.pt'
-    assert screen.model_selector.equip_details_group.field_labels['name'].text() == 'Equipamento'
-    screen.close()
-    screen.expand_screen()
-    assert screen.model_selector._equipment_dropdown.currentData() == 'equip.pt'
-    assert screen.model_selector._anomaly_dropdown.currentData() == 'anom.pt'
+    assert screen._video_window.centralWidget() is screen._expanded_label
+    from PyQt6.QtWidgets import QComboBox
+    assert not screen._video_window.findChildren(QComboBox)
+    screen.show_model_selector()
+    assert screen.model_selector.dropdowns['equipment'].currentData() == 'equip.pt'
+    assert screen.model_selector.dropdowns['anomaly'].currentData() == 'anom.pt'
     screen.close()
