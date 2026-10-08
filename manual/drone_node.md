@@ -1,5 +1,10 @@
 # drone_node.py — Manual de Inicialização
 
+> **Manual histórico:** descreve uma organização anterior à refatoração v2,
+> incluindo o antigo perfil trapezoidal. Não é a receita atual para iniciar o
+> projeto. Use o [guia de execução](../docs/EXECUCAO.md) para operação e o
+> [guia de leitura do código](../docs/GUIA_LEITURA_CODIGO.md) para a arquitetura atual.
+
 > **Papel no sistema:** Interface exclusiva com a controladora de voo PX4. Traduz comandos de alto nível da FSM em mensagens PX4 e republica telemetria simplificada para o restante do sistema. Não contém lógica de missão.
 
 ---

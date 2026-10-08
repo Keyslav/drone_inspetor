@@ -1,5 +1,9 @@
 # Catálogo, armazenamento e seleção de redes CV
 
+Referência para preparar os pesos e configurar a seleção de redes. O ambiente
+Python/build está no [README](../README.md); os modos e launchs ficam em
+[EXECUCAO.md](EXECUCAO.md).
+
 ## Interface
 
 O botão **Redes CV** está no cabeçalho do painel de visão computacional.
@@ -39,6 +43,12 @@ Depois de preparar a pasta com catálogo e pesos:
 ```bash
 ros2 launch drone_inspetor dashboard_launch.py params_file:=$HOME/cv-models.yaml
 ```
+
+Esse exemplo inicia a aplicação completa para uma simulação externa já aberta;
+adicione `bridges:=false` se as bridges já existirem. Para o companion, use
+`drone_inspetor_launch.py` com `with_dashboard:=false` e o mesmo `params_file`.
+GUI/CLI de partida ainda não oferecem seleção de `params_file`; para esse ajuste,
+use o launch direto. A pasta de pesos é resolvida na máquina do nó CV.
 
 O trecho acima não é o arquivo completo: `params_file` substitui a configuração
 geral, por isso a cópia deve manter os ajustes de navegação e percepção.

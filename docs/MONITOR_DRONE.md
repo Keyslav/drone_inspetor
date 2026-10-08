@@ -1,5 +1,9 @@
 # Monitor do drone
 
+Guia da janela de telemetria: como acessá-la e interpretar seus dados. Para
+iniciar os produtores de tópicos e escolher um perfil, consulte
+[EXECUCAO.md](EXECUCAO.md); montagem e build ficam no [README](../README.md).
+
 Na tela inicial do dashboard, clique em **Monitor do drone** ou pressione
 **Ctrl+M**. A janela pode ficar em outro monitor; fechar e reabrir conserva a
 seleção do tópico e o filtro. Fechar o dashboard também fecha essa janela.
@@ -9,6 +13,15 @@ Para abrir somente o monitor, após compilar e carregar o workspace:
 ```bash
 ros2 run drone_inspetor monitor_node
 ```
+
+Para escolher explicitamente o relógio ROS ao acompanhar uma simulação:
+
+```bash
+ros2 run drone_inspetor monitor_node --ros-args -p use_sim_time:=true
+```
+
+Isso não inicia `/clock`. A idade e frequência mostradas na tela continuam
+baseadas na recepção monotônica local, conforme explicado abaixo.
 
 O executável inicia apenas a interface e as assinaturas de telemetria. Não
 inicia drone_node, mission_node, câmeras, simulador nem publica comandos de voo.

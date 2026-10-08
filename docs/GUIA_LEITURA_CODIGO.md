@@ -3,12 +3,15 @@
 Este mapa indica onde investigar cada comportamento. Comentários no código
 explicam decisões e contratos; parâmetros e regras executáveis continuam sendo
 a fonte de verdade. Os caminhos abaixo são relativos à raiz de `drone_inspetor`.
+Para comandos de uso, veja [EXECUCAO.md](EXECUCAO.md); este arquivo é um mapa
+para manutenção do código, não uma receita de instalação.
 
 ## Comece pelo fluxo que deseja entender
 
 | Pergunta | Ponto de entrada e sequência |
 | --- | --- |
-| Como os nós são iniciados? | `drone_inspetor/launch/dashboard_launch.py` → arquivos de configuração carregados pelo launch → `setup.py` para executáveis e recursos instalados. |
+| Como escolho o modo pela tela ou terminal? | `drone_inspetor/gui/startup_window.py` e `drone_inspetor/startup/cli.py` → `startup/controller.py` compartilha perfis, subprocessos, logs e diagnóstico. |
+| Como os nós são iniciados? | `drone_inspetor/launch/*_launch.py` → `launch/composition.py` e `launch/preflight.py` → YAML de parâmetros; `setup.py` registra executáveis e recursos instalados. |
 | Onde estão nomes de tópicos e QoS? | `drone_inspetor/ros_interfaces/`: `external.py` para sensores, `px4.py` para autopiloto, `internal.py` para dados da aplicação; `specs.py` e `helpers.py` constroem interfaces. |
 | O que acontece ao iniciar uma missão? | `nodes/mission_node/mission_node.py` valida o comando, resolve a definição pelo repositório, cria a pasta da sessão e inicia o diário. `fsm/mission/machine.py` é a autoridade do estado. |
 | Quem envia e confirma cada manobra? | `nodes/mission_node/action_client.py` cria uma operação identificada. `nodes/drone_node/action_server.py` reserva o comando, despacha e confirma o resultado por telemetria. |

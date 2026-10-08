@@ -1,7 +1,14 @@
 # Drone Inspetor — v2.0
 
-Ambiente local de simulação: [referência inicial do X500 UERJ](INIT_SIMULACAO.md)
-(caminhos, comandos, massas, motores e inconsistências conhecidas).
+Este é o guia de **montagem do ambiente, dependências e compilação**. Revisão
+operacional da documentação: **28/09/2026**; os resultados de testes têm datas próprias.
+
+Ordem de leitura: **este README → [execução diária](docs/EXECUCAO.md)**.
+Para o Gazebo local, consulte também [INIT_SIMULACAO.md](INIT_SIMULACAO.md).
+O [índice de documentação](docs/README.md) explica para que serve cada arquivo.
+
+Novos componentes: [dashboard móvel/Android e navegador, com WebRTC/JPEG](docs/ANDROID.md) e
+[copiloto Jev/LLM/voz](docs/COPILOTO.md) e [ponte MCP](docs/MCP_DRONE.md).
 
 Aplicação ROS 2 para inspeção com PX4, processamento de sensores e dashboard PyQt6.
 Os pacotes `drone_inspetor` e `drone_inspetor_msgs` devem usar **a mesma linha v2.0**.
@@ -72,65 +79,43 @@ instalação que será usada para executar o dashboard, mesmo usando `--symlink-
 cd ~/ros2_ws
 source /opt/ros/jazzy/setup.bash
 # Ative o mesmo ambiente Python preparado acima, se estiver usando venv.
-python3 -c 'import ruckig'  # deve estar instalado nesse Python
-colcon build --symlink-install --packages-select drone_inspetor_msgs drone_inspetor
+python -c 'import ruckig'  # deve estar instalado nesse Python
+python -m colcon build --symlink-install --packages-select drone_inspetor_msgs drone_inspetor
 source install/setup.bash
-python3 -c 'from drone_inspetor_msgs.msg import DashboardMissionCommandMSG'
-ros2 launch drone_inspetor dashboard_launch.py
+python -c 'from drone_inspetor_msgs.msg import DashboardMissionCommandMSG'
+ros2 pkg executables drone_inspetor
+ros2 run drone_inspetor drone_inspetor_start_gui
 ```
 
-Se as bridges já estiverem rodando, acrescente `bridges:=false` ao launch para
-não duplicá-las. O launch verifica as interfaces e o Ruckig antes de iniciar os
-nós; um build isolado em outro diretório não atualiza `~/ros2_ws/install`.
+Recompile `drone_inspetor` também quando mudar `setup.py` ou adicionar executáveis:
+`--symlink-install` não gera novos comandos sozinho. A lista deve incluir
+`drone_inspetor_start` e `drone_inspetor_start_gui`. Verifique a instalação ativa com
+`ros2 pkg prefix drone_inspetor`; um build isolado não atualiza `~/ros2_ws/install`.
 
-## Execução por contexto
+## Começar a execução
 
-O dashboard possui resumo de telemetria, painéis adaptáveis e radar Qt nativo.
-Veja [layout, radar e responsividade](docs/DASHBOARD_V2.md) e o
-[guia de leitura do código](docs/GUIA_LEITURA_CODIGO.md).
-
-Cada missão grava automaticamente `events.jsonl` em sua pasta de sessão
-(por padrão, `~/Drone_Inspetor_Missoes/mission_.../`). O diário reúne estados,
-telemetria resumida, comandos/resultados e logs de drone/mission/CV. Veja
-[diagnóstico da Flare e formato do diário](docs/DIAGNOSTICO_MISSAO_FLARE.md).
-
-Todos os launchers recebem o YAML de parâmetros e aceitam argumentos, sem precisar
-comentar nós no código:
+Após carregar o ambiente, escolha **um** dos acessos:
 
 ```bash
-# Aplicação completa, relógio real, sensores ROS externos (sem bridges Gazebo)
-ros2 launch drone_inspetor drone_inspetor_launch.py
+# Tela de inicialização
+ros2 run drone_inspetor drone_inspetor_start_gui
 
-# Aplicação completa + dashboard e bridges de uma simulação já iniciada
-ros2 launch drone_inspetor dashboard_launch.py
-
-# Somente bridges para uma simulação já iniciada
-ros2 launch drone_inspetor simulation_launch.py
-
-# Exemplo headless sem inferência
-ros2 launch drone_inspetor dashboard_launch.py with_dashboard:=false with_cv:=false
-
-# Catálogo customizado compartilhado pela missão e pela GUI
-ros2 launch drone_inspetor drone_inspetor_launch.py \
-  missions_file:=/caminho/missoes.json params_file:=/caminho/parametros.yaml
+# Menu interativo no terminal
+ros2 run drone_inspetor drone_inspetor_start
 ```
 
-| Argumento | Comportamento |
-|---|---|
-| `use_sim_time` | `true` no dashboard/simulation; `false` no contexto real |
-| `bridges` | Habilita `ros_gz_bridge` e `ros_gz_image` |
-| `bridges_file` | YAML de configuração do `ros_gz_bridge` |
-| `with_camera`, `with_cv`, `with_depth`, `with_lidar` | Seleção dos processadores de sensores |
-| `with_drone`, `with_mission`, `with_dashboard` | Seleção de controle, missão e GUI |
-| `params_file` | YAML aplicado a todos os nós |
-| `missions_file` | Caminho absoluto, ou relativo a `share/drone_inspetor/missions` |
-| `log_level` | Nível ROS, padrão `info` |
+Ambos oferecem **Projeto na simulação**, **Companion** e **Somente dashboard**.
+O modo simulação usa Gazebo/PX4/MicroXRCEAgent já iniciados. O companion inicia
+os seis nós de processamento/controle/missão sem janela; drivers dos sensores
+e transporte PX4 precisam estar disponíveis. O dashboard isolado inicia só a interface.
 
-Use `bridges_file:=/caminho/bridges.yaml` para fornecer tópicos próprios do mundo e da instância; o padrão é `share/drone_inspetor/config/ros_gz_bridges.yaml`.
+O [guia de execução](docs/EXECUCAO.md) concentra a sequência de partida, opções
+CLI, seleção de relógio e bridges, launchs diretos, encerramento e diagnóstico.
+Os iniciadores não armam o drone nem iniciam uma missão.
 
-Fechar o dashboard encerra esse launch. Para manter controle/missão independentes da
-janela, execute o launch com `with_dashboard:=false` e abra `dashboard_node` separadamente.
-O launch não arma o drone nem inicia uma missão.
+Cada missão grava `events.jsonl` na pasta da sessão, por padrão em
+`~/Drone_Inspetor_Missoes/mission_.../`. Veja o
+[diagnóstico da Flare e o diário de missão](docs/DIAGNOSTICO_MISSAO_FLARE.md).
 
 ## Monitor de estados
 
@@ -157,6 +142,8 @@ de integrar Gazebo, sensores ou novos consumidores.
 
 | Área | Responsabilidade |
 |---|---|
+| `startup`, `gui/startup_window.py` | Perfis compartilhados, processos e diagnósticos do iniciador CLI/GUI |
+| `launch` | Composição ROS, argumentos e verificação de dependências antes da partida |
 | `nodes/drone_node` | Action `DroneCommand`, telemetria PX4, FSMs de voo/deslocamento e setpoints |
 | `navigation` | Cálculo puro do perfil de movimento e decisões de obstáculos |
 | `missions` | Modelos tipados e repositório de catálogos, sem ROS/Qt e sem criar sessões |

@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="theme-color" content="#0b1321" />
+    <title>Drone Inspetor · Controle de campo</title>
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/leaflet/leaflet.css" />
+    <link rel="stylesheet" href="/app.css" />
+    <script src="/leaflet/leaflet.js" defer></script>
+    <script src="/core.js" defer></script>
+    <script src="/copilot.js" defer></script>
+    <script src="/video.js" defer></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body
+    data-flight-view="map"
+    data-camera-view="camera"
+    data-diagnostic-view="topics"
+    data-copilot-view="compose"
+  >
+    <header class="topbar">
+      <button
+        class="brand quiet"
+        data-open-tab="flight"
+        aria-label="Drone Inspetor, voo"
+      >
+        <img src="/icon.svg" alt="" /><span
+          >Drone Inspetor<small>Controle de campo</small></span
+        >
+      </button>
+      <div class="connection">
+        <span id="link-status" class="badge waiting">Sem conexão</span
+        ><a class="button native-only" href="drone-inspetor://station" hidden
+          >Estação</a
+        ><button id="connection-open" class="quiet">Conectar</button>
+      </div>
+    </header>
+    <div class="notice-bar">
+      <span id="notice" role="status" aria-live="polite"
+        >Sem conexão. Conecte à estação para receber os dados.</span
+      ><button id="notice-open" class="quiet" aria-label="Ler aviso completo">
+        ⓘ
+      </button>
+    </div>
+    <main>
+      <section
+        id="flight"
+        class="view flight-view"
+        role="tabpanel"
+        aria-labelledby="tab-flight"
+      >
+        <div class="heading">
+          <h1>Visão de voo</h1>
+          <span id="mode-note" class="muted">Sem conexão</span
+          ><select id="flight-view-select" aria-label="Exibir mapa ou radar">
+            <option value="map">Mapa</option>
+            <option value="radar">Radar</option>
+          </select>
+        </div>
+        <section class="stats" aria-label="Resumo do voo">
+          <article class="stat">
+            <h2>Drone</h2>
+            <strong id="drone-value">—</strong
+            ><span id="drone-note">Sem conexão</span>
+          </article>
+          <article class="stat">
+            <h2>Modo PX4</h2>
+            <strong id="status-value">—</strong
+            ><span id="status-note">Sem conexão</span>
+          </article>
+          <article class="stat">
+            <h2>Missão</h2>
+            <strong id="mission-value">—</strong
+            ><span id="mission-note">Sem conexão</span>
+          </article>
+          <article class="stat">
+            <h2>Bateria</h2>
+            <strong id="battery-value">—</strong
+            ><span id="battery-note">Sem conexão</span>
+          </article>
+        </section>
+        <div class="flight-grid">
+          <section class="panel map-panel">
+            <header>
+              <div>
+                <h2>Posição e rota</h2>
+                <p id="position-note">Sem conexão</p>
+              </div>
+              <button id="map-fit" class="quiet">Enquadrar</button>
+            </header>
+            <div class="map-stage">
+              <div
+                id="map"
+                aria-label="Mapa da posição GPS e rota da missão"
+              ></div>
+              <div id="map-empty" class="empty-state">
+                <span class="empty-symbol">⌖</span
+                ><strong>Sem posição disponível</strong
+                ><span>Aguardando conexão e GPS</span>
+              </div>
+            </div>
+            <footer>
+              <label
+                ><input id="map-tiles" type="checkbox" /> Mapa on-line</label
+              ><span id="route-note">Sem rota</span>
+            </footer>
+          </section>
+          <section class="panel radar-panel">
+            <header>
+              <div>
+                <h2>Proximidade</h2>
+                <p id="radar-note">Sem conexão</p>
+              </div>
+              <span class="mini-label">LiDAR</span>
+            </header>
+            <div class="radar-stage">
+              <canvas
+                id="radar"
+                aria-label="Radar LiDAR, frente para cima"
+              ></canvas>
+            </div>
+            <footer>
+              <span id="lidar-distance">Mais próximo: —</span
+              ><span id="down-distance">Abaixo: —</span>
+            </footer>
+          </section>
+        </div>
+      </section>
+      <section
+        id="payload"
+        class="view camera-view"
+        role="tabpanel"
+        aria-labelledby="tab-payload"
+        hidden
+      >
+        <div class="heading camera-heading">
+          <h1>Câmeras</h1>
+          <select id="camera-view-select" aria-label="Câmera exibida">
+            <option value="camera">RGB</option>
+            <option value="cv">Detecção CV</option>
+            <option value="depth">Profundidade</option></select
+          ><button id="models-open" class="quiet">Redes CV</button>
+          <select id="video-transport" aria-label="Transmissão do vídeo">
+            <option value="auto">Automático</option>
+            <option value="webrtc">WebRTC</option>
+            <option value="jpeg">JPEG · compatível</option>
+          </select>
+        </div>
+        <section class="video-grid" aria-label="Vídeos">
+          <article class="panel video-panel" data-stream="camera">
+            <header>
+              <h2>Câmera RGB</h2>
+              <button class="quiet expand-video" data-kind="camera">
+                Ampliar ↗
+              </button>
+            </header>
+            <div class="video-stage">
+              <video id="video-camera" autoplay muted playsinline hidden aria-label="Vídeo camera"></video>
+              <img id="frame-camera" alt="Câmera RGB do drone" hidden /><span
+                id="frame-camera-note"
+                >Sem conexão · câmera indisponível</span
+              >
+            </div>
+            <footer>
+              <button data-command="camera.capture" data-write disabled>
+                Fotografar</button
+              ><button
+                data-command="camera.record"
+                data-enabled="true"
+                data-write
+                disabled
+              >
+                Gravar</button
+              ><button
+                data-command="camera.record"
+                data-enabled="false"
+                data-write
+                disabled
+              >
+                Parar
+              </button>
+            </footer>
+          </article>
+          <article class="panel video-panel" data-stream="cv">
+            <header>
+              <h2>Detecção CV</h2>
+              <button class="quiet expand-video" data-kind="cv">
+                Ampliar ↗
+              </button>
+            </header>
+            <div class="video-stage">
+              <video id="video-cv" autoplay muted playsinline hidden aria-label="Vídeo cv"></video>
+              <img
+                id="frame-cv"
+                alt="Detecções da visão computacional"
+                hidden
+              /><span id="frame-cv-note"
+                >Sem conexão · detecção indisponível</span
+              >
+            </div>
+            <footer>
+              <button
+                data-command="cv.record"
+                data-enabled="true"
+                data-write
+                disabled
+              >
+                Gravar CV</button
+              ><button
+                data-command="cv.record"
+                data-enabled="false"
+                data-write
+                disabled
+              >
+                Parar CV</button
+              ><button
+                data-command="cv.anomaly"
+                data-enabled="true"
+                data-write
+                disabled
+              >
+                Ativar anomalias</button
+              ><button
+                data-command="cv.anomaly"
+                data-enabled="false"
+                data-write
+                disabled
+              >
+                Desativar anomalias
+              </button>
+            </footer>
+          </article>
+          <article class="panel video-panel" data-stream="depth">
+            <header>
+              <h2>Profundidade</h2>
+              <button class="quiet expand-video" data-kind="depth">
+                Ampliar ↗
+              </button>
+            </header>
+            <div class="video-stage">
+              <video id="video-depth" autoplay muted playsinline hidden aria-label="Vídeo depth"></video>
+              <img id="frame-depth" alt="Mapa de profundidade" hidden /><span
+                id="frame-depth-note"
+                >Sem conexão · profundidade indisponível</span
+              >
+            </div>
+            <footer>
+              <span id="depth-distance">Distância mínima: —</span>
+            </footer>
+          </article>
+        </section>
+      </section>
+      <section
+        id="mission-section"
+        class="view mission-view"
+        role="tabpanel"
+        aria-labelledby="tab-mission-section"
+        hidden
+      >
+        <div class="heading">
+          <h1>Missão</h1>
+          <span class="muted">Plano de inspeção</span>
+        </div>
+        <section class="panel mission-panel">
+          <div class="mission-controls">
+            <label for="mission-select">Missão cadastrada</label
+            ><select id="mission-select" disabled>
+              <option value="">Sem conexão · sem catálogo</option>
+            </select>
+            <div id="mission-points" class="pills">
+              <span>Sem rota disponível</span>
+            </div>
+            <div class="mission-actions">
+              <button id="mission-start" class="primary" data-write disabled>
+                Iniciar missão</button
+              ><button id="mission-cancel" class="danger" data-write disabled>
+                Cancelar missão
+              </button>
+            </div>
+            <p class="hint">Revise o plano antes de enviar ao controlador.</p>
+          </div>
+          <div class="mission-details">
+            <label for="mission-point-select">Plano e pontos</label
+            ><select id="mission-point-select">
+              <option value="summary">Resumo da missão</option>
+            </select>
+            <div class="reader">
+              <pre id="mission-description">
+Sem conexão. O catálogo será recebido da estação.</pre
+              >
+            </div>
+          </div>
+        </section>
+      </section>
+      <section
+        id="copilot-section"
+        class="view copilot-view"
+        role="tabpanel"
+        aria-labelledby="tab-copilot-section"
+        hidden
+      >
+        <div class="heading">
+          <h1>Copiloto</h1>
+          <span id="copilot-mode" class="muted">Sem conexão</span>
+          <select
+            id="copilot-view-select"
+            aria-label="Exibir pedido ou propostas"
+          >
+            <option value="compose">Pedido</option>
+            <option value="review">Propostas</option>
+          </select>
+          <a class="button native-only" href="drone-inspetor://speech" hidden
+            >Falar</a
+          >
+        </div>
+        <section class="panel copilot-panel">
+          <div class="copilot-compose">
+            <label for="copilot-prompt">Seu pedido</label
+            ><textarea
+              id="copilot-prompt"
+              maxlength="2000"
+              rows="3"
+              placeholder="Ex.: iniciar missão Flare"
+            ></textarea
+            ><label for="copilot-provider">Interpretar com</label
+            ><select id="copilot-provider">
+              <option value="">Sem conexão · sem provedores</option></select
+            ><button id="copilot-prepare" class="primary" disabled>
+              Preparar proposta
+            </button>
+          </div>
+          <div class="copilot-review">
+            <label for="copilot-proposals">Propostas de IA e MCP</label
+            ><select id="copilot-proposals">
+              <option value="">Nenhuma proposta</option>
+            </select>
+            <div class="reader">
+              <pre id="copilot-result">
+Sem conexão. Conecte à estação para consultar as propostas.</pre
+              >
+            </div>
+            <button id="copilot-review" disabled>Revisar e executar</button>
+          </div>
+        </section>
+      </section>
+      <section
+        id="diagnostics"
+        class="view diagnostics-view"
+        role="tabpanel"
+        aria-labelledby="tab-diagnostics"
+        hidden
+      >
+        <div class="heading">
+          <h1>Telemetria</h1>
+          <select
+            id="diagnostic-view-select"
+            aria-label="Exibir tópicos ou eventos"
+          >
+            <option value="topics">Tópicos</option>
+            <option value="events">Eventos</option>
+          </select>
+        </div>
+        <section id="topics-panel" class="panel telemetry-panel">
+          <header>
+            <h2>Saúde dos tópicos</h2>
+            <span id="topic-count" class="badge waiting">0 ativos</span>
+          </header>
+          <div class="topic-selector">
+            <label for="topic-select">Tópico</label
+            ><select id="topic-select">
+              <option value="drone">Estado do drone</option>
+            </select>
+          </div>
+          <div id="topics">
+            <div class="topic-summary">
+              <span id="topic-health" class="badge waiting">Sem conexão</span
+              ><span id="topic-rate" class="muted">Aguardando dados</span>
+            </div>
+            <p id="topic-path" class="muted">—</p>
+            <div class="reader">
+              <pre id="topic-data">
+Sem conexão. Os valores aparecerão aqui.</pre
+              >
+            </div>
+          </div>
+        </section>
+        <section id="events-panel" class="panel logs-panel">
+          <header>
+            <h2>Eventos da estação</h2>
+            <div>
+              <button id="history-open" class="quiet">Histórico</button
+              ><button id="logs-clear" class="quiet">Limpar</button>
+            </div>
+          </header>
+          <div class="reader">
+            <pre id="events">Nenhum evento recebido.</pre>
+          </div>
+        </section>
+      </section>
+    </main>
+    <nav class="bottom-nav" aria-label="Seções do dashboard" role="tablist">
+      <button
+        id="tab-flight"
+        role="tab"
+        aria-selected="true"
+        aria-controls="flight"
+        data-open-tab="flight"
+      >
+        <span aria-hidden="true">⌖</span>Voo
+      </button>
+      <button
+        id="tab-payload"
+        role="tab"
+        aria-selected="false"
+        aria-controls="payload"
+        data-open-tab="payload"
+        tabindex="-1"
+      >
+        <span aria-hidden="true">▣</span>Câmeras
+      </button>
+      <button
+        id="tab-mission-section"
+        role="tab"
+        aria-selected="false"
+        aria-controls="mission-section"
+        data-open-tab="mission-section"
+        tabindex="-1"
+      >
+        <span aria-hidden="true">◇</span>Missão
+      </button>
+      <button
+        id="tab-copilot-section"
+        role="tab"
+        aria-selected="false"
+        aria-controls="copilot-section"
+        data-open-tab="copilot-section"
+        tabindex="-1"
+      >
+        <span aria-hidden="true">✧</span>Copiloto
+      </button>
+      <button
+        id="tab-diagnostics"
+        role="tab"
+        aria-selected="false"
+        aria-controls="diagnostics"
+        data-open-tab="diagnostics"
+        tabindex="-1"
+      >
+        <span aria-hidden="true">▥</span>Telemetria
+      </button>
+    </nav>
+    <dialog id="connection-dialog">
+      <form id="connection-form">
+        <header>
+          <div>
+            <p class="eyebrow">GATEWAY ROS</p>
+            <h2>Conectar à estação</h2>
+          </div>
+          <button type="button" class="quiet dialog-close" aria-label="Fechar">
+            ×
+          </button>
+        </header>
+        <label for="host">Endereço do gateway</label
+        ><input
+          id="host"
+          type="url"
+          required
+          placeholder="http://192.168.1.20:8765"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <p class="hint">No Android, use Estação para trocar o servidor.</p>
+        <label for="token">Token de acesso</label
+        ><input
+          id="token"
+          type="password"
+          autocomplete="off"
+          placeholder="Token configurado no gateway"
+        />
+        <p class="hint">
+          Token somente nesta sessão. Use uma rede confiável ou HTTPS.
+        </p>
+        <div class="dialog-actions">
+          <button type="button" id="disconnect">Desconectar</button
+          ><button type="submit" class="primary">Conectar</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="copilot-confirm-dialog">
+      <header>
+        <h2>Confirmar proposta</h2>
+        <button class="quiet dialog-close" aria-label="Fechar confirmação IA">
+          ×
+        </button>
+      </header>
+      <div class="reader"><pre id="copilot-confirm-description"></pre></div>
+      <div class="dialog-actions">
+        <button class="dialog-close">Voltar</button
+        ><button id="copilot-confirm-send" class="primary" disabled>
+          Confirmar envio da proposta
+        </button>
+      </div>
+    </dialog>
+    <dialog id="confirm-dialog">
+      <header>
+        <h2 id="confirm-title">Confirmar ação</h2>
+        <button class="quiet dialog-close" aria-label="Fechar">×</button>
+      </header>
+      <div class="reader"><pre id="confirm-description"></pre></div>
+      <div class="dialog-actions">
+        <button class="dialog-close">Voltar</button
+        ><button id="confirm-send" class="primary">Confirmar envio</button>
+      </div>
+    </dialog>
+    <dialog id="models-dialog">
+      <header>
+        <div>
+          <p class="eyebrow">VISÃO COMPUTACIONAL</p>
+          <h2>Redes de detecção</h2>
+        </div>
+        <button class="quiet dialog-close" aria-label="Fechar">×</button>
+      </header>
+      <label for="object-model">Equipamentos</label
+      ><select id="object-model"></select>
+      <div class="reader model-reader"><pre id="object-model-info"></pre></div>
+      <label for="anomaly-model">Anomalias</label
+      ><select id="anomaly-model"></select>
+      <div class="reader model-reader"><pre id="anomaly-model-info"></pre></div>
+      <div class="dialog-actions">
+        <button class="dialog-close">Fechar</button
+        ><button id="models-apply" class="primary" data-write disabled>
+          Aplicar redes
+        </button>
+      </div>
+    </dialog>
+    <dialog id="video-dialog" class="video-dialog">
+      <header>
+        <h2 id="expanded-title">Câmera</h2>
+        <button class="quiet dialog-close" aria-label="Fechar vídeo">
+          Fechar ×
+        </button>
+      </header>
+      <video id="expanded-video" autoplay muted playsinline hidden aria-label="Vídeo ampliado"></video>
+      <img id="expanded-frame" alt="Vídeo ampliado" />
+      <p id="expanded-note" class="muted">Sem imagem</p>
+    </dialog>
+    <dialog id="history-dialog">
+      <header>
+        <h2>Histórico de missões</h2>
+        <button class="quiet dialog-close" aria-label="Fechar">×</button>
+      </header>
+      <label for="session-select">Sessão</label
+      ><select id="session-select">
+        <option value="">Carregando sessões…</option>
+      </select>
+      <div class="reader">
+        <pre id="session-events">Selecione uma sessão.</pre>
+      </div>
+    </dialog>
+    <dialog id="notice-dialog">
+      <header>
+        <h2>Estado da conexão</h2>
+        <button class="quiet dialog-close" aria-label="Fechar">×</button>
+      </header>
+      <div class="reader"><pre id="notice-detail"></pre></div>
+    </dialog>
+  </body>
+</html>

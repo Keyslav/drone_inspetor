@@ -1,0 +1,2 @@
+# Opcional. Instale em venv separado; não modifica o ambiente ROS.
+mcp==1.28.0

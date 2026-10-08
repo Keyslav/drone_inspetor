@@ -1,14 +1,26 @@
 # Dashboard: organização e responsividade
 
-Atualização local de 24/09/2026. O comando permanece:
+Este documento explica os painéis, radar e comportamento visual do dashboard
+de operação. A **tela de inicialização** é outra janela: seus modos, comandos e
+encerramento estão em [EXECUCAO.md](EXECUCAO.md). Acesso revisado em 28/09/2026;
+as verificações ao final registram a entrega visual de 24/09/2026.
+
+Após [compilar e carregar o ambiente](../README.md), abra o iniciador e escolha
+**Projeto na simulação** ou **Somente dashboard**, conforme onde os nós estarão:
 
 ```bash
-cd ~/ros2_ws
-source install/setup.bash
-ros2 launch drone_inspetor dashboard_launch.py
+ros2 run drone_inspetor drone_inspetor_start_gui
 ```
 
-Se as bridges já estiverem em execução, acrescente `bridges:=false`.
+Para abrir só o dashboard de uma simulação já em execução, pelo terminal:
+
+```bash
+ros2 run drone_inspetor drone_inspetor_start start dashboard --time sim
+```
+
+O launch direto `dashboard_launch.py` continua disponível, mas inicia também
+os nós de processamento, drone, missão e bridges por padrão. Ele não equivale
+ao perfil **Somente dashboard**.
 
 ## Organização
 

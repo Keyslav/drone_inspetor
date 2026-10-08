@@ -1,10 +1,55 @@
 # Implementação v2.0 — registro de continuidade
 
-Atualizado em 23/09/2026. Branch local de ambos os repositórios: `v2.0`. A implementação foi consolidada em commits locais; não houve publicação
+Consolidação registrada em 23/09/2026. Branch local de ambos os repositórios: `v2.0`. A implementação foi consolidada em commits locais; não houve publicação
 remota desta etapa. O diagnóstico histórico e as etapas
 estão em `PLANO_MELHORIAS_V2.md`; este arquivo registra execução posterior.
 
-## Estado atual
+## 04/10/2026 — vídeo WebRTC, JPEG e dashboard no navegador
+
+- Gateway opcional `--webrtc` com aiortc; JPEG mantido. Interface compartilhada
+  pelo navegador e APK com seleção Automático/WebRTC/JPEG na aba Câmeras.
+- Só transmite o canal visível; ampliação reutiliza conexão; expiração de fonte,
+  fallback, encerramento de sessões e limite de quatro espectadores.
+- Ambiente isolado `.webrtc-venv`, scripts `mobile/setup-webrtc.sh` e
+  `mobile/run-gateway.sh`; precedência de dependências corrige conflito com
+  `PYTHONPATH` herdado do ROS. Sem alterar Python global.
+- APK preview3 compilado, lint sem erros, assinatura e assets verificados.
+- 45 testes Python, 16 JavaScript; vídeo real no navegador com fonte sintética
+  e matriz de 16 verificações de layout. Sem voo ou validação em celular físico.
+- Uso e limites em [ANDROID.md](ANDROID.md); teste visual reproduzível em
+  `test/manual_mobile_video.py`. CPU/banda/latência no companion ainda por medir.
+
+## Atualizações posteriores à consolidação
+
+- **04/10:** Android preview2 inclui o dashboard no APK e abre sem servidor.
+  Interface fixa por abas, seletores e paginação, adaptada a retrato/paisagem
+  16:9, 21:9, 4:3 e proporção interna do Fold7. Mantida a aparência do dashboard
+  de operação. Rotação/folding preservam WebView e estado de navegação; teclado
+  e recortes tratados por insets. Detalhes e matriz em [ANDROID.md](ANDROID.md).
+  Instalada a skill `frontend-design` do repositório oficial `anthropics/skills`.
+
+- **03/10:** iniciador GUI/CLI permite selecionar arquivos de configuração e
+  nós individuais (24 testes focados). Gateway HTTP autenticado, página móvel
+  responsiva e projeto Android adicionados; testes HTTP/API e DDS sintético
+  realizados, sem voo novo. SDK/Gradle instalados e APK debug gerado, com
+  assinatura verificada; teste físico pendente. Copiloto Jev/OpenAI, voz Android,
+  auditoria e ponte MCP stdio implementados com propostas revisáveis e modo
+  shadow padrão. Sem chaves de API, não houve inferência paga nem avaliação dos
+  modelos reais. Uso em [ANDROID.md](ANDROID.md), [COPILOTO.md](COPILOTO.md) e
+  [MCP_DRONE.md](MCP_DRONE.md).
+  Verificação: 111 testes Python/ROS (incluindo DDS sintético), 9 JavaScript,
+  build colcon temporário e sessão MCP real em loopback aprovados. Interface
+  conferida em largura de 393 px, sem overflow horizontal. Sem voo nesta etapa.
+
+- **24/09:** reorganização visual e radar responsivo documentados em
+  [DASHBOARD_V2.md](DASHBOARD_V2.md); seleção de pesos em [MODELOS_CV.md](MODELOS_CV.md).
+- **26/09:** iniciador gráfico e menu CLI com perfis compartilhados. A entrega
+  registrou 16 testes focados, build temporário e verificação dos executáveis;
+  não acrescentou ensaio de voo. Uso em [EXECUCAO.md](EXECUCAO.md).
+- **28/09:** revisão dos guias de montagem/execução e criação do
+  [índice documental](README.md). Os resultados históricos abaixo foram preservados.
+
+## Estado registrado na consolidação de 23/09
 
 - Extração final da GUI concluída: seletor/detalhes de modelos e janela de
   análise em componentes próprios; seleção e detalhes preservados ao reabrir.

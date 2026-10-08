@@ -1,0 +1,36 @@
+plugins { id 'com.android.application' }
+android {
+    namespace 'br.uerj.droneinspetor'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'br.uerj.droneinspetor'
+        minSdk 26
+        targetSdk 34
+        versionCode 3
+        versionName '2.0.0-preview3'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+// One source of truth for web/Android. The public shell is available without a gateway.
+def dashboardSource = file('../../drone_inspetor/mobile_web')
+def dashboardAssets = layout.buildDirectory.dir('generated/dashboard-assets')
+def bundleDashboard = tasks.register('bundleDashboard', Sync) {
+    from(dashboardSource) {
+        include '**/*.html', '**/*.css', '**/*.js', '**/*.svg', '**/*.png', '**/*.txt'
+        into 'dashboard'
+    }
+    into dashboardAssets
+    doLast {
+        def target = dashboardAssets.get().asFile
+        def manifest = fileTree(new File(target, 'dashboard')).files.collect { asset ->
+            '/' + new File(target, 'dashboard').toPath().relativize(asset.toPath()).toString().replace('\\', '/')
+        }.sort().join('\n') + '\n'
+        new File(target, 'dashboard-assets.txt').text = manifest
+    }
+}
+android.sourceSets.main.assets.srcDir(dashboardAssets)
+tasks.named('preBuild').configure { dependsOn(bundleDashboard) }

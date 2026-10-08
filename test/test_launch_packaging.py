@@ -87,5 +87,7 @@ def test_setup_installs_resources_once_and_uses_explicit_entry_modules(monkeypat
     assert 'drone_inspetor/gui/leaflet_local/leaflet.js' in files
     assert 'drone_inspetor/gui/utils.py' not in files
     assert 'ruckig==0.19.4' in captured['install_requires']
-    assert all('.scripts.' in entry or '_node.' in entry
+    assert all(any(module in entry for module in (
+        '.scripts.', '_node.', '.startup.cli:main', '.gui.startup_window:main',
+        '.mobile_gateway.server:main'))
                for entry in captured['entry_points']['console_scripts'])

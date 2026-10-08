@@ -16,11 +16,12 @@ from drone_inspetor.ros_interfaces.specs import TopicSpec
 class DashboardTopics:
     """Tópicos do dashboard. Acessar via Topics.Dashboard.<NOME>."""
 
-    # --- Comandos críticos (RELIABLE + TRANSIENT_LOCAL) ---
+    # Eventos de missão não devem ser reaplicados a um assinante que reconecta.
+    # Todos os clientes precisam ser reiniciados após esta mudança de QoS.
     MISSION_COMMANDS = TopicSpec(
         "/drone_inspetor/interno/dashboard_node/mission_commands",
         DashboardMissionCommandMSG,
-        QoSProfiles.commands(),
+        QoSProfiles.commands_volatile(depth=1),
     )
 
     # --- Comandos de controle (RELIABLE + VOLATILE) ---

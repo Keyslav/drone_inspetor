@@ -1,5 +1,10 @@
 # Ensaios de navegação no PX4 SIH
 
+Receita de ensaio e registro das rodadas históricas. Para montagem do workspace,
+use o [README](../README.md); operação diária fica em [EXECUCAO.md](EXECUCAO.md).
+Os comandos de preparação abaixo foram atualizados em 28/09/2026; as medições
+das rodadas não foram repetidas nesta revisão.
+
 `tools/validate_sitl.py` inicia uma instância própria do PX4 SIH: instância 27,
 system ID 28, namespace `px4_27`, domínio DDS 173 e agente UDP na porta 18889.
 O cenário usa a dinâmica SIH e os controladores PX4. O lidar e os obstáculos
@@ -8,16 +13,17 @@ física. Não representa o modelo `x500_uerj`/autostart 4030 do Gazebo.
 
 ## Executar no ambiente de validação local
 
-Na raiz `/home/keyslav/ros2_ws/src`:
+Com workspace v2 compilado, PX4 SITL disponível e Ruckig no Python da aplicação:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-source .drone-v2-validation/install/local_setup.bash
-export PYTHONPATH="$PWD/.drone-v2-validation/python:$PWD/drone_inspetor:$PYTHONPATH"
-python3 drone_inspetor/tools/validate_sitl.py \
+cd ~/ros2_ws
+source .venv/bin/activate
+source install/setup.bash
+python src/drone_inspetor/tools/validate_sitl.py \
   --px4-root /home/keyslav/PX4-Autopilot \
   --agent /usr/local/bin/MicroXRCEAgent \
-  --output "$PWD/.drone-v2-validation/sitl-novo-ensaio"
+  --output "$PWD/src/.drone-v2-validation/sitl-novo-ensaio"
 ```
 
 Use uma pasta de saída nova por rodada. O script guarda `flight.json`, logs ROS,

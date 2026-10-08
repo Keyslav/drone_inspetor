@@ -1,5 +1,10 @@
 # Inicialização real do dashboard — 23/09/2026
 
+Relato de incidente e correção naquela data. Para preparar o workspace hoje,
+use o [README](../README.md); para os novos iniciadores e perfis, use
+[EXECUCAO.md](EXECUCAO.md). As evidências abaixo não foram reexecutadas nesta
+revisão documental.
+
 O usuário encontrou `ImportError: DashboardMissionCommandMSG` ao iniciar
 `ros2 launch drone_inspetor dashboard_launch.py`. A entrega anterior havia sido
 validada em overlay isolado e não atualizou a instalação normal. Foi uma lacuna

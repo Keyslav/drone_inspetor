@@ -1,5 +1,10 @@
 # Plano de organização e legibilidade da versão 2.0
 
+**Documento histórico:** diagnóstico do início do trabalho. Não use os problemas,
+versões e caminhos citados aqui como descrição automática do código atual.
+Entregas em [PROGRESSO_V2.md](PROGRESSO_V2.md); montagem no [README](../README.md)
+e comandos atuais em [EXECUCAO.md](EXECUCAO.md).
+
 Análise em 20/09/2026. Base: `drone_inspetor` em `9d164b1b6bdd9f916d3bf31520994957f11b8d63` e `drone_inspetor_msgs` em `15dee716b1ccc069d127f6edfad5e8fe70cf732b`, ambos na branch `v2.0`. Este documento propõe trabalho futuro; nenhuma alteração funcional foi implementada nesta análise. As referências de linha correspondem a esses commits.
 
 A recomendação é continuar a modularização existente, tornando explícitos os contratos, a propriedade do estado e os efeitos de cada operação. As primeiras entregas devem estabelecer testes e corrigir inconsistências comprovadas; em seguida, extrair responsabilidades dos arquivos maiores. Mudanças de comportamento e movimentações de arquivos devem ter commits distintos para facilitar revisão e diagnóstico de regressões.

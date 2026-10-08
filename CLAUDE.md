@@ -1,6 +1,10 @@
 # Orientações de desenvolvimento
 
-Leia `README.md` para instalação, execução e verificação. Os dois repositórios usam
+Este arquivo orienta manutenção por desenvolvedores e assistentes de código.
+Leia [README.md](README.md) para instalação/build/verificação,
+[docs/EXECUCAO.md](docs/EXECUCAO.md) para operação diária e
+[docs/README.md](docs/README.md) para localizar as demais referências.
+Os dois repositórios usam
 `v2.0` e manifesto `2.0.0`; contratos da linha v1 não são intercambiáveis.
 
 Para o ambiente do usuário, leia `INIT_SIMULACAO.md`: modelo `x500_uerj`, mundo
@@ -27,6 +31,8 @@ auditadas. As convenções de coordenadas estão em `docs/COORDENADAS.md`.
   Entry points apontam para módulos explícitos. Não copie código Python para `share`.
 - Os launchers têm argumentos `use_sim_time`, `with_*`, `bridges`, `params_file` e
   `missions_file`. Não comente nós para escolher um cenário de execução.
+- `startup/controller.py` compartilha os perfis entre GUI de partida e menu CLI.
+  Não duplique regras de início/parada nas interfaces. Gazebo/PX4/Agent são externos.
 - Teste falhas/limites/transições, não só a implementação feliz. Consulte `test/`.
   Separe testes sem hardware da validação de integração SITL; não apresente um como outro.
 - Ruckig é local (`ruckig==0.19.4`), sem API cloud/waypoints intermediários.

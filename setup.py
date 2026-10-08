@@ -17,8 +17,9 @@ def resource_files():
         (f'share/{PACKAGE}/docs', glob('docs/*.md')),
         (f'share/{PACKAGE}/launch', glob(f'{PACKAGE}/launch/*_launch.py')),
     ]
-    suffixes = {'.yaml', '.json', '.html', '.js', '.css', '.png', '.jpeg', '.jpg', '.sdf', '.pt'}
-    for directory in ('config', 'models', 'assets', 'missions', 'redes_treinadas', 'gui'):
+    suffixes = {'.yaml', '.json', '.html', '.js', '.css', '.png', '.jpeg', '.jpg',
+                '.sdf', '.pt', '.svg', '.txt'}
+    for directory in ('config', 'models', 'assets', 'missions', 'redes_treinadas', 'gui', 'mobile_web'):
         paths_by_parent = {}
         for path in sorted((Path(PACKAGE) / directory).rglob('*')):
             if path.is_file() and path.suffix in suffixes:
@@ -48,6 +49,11 @@ setup(
         'console_scripts': [
             f'{node}_node = {PACKAGE}.nodes.{node}_node.{node}_node:main'
             for node in ('dashboard', 'camera', 'cv', 'depth', 'lidar', 'drone', 'mission', 'monitor')
-        ] + [f'teste_drone_node = {PACKAGE}.scripts.teste_drone_node:main'],
+        ] + [
+            f'teste_drone_node = {PACKAGE}.scripts.teste_drone_node:main',
+            f'drone_inspetor_start = {PACKAGE}.startup.cli:main',
+            f'drone_inspetor_start_gui = {PACKAGE}.gui.startup_window:main',
+            f'mobile_gateway = {PACKAGE}.mobile_gateway.server:main',
+        ],
     },
 )

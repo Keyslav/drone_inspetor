@@ -1,0 +1,8 @@
+# Opcional: apenas o gateway de vídeo; JPEG/telemetria não dependem deste arquivo.
+aiortc==1.15.0
+aioice==0.10.2
+# Combinação validada no teste real de recepção WebRTC. O script run-gateway.sh
+# prioriza estas bibliotecas sobre pacotes antigos inseridos pelo PYTHONPATH ROS.
+pyOpenSSL==25.3.0
+cryptography==46.0.7
+av==17.1.0

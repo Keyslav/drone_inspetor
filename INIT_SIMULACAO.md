@@ -1,5 +1,14 @@
 # Referência inicial — simulação X500 UERJ
 
+**Finalidade:** registrar a montagem do ambiente local Gazebo/PX4, caminhos,
+modelo físico e achados da auditoria. Para compilar o projeto ROS, use o
+[README](README.md); para iniciar GUI/CLI e escolher um modo, use
+[docs/EXECUCAO.md](docs/EXECUCAO.md).
+
+Instruções de partida revisadas em **28/09/2026**. Os valores físicos, versões e
+hashes abaixo continuam identificando a auditoria nas datas indicadas; esta revisão
+documental não representa nova medição ou ensaio de voo.
+
 Auditoria em **21/09/2026**, com massa, inércia, motores, herança do autostart e
 hashes principais reconferidos em **22/09/2026**. Este arquivo serve como ponto de entrada para futuras
 sessões de trabalho. Análise estática dos arquivos locais; não foram iniciados
@@ -45,17 +54,22 @@ Outras referências do projeto: [coordenadas](docs/COORDENADAS.md),
 Os ensaios SIH anteriores da v2 usaram outro airframe; **não validam este veículo
 4030 no mundo Plataforma_UERJ**.
 
-## Inicialização informada pelo usuário
+## Inicialização externa do ambiente local
 
-Executar em terminais separados, nos diretórios que contêm os executáveis:
+Receita informada pelo usuário, agora com o caminho do servidor e o diretório
+de modelos explícitos. Execute em terminais separados. Para o comando PX4,
+entre antes em `/home/keyslav/PX4-Autopilot`; para QGroundControl, use a pasta
+que contém seu AppImage.
 
 ```bash
 # 1 — servidor
-python3 simulation-gazebo --world Plataforma_UERJ --gz_ip 127.0.0.1 --headless
+python3 /home/keyslav/PX4-gazebo-models/simulation-gazebo \
+  --world Plataforma_UERJ --gz_ip 127.0.0.1 --headless
 
 # 2 — PX4, a partir de /home/keyslav/PX4-Autopilot
 SIM_GZ_HOME_LAT=-22.633890 SIM_GZ_HOME_LON=-40.093330 SIM_GZ_HOME_ALT=0 \
 GZ_IP=127.0.0.1 PX4_GZ_STANDALONE=1 PX4_GZ_WORLD=Plataforma_UERJ \
+PX4_GZ_MODELS=/home/keyslav/.simulation-gazebo/models \
 PX4_SYS_AUTOSTART=4030 PX4_GZ_MODEL_POSE="-70,-27,57" \
 nvidia-run ./build/px4_sitl_default/bin/px4
 
@@ -69,16 +83,15 @@ sleep 10 && nvidia-run gz sim -g
 nvidia-run ./QGroundControl-x86_64.AppImage
 ```
 
-`nvidia-run` apenas seleciona a GPU, conforme informado pelo usuário.
+`nvidia-run` é um wrapper local que seleciona a GPU, conforme informado pelo
+usuário; não é um comando padrão do ROS/PX4. A interface Gazebo e o QGroundControl
+são janelas separadas do dashboard. A espera de 10 s foi mantida da receita
+original; não é uma confirmação de que o servidor está pronto.
 
 **Dependência de caminho a explicitar:** neste checkout, `px4-rc.gzsim:116`
 monta o nome do SDF usando `${PX4_GZ_MODELS}/${MODEL_NAME}/model.sdf`.
-O comando 2 não define `PX4_GZ_MODELS`; no ambiente desta auditoria ele também
-estava ausente. Antes do próximo teste, recomenda-se acrescentar:
-
-```bash
-export PX4_GZ_MODELS=/home/keyslav/.simulation-gazebo/models
-```
+O comando 2 original não definia `PX4_GZ_MODELS`; no ambiente da auditoria ele
+também estava ausente. A receita acima passou a defini-lo no próprio comando PX4.
 
 O modo standalone pula o carregamento de `gz_env.sh` existente no ramo que inicia
 o servidor. O `gz_env.sh` gerado aponta para `PX4-Autopilot/Tools/simulation/gz/models`,
@@ -90,6 +103,21 @@ Há duas cópias do launcher `simulation-gazebo`: em `/home/keyslav/PX4-gazebo-m
 e em `PX4-Autopilot/Tools/simulation/gz/`. A primeira configura
 `GZ_SIM_SYSTEM_PLUGIN_PATH` para a pasta local; na segunda essa linha está
 comentada. Usar caminhos explícitos evita carregar uma cópia diferente.
+
+### Iniciar o projeto ROS depois da infraestrutura
+
+Carregue o ambiente conforme [EXECUCAO.md](docs/EXECUCAO.md), abra
+`ros2 run drone_inspetor drone_inspetor_start_gui` ou o menu
+`ros2 run drone_inspetor drone_inspetor_start` e escolha **Projeto na simulação**.
+O iniciador administra os nós ROS e, conforme a opção escolhida, suas bridges.
+Ele não executa os cinco comandos externos acima. Se as bridges já estiverem
+rodando, use **Usar bridges já existentes** ou `start sim --bridges off` no CLI.
+
+A receita acima usa o **PX4 original** indicado pelo usuário. As correções de
+magnetômetro ensaiadas foram aplicadas a uma cópia isolada do executável e à
+configuração correspondente; abrir o novo iniciador não aplica essas correções.
+Para reproduzir os ensaios com essa cópia, siga
+[REPRODUZIR_TESTES_GAZEBO.md](docs/REPRODUZIR_TESTES_GAZEBO.md).
 
 ## Herança real do autostart
 
